@@ -24,7 +24,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .angle import solve_incline_angle
-from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
+from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE, pressure_at_altitude_inhg
 from .cli import bootstrap_default_profile
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import report_for_point, report_table
@@ -61,13 +61,24 @@ def web_ui():
 
 class AtmosphereIn(BaseModel):
     temp_f: float = 59.0
-    pressure_inhg: float = 29.92
+    pressure_inhg: float | None = Field(
+        None, description="Station pressure if known. Omit/null to estimate from "
+                           "altitude_ft instead -- entering altitude alone does "
+                           "nothing unless pressure is also either provided or left "
+                           "unset for this estimate.",
+    )
     humidity_pct: float = 0.0
     altitude_ft: float = 0.0
 
     def to_conditions(self) -> AtmosphereConditions:
+        pressure = self.pressure_inhg
+        if pressure is None:
+            # No real barometer reading -- estimate from altitude via the
+            # standard barometric formula rather than silently defaulting
+            # to sea-level pressure regardless of what altitude was given.
+            pressure = pressure_at_altitude_inhg(self.altitude_ft)
         return AtmosphereConditions(
-            temp_f=self.temp_f, pressure_inhg=self.pressure_inhg,
+            temp_f=self.temp_f, pressure_inhg=pressure,
             humidity_pct=self.humidity_pct, altitude_ft=self.altitude_ft,
         )
 

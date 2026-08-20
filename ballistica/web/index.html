@@ -94,7 +94,7 @@
     <div class="cond-grid">
       <div><label>Temp (&deg;F)</label><input id="tempF" type="number" value="59"></div>
       <div><label>Altitude (ft)</label><input id="altFt" type="number" value="0"></div>
-      <div><label>Pressure (inHg)</label><input id="pressInHg" type="number" step="0.01" value="29.92"></div>
+      <div><label>Pressure (inHg)</label><input id="pressInHg" type="number" step="0.01" placeholder="auto from altitude"></div>
       <div><label>Humidity (%)</label><input id="humidPct" type="number" value="0"></div>
       <div><label>Wind (mph)</label><input id="windMph" type="number" value="0"></div>
       <div><label>Wind (o'clock)</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12"></div>
@@ -203,6 +203,7 @@ solveBtn.addEventListener('click', async () => {
   solveBtn.disabled = true;
   setStatus('Calculating...');
   try {
+    const pressRaw = document.getElementById('pressInHg').value.trim();
     const payload = {
       range_yd: range,
       rifle: rifleSelect.value,
@@ -210,7 +211,9 @@ solveBtn.addEventListener('click', async () => {
       atmosphere: {
         temp_f: parseFloat(document.getElementById('tempF').value) || 59,
         altitude_ft: parseFloat(document.getElementById('altFt').value) || 0,
-        pressure_inhg: parseFloat(document.getElementById('pressInHg').value) || 29.92,
+        // Left blank -> server estimates pressure from altitude instead
+        // of silently assuming sea level regardless of what altitude says.
+        pressure_inhg: pressRaw === '' ? null : parseFloat(pressRaw),
         humidity_pct: parseFloat(document.getElementById('humidPct').value) || 0,
       },
       wind: {
