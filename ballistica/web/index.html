@@ -29,11 +29,16 @@
   h1 { font-size: 24px; margin: 4px 0 14px; text-align: center; letter-spacing: 0.5px; }
   h2 { font-size: 15px; margin: 4px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
 
-  .row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: flex-end; margin-bottom: 4px; }
-  .field { display: inline-flex; flex-direction: column; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: flex-end; margin-bottom: 4px; }
+  .field { display: inline-flex; flex-direction: column; flex-shrink: 0; }
   .field label {
-    font-weight: 700; font-size: 12px; color: var(--muted); margin-bottom: 3px;
-    text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
+    font-weight: 700; font-size: 11px; color: var(--muted); margin-bottom: 3px;
+    text-transform: uppercase; letter-spacing: 0.2px; line-height: 1.15;
+    /* Labels read as short words (title="..." on the input carries the unit),
+       but this is a defensive net: a narrow field's label wraps or breaks
+       instead of ever overflowing into the next field -- nowrap here was
+       exactly what caused labels to spill sideways and overlap neighbors. */
+    overflow-wrap: anywhere; white-space: normal;
   }
   input, select {
     font-size: 18px; padding: 8px 8px; min-height: 42px;
@@ -41,10 +46,16 @@
   }
   select { -webkit-appearance: none; appearance: none; }
   input:focus, select:focus { outline: 3px solid var(--accent); border-color: var(--accent); }
+  /* Native number-input spin arrows eat real width from already-narrow
+     fields (a box sized to hold "59" doesn't have room left over for
+     spin buttons too) -- typing is faster than tapping them anyway. */
+  input[type="number"] { -moz-appearance: textfield; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
   /* content-sized field widths -- not uniform, sized to what each value actually holds */
-  .w-xs  { width: 4.5ch; }   /* temp, humidity, wind speed, wind clock, bullet weight, barrel length */
-  .w-sm  { width: 6.5ch; }   /* altitude, pressure, BC, velocity, zero, powder charge, click value, distance */
+  .w-xs  { width: 6ch; }   /* temp (incl. sign), humidity, wind speed, wind clock -- empirically fits "-12", "100", "999" without clipping */
+  .w-sm  { width: 8ch; }   /* altitude, pressure, BC, velocity, zero, powder charge, click value, distance, bullet weight, barrel length -- fits "29.92", "0.999" */
   .w-md  { width: 10ch; }    /* twist rate, drag model */
   .w-lg  { flex: 1 1 16ch; min-width: 14ch; } /* caliber, powder, bullet type, load name, notes */
   .w-full { width: 100%; }
@@ -114,10 +125,10 @@
       </div>
       <div class="row">
         <div class="field w-md"><label for="rCaliber">Caliber</label><input id="rCaliber" type="text" placeholder="e.g. .223 Wylde"></div>
-        <div class="field w-xs"><label for="rBarrel">Barrel (in)</label><input id="rBarrel" type="number" step="0.1"></div>
+        <div class="field w-sm"><label for="rBarrel">Barrel</label><input id="rBarrel" type="number" step="0.1" title="Barrel length, inches"></div>
         <div class="field w-md"><label for="rTwist">Twist rate</label><input id="rTwist" type="text" placeholder="e.g. 1:7"></div>
-        <div class="field w-sm"><label for="rScope">Scope ht (in)</label><input id="rScope" type="number" step="0.1"></div>
-        <div class="field w-sm"><label for="rClick">Click (mrad)</label><input id="rClick" type="number" step="0.01" value="0.1"></div>
+        <div class="field w-sm"><label for="rScope">Scope ht</label><input id="rScope" type="number" step="0.1" title="Scope height over bore, inches"></div>
+        <div class="field w-sm"><label for="rClick">Click</label><input id="rClick" type="number" step="0.01" value="0.1" title="Click value, mrad"></div>
       </div>
       <button id="saveRifleBtn" class="primary">Save rifle</button>
       <div id="rifleOk"></div>
@@ -138,7 +149,7 @@
       </div>
       <div class="row">
         <div class="field w-lg"><label for="lBulletType">Bullet type</label><input id="lBulletType" type="text" placeholder="e.g. 77gr Sierra MatchKing"></div>
-        <div class="field w-xs"><label for="lBulletWt">Wt (gr)</label><input id="lBulletWt" type="number" step="1"></div>
+        <div class="field w-sm"><label for="lBulletWt">Wt</label><input id="lBulletWt" type="number" step="1" title="Bullet weight, grains"></div>
       </div>
       <div class="row">
         <div class="field w-sm"><label for="lBC">BC</label><input id="lBC" type="number" step="0.001" placeholder="e.g. 0.362"></div>
@@ -146,12 +157,12 @@
           <label for="lDragModel">Drag model</label>
           <select id="lDragModel"><option value="G1">G1</option><option value="G7">G7</option></select>
         </div>
-        <div class="field w-sm"><label for="lMV">MV (fps)</label><input id="lMV" type="number" step="1"></div>
-        <div class="field w-sm"><label for="lZero">Zero (yd)</label><input id="lZero" type="number" step="1"></div>
+        <div class="field w-sm"><label for="lMV">MV</label><input id="lMV" type="number" step="1" title="Muzzle velocity, fps"></div>
+        <div class="field w-sm"><label for="lZero">Zero</label><input id="lZero" type="number" step="1" title="Zero distance, yards"></div>
       </div>
       <div class="row">
         <div class="field w-lg"><label for="lPowder">Powder</label><input id="lPowder" type="text" placeholder="e.g. H335"></div>
-        <div class="field w-sm"><label for="lCharge">Charge (gr)</label><input id="lCharge" type="number" step="0.1"></div>
+        <div class="field w-sm"><label for="lCharge">Charge</label><input id="lCharge" type="number" step="0.1" title="Powder charge, grains"></div>
       </div>
       <div class="row">
         <div class="field w-lg"><label for="lNotes">Notes</label><input id="lNotes" type="text"></div>
@@ -165,7 +176,7 @@
   <hr class="sep">
 
   <div class="row">
-    <div class="field w-sm"><label for="rangeInput">Distance (yd)</label><input id="rangeInput" type="number" inputmode="decimal" min="0" step="1" placeholder="400"></div>
+    <div class="field w-sm"><label for="rangeInput">Distance</label><input id="rangeInput" type="number" inputmode="decimal" min="0" step="1" placeholder="400" title="Target distance, yards"></div>
     <button id="solveBtn" class="primary">GET SOLUTION</button>
   </div>
   <div id="status"></div>
@@ -174,12 +185,12 @@
   <details id="condDetails">
     <summary>Conditions (optional)</summary>
     <div class="panel-body row">
-      <div class="field w-xs"><label>Temp (F)</label><input id="tempF" type="number" value="59"></div>
-      <div class="field w-sm"><label>Altitude (ft)</label><input id="altFt" type="number" value="0"></div>
-      <div class="field w-sm"><label>Pressure (inHg)</label><input id="pressInHg" type="number" step="0.01" placeholder="auto"></div>
-      <div class="field w-xs"><label>Humidity (%)</label><input id="humidPct" type="number" value="0"></div>
-      <div class="field w-xs"><label>Wind (mph)</label><input id="windMph" type="number" value="0"></div>
-      <div class="field w-xs"><label>Wind (o'clock)</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12"></div>
+      <div class="field w-xs"><label>Temp</label><input id="tempF" type="number" value="59" title="Temperature, degrees F"></div>
+      <div class="field w-sm"><label>Alt</label><input id="altFt" type="number" value="0" title="Altitude, feet"></div>
+      <div class="field w-sm"><label>Press</label><input id="pressInHg" type="number" step="0.01" placeholder="auto" title="Barometric pressure, inHg -- leave blank to estimate from altitude"></div>
+      <div class="field w-xs"><label>Humid</label><input id="humidPct" type="number" value="0" title="Relative humidity, %"></div>
+      <div class="field w-xs"><label>Wind</label><input id="windMph" type="number" value="0" title="Wind speed, mph"></div>
+      <div class="field w-xs"><label>Clock</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12" title="Wind direction: 12 = headwind, 3 = from the right, 9 = from the left"></div>
     </div>
   </details>
 
