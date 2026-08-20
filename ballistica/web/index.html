@@ -184,13 +184,17 @@
 
   <details id="condDetails">
     <summary>Conditions (optional)</summary>
-    <div class="panel-body row">
-      <div class="field w-xs"><label>Temp</label><input id="tempF" type="number" value="59" title="Temperature, degrees F"></div>
-      <div class="field w-sm"><label>Alt</label><input id="altFt" type="number" value="0" title="Altitude, feet"></div>
-      <div class="field w-sm"><label>Press</label><input id="pressInHg" type="number" step="0.01" placeholder="auto" title="Barometric pressure, inHg -- leave blank to estimate from altitude"></div>
-      <div class="field w-xs"><label>Humid</label><input id="humidPct" type="number" value="0" title="Relative humidity, %"></div>
-      <div class="field w-xs"><label>Wind</label><input id="windMph" type="number" value="0" title="Wind speed, mph"></div>
-      <div class="field w-xs"><label>Clock</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12" title="Wind direction: 12 = headwind, 3 = from the right, 9 = from the left"></div>
+    <div class="panel-body">
+      <div class="row">
+        <div class="field w-xs"><label>Temp</label><input id="tempF" type="number" value="59" title="Temperature, degrees F"></div>
+        <div class="field w-xs"><label>Humid</label><input id="humidPct" type="number" value="0" title="Relative humidity, %"></div>
+        <div class="field w-xs"><label>Wind</label><input id="windMph" type="number" value="0" title="Wind speed, mph"></div>
+      </div>
+      <div class="row">
+        <div class="field w-sm"><label>Alt</label><input id="altFt" type="number" value="0" title="Altitude, feet"></div>
+        <div class="field w-sm"><label>Press</label><input id="pressInHg" type="number" step="0.01" placeholder="auto" title="Barometric pressure, inHg -- leave blank to estimate from altitude"></div>
+        <div class="field w-xs"><label>Clock</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12" title="Wind direction: 12 = headwind, 3 = from the right, 9 = from the left"></div>
+      </div>
     </div>
   </details>
 
