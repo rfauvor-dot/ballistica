@@ -45,6 +45,7 @@ class Load:
     drag_model: str  # "G1" or "G7"
     muzzle_velocity_fps: float
     zero_distance_yd: float
+    bullet_type: str = ""  # e.g. "77gr Sierra MatchKing" -- descriptive, distinct from name
     powder: str = ""
     powder_charge_gr: float | None = None
     notes: str = ""
@@ -60,6 +61,7 @@ class Load:
 class Rifle:
     name: str
     scope_height_in: float
+    caliber: str = ""
     barrel_length_in: float | None = None
     twist_rate: str = ""
     click_value_mrad: float = 0.1
@@ -142,6 +144,16 @@ class ProfileStore:
         load = rifle.find_load(load_query)
         load.muzzle_velocity_fps = new_velocity_fps
         return load
+
+    def update_rifle_fields(self, rifle_query: str, **fields) -> Rifle:
+        """Updates rifle metadata (scope height, caliber, barrel length,
+        twist rate, click value) in place on an existing rifle."""
+        rifle = self.find_rifle(rifle_query)
+        for key, value in fields.items():
+            if not hasattr(rifle, key):
+                raise ValueError(f"Rifle has no field '{key}'")
+            setattr(rifle, key, value)
+        return rifle
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

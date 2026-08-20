@@ -101,6 +101,7 @@ class LoadIn(BaseModel):
     drag_model: str = Field(description="'G1' or 'G7'")
     muzzle_velocity_fps: float
     zero_distance_yd: float
+    bullet_type: str = ""
     powder: str = ""
     powder_charge_gr: float | None = None
     notes: str = ""
@@ -113,10 +114,20 @@ class LoadOut(LoadIn):
 class RifleIn(BaseModel):
     name: str
     scope_height_in: float
+    caliber: str = ""
     barrel_length_in: float | None = None
     twist_rate: str = ""
     click_value_mrad: float = 0.1
     loads: list[LoadIn] = []
+
+
+class RifleUpdate(BaseModel):
+    """Full replace of a rifle's editable metadata (not its loads)."""
+    scope_height_in: float
+    caliber: str = ""
+    barrel_length_in: float | None = None
+    twist_rate: str = ""
+    click_value_mrad: float = 0.1
 
 
 class RifleSummary(BaseModel):
@@ -128,6 +139,7 @@ class RifleSummary(BaseModel):
 class RifleDetail(BaseModel):
     name: str
     scope_height_in: float
+    caliber: str
     barrel_length_in: float | None
     twist_rate: str
     click_value_mrad: float
@@ -211,7 +223,7 @@ def _load_to_out(load: Load) -> LoadOut:
 
 def _rifle_to_detail(rifle: Rifle) -> RifleDetail:
     return RifleDetail(
-        name=rifle.name, scope_height_in=rifle.scope_height_in,
+        name=rifle.name, scope_height_in=rifle.scope_height_in, caliber=rifle.caliber,
         barrel_length_in=rifle.barrel_length_in, twist_rate=rifle.twist_rate,
         click_value_mrad=rifle.click_value_mrad, active_load_name=rifle.active_load_name,
         loads=[_load_to_out(load) for load in rifle.loads.values()],
@@ -262,8 +274,8 @@ def create_rifle(payload: RifleIn):
     try:
         rifle = Rifle(
             name=payload.name, scope_height_in=payload.scope_height_in,
-            barrel_length_in=payload.barrel_length_in, twist_rate=payload.twist_rate,
-            click_value_mrad=payload.click_value_mrad,
+            caliber=payload.caliber, barrel_length_in=payload.barrel_length_in,
+            twist_rate=payload.twist_rate, click_value_mrad=payload.click_value_mrad,
         )
         for i, load_in in enumerate(payload.loads):
             rifle.add_load(Load(**load_in.model_dump()), make_active=(i == 0))
@@ -277,6 +289,18 @@ def create_rifle(payload: RifleIn):
 @app.get("/rifles/{rifle_name}", response_model=RifleDetail)
 def get_rifle(rifle_name: str):
     rifle, _ = _resolve(rifle_name, None)
+    return _rifle_to_detail(rifle)
+
+
+@app.put("/rifles/{rifle_name}", response_model=RifleDetail)
+def update_rifle(rifle_name: str, payload: RifleUpdate):
+    """Full replace of a rifle's editable metadata, e.g. correcting
+    twist rate or scope height after the fact. Does not touch loads."""
+    try:
+        rifle = store.update_rifle_fields(rifle_name, **payload.model_dump())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    store.save()
     return _rifle_to_detail(rifle)
 
 

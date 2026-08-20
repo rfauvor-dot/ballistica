@@ -15,95 +15,173 @@
     --field-bg: #f4f4f4;
     --error-bg: #ffe4e1;
     --error-text: #8b0000;
+    --ok-bg: #eef7ee;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0;
     background: var(--bg); color: var(--text);
     font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    font-size: 18px;
+    font-size: 17px;
     -webkit-tap-highlight-color: transparent;
   }
-  body { padding: 16px 16px 48px; max-width: 640px; margin: 0 auto; }
-  h1 {
-    font-size: 28px; margin: 8px 0 20px; text-align: center; letter-spacing: 0.5px;
+  body { padding: 14px 14px 40px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 4px 0 14px; text-align: center; letter-spacing: 0.5px; }
+  h2 { font-size: 15px; margin: 4px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: flex-end; margin-bottom: 4px; }
+  .field { display: inline-flex; flex-direction: column; }
+  .field label {
+    font-weight: 700; font-size: 12px; color: var(--muted); margin-bottom: 3px;
+    text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
   }
-  label {
-    display: block; font-weight: 700; font-size: 16px; margin: 18px 0 6px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.5px;
+  input, select {
+    font-size: 18px; padding: 8px 8px; min-height: 42px;
+    border: 2px solid var(--line); border-radius: 8px; background: var(--field-bg); color: var(--text);
   }
-  select, input[type="number"] {
-    width: 100%; font-size: 24px; padding: 14px 12px; min-height: 60px;
-    border: 2px solid var(--line); border-radius: 10px; background: var(--field-bg); color: var(--text);
-    -webkit-appearance: none; appearance: none;
-  }
-  select:focus, input:focus { outline: 3px solid var(--accent); border-color: var(--accent); }
+  select { -webkit-appearance: none; appearance: none; }
+  input:focus, select:focus { outline: 3px solid var(--accent); border-color: var(--accent); }
+
+  /* content-sized field widths -- not uniform, sized to what each value actually holds */
+  .w-xs  { width: 4.5ch; }   /* temp, humidity, wind speed, wind clock, bullet weight, barrel length */
+  .w-sm  { width: 6.5ch; }   /* altitude, pressure, BC, velocity, zero, powder charge, click value, distance */
+  .w-md  { width: 10ch; }    /* twist rate, drag model */
+  .w-lg  { flex: 1 1 16ch; min-width: 14ch; } /* caliber, powder, bullet type, load name, notes */
+  .w-full { width: 100%; }
+
+  .field.w-lg { flex: 1 1 16ch; }
+  .field.w-full { width: 100%; flex-basis: 100%; }
 
   button {
-    width: 100%; font-size: 26px; font-weight: 700; padding: 20px;
-    min-height: 72px; margin-top: 26px;
-    background: var(--accent); color: var(--accent-text);
-    border: none; border-radius: 12px; letter-spacing: 0.5px;
+    font-size: 17px; font-weight: 700; padding: 10px 16px; min-height: 46px;
+    background: var(--field-bg); color: var(--text);
+    border: 2px solid var(--line); border-radius: 8px;
   }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.big { width: 100%; font-size: 22px; min-height: 58px; margin-top: 4px; }
   button:active { opacity: 0.85; }
-  button:disabled { opacity: 0.5; }
 
-  details { margin-top: 22px; border: 2px solid var(--line); border-radius: 10px; padding: 0; }
-  summary {
-    padding: 14px 16px; font-weight: 700; font-size: 18px; color: var(--muted);
-    cursor: pointer; list-style: none;
-  }
+  .rifle-header { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .rifle-header select { flex: 1; font-size: 20px; font-weight: 700; min-height: 52px; }
+  .rifle-header button { min-height: 52px; }
+
+  .load-header { display: flex; gap: 8px; align-items: center; margin: 14px 0 6px; }
+  .load-header select { flex: 1; font-size: 18px; min-height: 46px; }
+
+  details { margin-top: 10px; border: 2px solid var(--line); border-radius: 10px; }
+  summary { padding: 10px 14px; font-weight: 700; font-size: 15px; color: var(--muted); cursor: pointer; list-style: none; }
   summary::-webkit-details-marker { display: none; }
   summary::before { content: "\25B8  "; }
   details[open] summary::before { content: "\25BE  "; }
-  .cond-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; padding: 0 16px 16px; }
-  .cond-grid label { margin: 12px 0 4px; font-size: 13px; }
-  .cond-grid input { font-size: 18px; min-height: 48px; padding: 8px; }
+  .panel-body { padding: 4px 14px 14px; }
 
-  #error {
-    display: none; margin-top: 18px; padding: 14px 16px; border-radius: 10px;
-    background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 17px;
+  hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
+
+  #calcError, #rifleError, #loadError {
+    display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+    background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
+  }
+  #rifleOk, #loadOk {
+    display: none; margin-top: 10px; padding: 8px 12px; border-radius: 8px;
+    background: var(--ok-bg); color: #2a6b2a; font-weight: 600; font-size: 14px;
   }
 
-  #result { display: none; margin-top: 28px; }
-  .result-card {
-    border: 2px solid var(--text); border-radius: 14px; padding: 18px; margin-bottom: 14px;
-  }
-  .result-card .label { font-size: 15px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-  .result-card .big { font-size: 56px; font-weight: 800; line-height: 1.1; margin: 4px 0; }
-  .result-card .sub { font-size: 20px; color: var(--muted); }
-  .meta { text-align: center; color: var(--muted); font-size: 16px; margin-top: 10px; }
+  #result { display: none; margin-top: 20px; }
+  .result-card { border: 2px solid var(--text); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; }
+  .result-card .label { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .result-card .big { font-size: 46px; font-weight: 800; line-height: 1.1; margin: 2px 0; }
+  .result-card .sub { font-size: 17px; color: var(--muted); }
+  .meta { text-align: center; color: var(--muted); font-size: 15px; margin-top: 8px; }
 
-  #status { text-align: center; color: var(--muted); font-size: 15px; margin-top: 6px; min-height: 20px; }
+  #status { text-align: center; color: var(--muted); font-size: 14px; margin-top: 4px; min-height: 18px; }
 </style>
 </head>
 <body>
   <h1>BALLISTICA</h1>
 
-  <label for="rifleSelect">Rifle</label>
-  <select id="rifleSelect"></select>
+  <div class="rifle-header">
+    <select id="rifleSelect"></select>
+    <button id="newRifleBtn" title="New rifle">+ New</button>
+    <button id="editRifleBtn" title="Edit this rifle">Edit</button>
+  </div>
 
-  <label for="loadSelect">Load</label>
-  <select id="loadSelect"></select>
-
-  <label for="rangeInput">Distance (yards)</label>
-  <input id="rangeInput" type="number" inputmode="decimal" min="0" step="1" placeholder="e.g. 400">
-
-  <details id="condDetails">
-    <summary>Conditions (optional)</summary>
-    <div class="cond-grid">
-      <div><label>Temp (&deg;F)</label><input id="tempF" type="number" value="59"></div>
-      <div><label>Altitude (ft)</label><input id="altFt" type="number" value="0"></div>
-      <div><label>Pressure (inHg)</label><input id="pressInHg" type="number" step="0.01" placeholder="auto from altitude"></div>
-      <div><label>Humidity (%)</label><input id="humidPct" type="number" value="0"></div>
-      <div><label>Wind (mph)</label><input id="windMph" type="number" value="0"></div>
-      <div><label>Wind (o'clock)</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12"></div>
+  <details id="rifleDetails">
+    <summary>Rifle setup</summary>
+    <div class="panel-body">
+      <div class="field w-full">
+        <label for="rName">Gun name</label>
+        <input id="rName" type="text" placeholder="e.g. AR-15 20in Faxon">
+      </div>
+      <div class="row">
+        <div class="field w-md"><label for="rCaliber">Caliber</label><input id="rCaliber" type="text" placeholder="e.g. .223 Wylde"></div>
+        <div class="field w-xs"><label for="rBarrel">Barrel (in)</label><input id="rBarrel" type="number" step="0.1"></div>
+        <div class="field w-md"><label for="rTwist">Twist rate</label><input id="rTwist" type="text" placeholder="e.g. 1:7"></div>
+        <div class="field w-sm"><label for="rScope">Scope ht (in)</label><input id="rScope" type="number" step="0.1"></div>
+        <div class="field w-sm"><label for="rClick">Click (mrad)</label><input id="rClick" type="number" step="0.01" value="0.1"></div>
+      </div>
+      <button id="saveRifleBtn" class="primary">Save rifle</button>
+      <div id="rifleOk"></div>
+      <div id="rifleError"></div>
     </div>
   </details>
 
-  <button id="solveBtn">GET SOLUTION</button>
+  <div class="load-header">
+    <select id="loadSelect"></select>
+    <button id="newLoadBtn" title="New load">+ New</button>
+  </div>
+
+  <details id="loadDetails">
+    <summary>Load setup</summary>
+    <div class="panel-body">
+      <div class="row">
+        <div class="field w-lg"><label for="lName">Load name</label><input id="lName" type="text" placeholder="e.g. 23.5gr H335"></div>
+      </div>
+      <div class="row">
+        <div class="field w-lg"><label for="lBulletType">Bullet type</label><input id="lBulletType" type="text" placeholder="e.g. 77gr Sierra MatchKing"></div>
+        <div class="field w-xs"><label for="lBulletWt">Wt (gr)</label><input id="lBulletWt" type="number" step="1"></div>
+      </div>
+      <div class="row">
+        <div class="field w-sm"><label for="lBC">BC</label><input id="lBC" type="number" step="0.001" placeholder="e.g. 0.362"></div>
+        <div class="field w-md">
+          <label for="lDragModel">Drag model</label>
+          <select id="lDragModel"><option value="G1">G1</option><option value="G7">G7</option></select>
+        </div>
+        <div class="field w-sm"><label for="lMV">MV (fps)</label><input id="lMV" type="number" step="1"></div>
+        <div class="field w-sm"><label for="lZero">Zero (yd)</label><input id="lZero" type="number" step="1"></div>
+      </div>
+      <div class="row">
+        <div class="field w-lg"><label for="lPowder">Powder</label><input id="lPowder" type="text" placeholder="e.g. H335"></div>
+        <div class="field w-sm"><label for="lCharge">Charge (gr)</label><input id="lCharge" type="number" step="0.1"></div>
+      </div>
+      <div class="row">
+        <div class="field w-lg"><label for="lNotes">Notes</label><input id="lNotes" type="text"></div>
+      </div>
+      <button id="saveLoadBtn" class="primary">Save load</button>
+      <div id="loadOk"></div>
+      <div id="loadError"></div>
+    </div>
+  </details>
+
+  <hr class="sep">
+
+  <div class="row">
+    <div class="field w-sm"><label for="rangeInput">Distance (yd)</label><input id="rangeInput" type="number" inputmode="decimal" min="0" step="1" placeholder="400"></div>
+    <button id="solveBtn" class="primary">GET SOLUTION</button>
+  </div>
   <div id="status"></div>
-  <div id="error"></div>
+  <div id="calcError"></div>
+
+  <details id="condDetails">
+    <summary>Conditions (optional)</summary>
+    <div class="panel-body row">
+      <div class="field w-xs"><label>Temp (F)</label><input id="tempF" type="number" value="59"></div>
+      <div class="field w-sm"><label>Altitude (ft)</label><input id="altFt" type="number" value="0"></div>
+      <div class="field w-sm"><label>Pressure (inHg)</label><input id="pressInHg" type="number" step="0.01" placeholder="auto"></div>
+      <div class="field w-xs"><label>Humidity (%)</label><input id="humidPct" type="number" value="0"></div>
+      <div class="field w-xs"><label>Wind (mph)</label><input id="windMph" type="number" value="0"></div>
+      <div class="field w-xs"><label>Wind (o'clock)</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12"></div>
+    </div>
+  </details>
 
   <div id="result">
     <div class="result-card">
@@ -125,20 +203,20 @@ const loadSelect = document.getElementById('loadSelect');
 const rangeInput = document.getElementById('rangeInput');
 const solveBtn = document.getElementById('solveBtn');
 const statusEl = document.getElementById('status');
-const errorEl = document.getElementById('error');
+const calcError = document.getElementById('calcError');
 const resultEl = document.getElementById('result');
+const rifleDetails = document.getElementById('rifleDetails');
+const loadDetails = document.getElementById('loadDetails');
 
-function showError(msg) {
-  errorEl.textContent = msg;
-  errorEl.style.display = 'block';
-  resultEl.style.display = 'none';
+let currentRifleDetail = null;
+
+function flash(el, msg, ms) {
+  el.textContent = msg;
+  el.style.display = 'block';
+  if (ms) setTimeout(() => { el.style.display = 'none'; }, ms);
 }
-function clearError() {
-  errorEl.style.display = 'none';
-}
-function setStatus(msg) {
-  statusEl.textContent = msg;
-}
+function hide(el) { el.style.display = 'none'; }
+function setStatus(msg) { statusEl.textContent = msg; }
 
 async function api(path, options) {
   let res;
@@ -156,50 +234,170 @@ async function api(path, options) {
   return body;
 }
 
-async function loadRifles() {
+async function loadRifles(selectName) {
   setStatus('Loading rifles...');
   try {
     const rifles = await api('/rifles');
     if (!rifles.length) {
-      showError('No rifle profiles found on the server yet.');
+      rifleSelect.innerHTML = '<option value="">(none yet)</option>';
+      openRifleFormBlank();
       setStatus('');
       return;
     }
     rifleSelect.innerHTML = rifles.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
-    await loadRifleDetail(rifles[0].name);
+    if (selectName) rifleSelect.value = selectName;
+    await loadRifleDetail(rifleSelect.value);
   } catch (e) {
-    showError('Could not reach Ballistica: ' + e.message);
+    flash(calcError, 'Could not reach Ballistica: ' + e.message);
   }
   setStatus('');
 }
 
 async function loadRifleDetail(name) {
-  const detail = await api('/rifles/' + encodeURIComponent(name));
-  loadSelect.innerHTML = detail.loads.map(l =>
-    `<option value="${l.name}" ${l.name === detail.active_load_name ? 'selected' : ''}>${l.name}</option>`
+  currentRifleDetail = await api('/rifles/' + encodeURIComponent(name));
+  loadSelect.innerHTML = currentRifleDetail.loads.map(l =>
+    `<option value="${l.name}" ${l.name === currentRifleDetail.active_load_name ? 'selected' : ''}>${l.name}</option>`
   ).join('');
+  fillRifleForm(currentRifleDetail);
+  if (currentRifleDetail.loads.length) {
+    fillLoadForm(currentRifleDetail.loads.find(l => l.name === loadSelect.value) || currentRifleDetail.loads[0]);
+  } else {
+    openLoadFormBlank();
+  }
+}
+
+function fillRifleForm(r) {
+  document.getElementById('rName').value = r.name;
+  document.getElementById('rCaliber').value = r.caliber;
+  document.getElementById('rBarrel').value = r.barrel_length_in ?? '';
+  document.getElementById('rTwist').value = r.twist_rate;
+  document.getElementById('rScope').value = r.scope_height_in;
+  document.getElementById('rClick').value = r.click_value_mrad;
+}
+function openRifleFormBlank() {
+  document.getElementById('rName').value = '';
+  document.getElementById('rCaliber').value = '';
+  document.getElementById('rBarrel').value = '';
+  document.getElementById('rTwist').value = '';
+  document.getElementById('rScope').value = '';
+  document.getElementById('rClick').value = '0.1';
+  rifleDetails.open = true;
+}
+
+function fillLoadForm(l) {
+  document.getElementById('lName').value = l.name;
+  document.getElementById('lBulletType').value = l.bullet_type || '';
+  document.getElementById('lBulletWt').value = l.bullet_weight_gr;
+  document.getElementById('lBC').value = l.bc;
+  document.getElementById('lDragModel').value = l.drag_model;
+  document.getElementById('lMV').value = l.muzzle_velocity_fps;
+  document.getElementById('lZero').value = l.zero_distance_yd;
+  document.getElementById('lPowder').value = l.powder || '';
+  document.getElementById('lCharge').value = l.powder_charge_gr ?? '';
+  document.getElementById('lNotes').value = l.notes || '';
+}
+function openLoadFormBlank() {
+  ['lName','lBulletType','lBulletWt','lBC','lMV','lZero','lPowder','lCharge','lNotes'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('lDragModel').value = 'G1';
+  loadDetails.open = true;
 }
 
 rifleSelect.addEventListener('change', async () => {
-  clearError();
+  hide(document.getElementById('calcError'));
   try {
     await loadRifleDetail(rifleSelect.value);
   } catch (e) {
-    showError('Could not load that rifle: ' + e.message);
+    flash(calcError, 'Could not load that rifle: ' + e.message);
   }
 });
 
+document.getElementById('newRifleBtn').addEventListener('click', () => {
+  openRifleFormBlank();
+  document.getElementById('rName').focus();
+});
+document.getElementById('editRifleBtn').addEventListener('click', () => {
+  if (currentRifleDetail) fillRifleForm(currentRifleDetail);
+  rifleDetails.open = true;
+});
+document.getElementById('newLoadBtn').addEventListener('click', () => {
+  openLoadFormBlank();
+  document.getElementById('lName').focus();
+});
+
+document.getElementById('saveRifleBtn').addEventListener('click', async () => {
+  hide(document.getElementById('rifleError'));
+  const name = document.getElementById('rName').value.trim();
+  if (!name) { flash(document.getElementById('rifleError'), 'Gun name is required.'); return; }
+  const isNew = !currentRifleDetail || currentRifleDetail.name !== name;
+  const meta = {
+    scope_height_in: parseFloat(document.getElementById('rScope').value) || 0,
+    caliber: document.getElementById('rCaliber').value.trim(),
+    barrel_length_in: document.getElementById('rBarrel').value === '' ? null : parseFloat(document.getElementById('rBarrel').value),
+    twist_rate: document.getElementById('rTwist').value.trim(),
+    click_value_mrad: parseFloat(document.getElementById('rClick').value) || 0.1,
+  };
+  try {
+    if (isNew) {
+      await api('/rifles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, ...meta, loads: [] }),
+      });
+    } else {
+      await api('/rifles/' + encodeURIComponent(name), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(meta),
+      });
+    }
+    flash(document.getElementById('rifleOk'), 'Saved.', 2000);
+    await loadRifles(name);
+  } catch (e) {
+    flash(document.getElementById('rifleError'), e.message);
+  }
+});
+
+document.getElementById('saveLoadBtn').addEventListener('click', async () => {
+  hide(document.getElementById('loadError'));
+  if (!currentRifleDetail) { flash(document.getElementById('loadError'), 'Save a rifle first.'); return; }
+  const name = document.getElementById('lName').value.trim();
+  if (!name) { flash(document.getElementById('loadError'), 'Load name is required.'); return; }
+  const payload = {
+    name,
+    bullet_type: document.getElementById('lBulletType').value.trim(),
+    bullet_weight_gr: parseFloat(document.getElementById('lBulletWt').value) || 0,
+    bc: parseFloat(document.getElementById('lBC').value) || 0,
+    drag_model: document.getElementById('lDragModel').value,
+    muzzle_velocity_fps: parseFloat(document.getElementById('lMV').value) || 0,
+    zero_distance_yd: parseFloat(document.getElementById('lZero').value) || 0,
+    powder: document.getElementById('lPowder').value.trim(),
+    powder_charge_gr: document.getElementById('lCharge').value === '' ? null : parseFloat(document.getElementById('lCharge').value),
+    notes: document.getElementById('lNotes').value.trim(),
+  };
+  try {
+    await api('/rifles/' + encodeURIComponent(currentRifleDetail.name) + '/loads', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    flash(document.getElementById('loadOk'), 'Saved.', 2000);
+    await loadRifleDetail(currentRifleDetail.name);
+    loadSelect.value = name;
+  } catch (e) {
+    flash(document.getElementById('loadError'), e.message);
+  }
+});
+
+loadSelect.addEventListener('change', () => {
+  if (!currentRifleDetail) return;
+  const l = currentRifleDetail.loads.find(l => l.name === loadSelect.value);
+  if (l) fillLoadForm(l);
+});
+
 solveBtn.addEventListener('click', async () => {
-  clearError();
+  hide(calcError);
   const range = parseFloat(rangeInput.value);
-  if (!range || range <= 0) {
-    showError('Enter a distance in yards.');
-    return;
-  }
-  if (!rifleSelect.value || !loadSelect.value) {
-    showError('Select a rifle and load first.');
-    return;
-  }
+  if (!range || range <= 0) { flash(calcError, 'Enter a distance in yards.'); return; }
+  if (!rifleSelect.value || !loadSelect.value) { flash(calcError, 'Select a rifle and load first.'); return; }
   solveBtn.disabled = true;
   setStatus('Calculating...');
   try {
@@ -211,8 +409,6 @@ solveBtn.addEventListener('click', async () => {
       atmosphere: {
         temp_f: parseFloat(document.getElementById('tempF').value) || 59,
         altitude_ft: parseFloat(document.getElementById('altFt').value) || 0,
-        // Left blank -> server estimates pressure from altitude instead
-        // of silently assuming sea level regardless of what altitude says.
         pressure_inhg: pressRaw === '' ? null : parseFloat(pressRaw),
         humidity_pct: parseFloat(document.getElementById('humidPct').value) || 0,
       },
@@ -236,7 +432,7 @@ solveBtn.addEventListener('click', async () => {
       r.velocity_fps.toFixed(0) + ' fps at ' + r.range_yd.toFixed(0) + ' yd (Mach ' + r.mach.toFixed(2) + ')';
     resultEl.style.display = 'block';
   } catch (e) {
-    showError(e.message);
+    flash(calcError, e.message);
   }
   solveBtn.disabled = false;
   setStatus('');

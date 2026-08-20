@@ -55,19 +55,22 @@ def bootstrap_default_profile(store: ProfileStore) -> None:
     rifle = Rifle(
         name="AR-15 20in Faxon",
         scope_height_in=2.5,
+        caliber=".223 Wylde",
         barrel_length_in=20.0,
         twist_rate="1:7",
         click_value_mrad=0.1,
     )
     rifle.add_load(Load(
         name="21.0gr H335", bullet_weight_gr=77, bc=0.362, drag_model="G1",
-        muzzle_velocity_fps=2422, zero_distance_yd=36, powder="H335",
+        muzzle_velocity_fps=2422, zero_distance_yd=36,
+        bullet_type="77gr Sierra MatchKing (SMK)", powder="H335",
         powder_charge_gr=21.0,
         notes="Sierra book BC (G1, 1700-3000fps band); velocity is a book estimate pending chrono data",
     ), make_active=False)
     rifle.add_load(Load(
         name="23.5gr H335", bullet_weight_gr=77, bc=0.362, drag_model="G1",
-        muzzle_velocity_fps=2766, zero_distance_yd=36, powder="H335",
+        muzzle_velocity_fps=2766, zero_distance_yd=36,
+        bullet_type="77gr Sierra MatchKing (SMK)", powder="H335",
         powder_charge_gr=23.5,
         notes="Sierra book BC (G1, 1700-3000fps band); pending pressure verification",
     ), make_active=True)
