@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Ballistica</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --text: #111111;
+    --muted: #555555;
+    --line: #cccccc;
+    --accent: #c1440e;
+    --accent-text: #ffffff;
+    --field-bg: #f4f4f4;
+    --error-bg: #ffe4e1;
+    --error-text: #8b0000;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 18px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body { padding: 16px 16px 48px; max-width: 640px; margin: 0 auto; }
+  h1 {
+    font-size: 28px; margin: 8px 0 20px; text-align: center; letter-spacing: 0.5px;
+  }
+  label {
+    display: block; font-weight: 700; font-size: 16px; margin: 18px 0 6px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  select, input[type="number"] {
+    width: 100%; font-size: 24px; padding: 14px 12px; min-height: 60px;
+    border: 2px solid var(--line); border-radius: 10px; background: var(--field-bg); color: var(--text);
+    -webkit-appearance: none; appearance: none;
+  }
+  select:focus, input:focus { outline: 3px solid var(--accent); border-color: var(--accent); }
+
+  button {
+    width: 100%; font-size: 26px; font-weight: 700; padding: 20px;
+    min-height: 72px; margin-top: 26px;
+    background: var(--accent); color: var(--accent-text);
+    border: none; border-radius: 12px; letter-spacing: 0.5px;
+  }
+  button:active { opacity: 0.85; }
+  button:disabled { opacity: 0.5; }
+
+  details { margin-top: 22px; border: 2px solid var(--line); border-radius: 10px; padding: 0; }
+  summary {
+    padding: 14px 16px; font-weight: 700; font-size: 18px; color: var(--muted);
+    cursor: pointer; list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "\25B8  "; }
+  details[open] summary::before { content: "\25BE  "; }
+  .cond-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; padding: 0 16px 16px; }
+  .cond-grid label { margin: 12px 0 4px; font-size: 13px; }
+  .cond-grid input { font-size: 18px; min-height: 48px; padding: 8px; }
+
+  #error {
+    display: none; margin-top: 18px; padding: 14px 16px; border-radius: 10px;
+    background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 17px;
+  }
+
+  #result { display: none; margin-top: 28px; }
+  .result-card {
+    border: 2px solid var(--text); border-radius: 14px; padding: 18px; margin-bottom: 14px;
+  }
+  .result-card .label { font-size: 15px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .result-card .big { font-size: 56px; font-weight: 800; line-height: 1.1; margin: 4px 0; }
+  .result-card .sub { font-size: 20px; color: var(--muted); }
+  .meta { text-align: center; color: var(--muted); font-size: 16px; margin-top: 10px; }
+
+  #status { text-align: center; color: var(--muted); font-size: 15px; margin-top: 6px; min-height: 20px; }
+</style>
+</head>
+<body>
+  <h1>BALLISTICA</h1>
+
+  <label for="rifleSelect">Rifle</label>
+  <select id="rifleSelect"></select>
+
+  <label for="loadSelect">Load</label>
+  <select id="loadSelect"></select>
+
+  <label for="rangeInput">Distance (yards)</label>
+  <input id="rangeInput" type="number" inputmode="decimal" min="0" step="1" placeholder="e.g. 400">
+
+  <details id="condDetails">
+    <summary>Conditions (optional)</summary>
+    <div class="cond-grid">
+      <div><label>Temp (&deg;F)</label><input id="tempF" type="number" value="59"></div>
+      <div><label>Altitude (ft)</label><input id="altFt" type="number" value="0"></div>
+      <div><label>Pressure (inHg)</label><input id="pressInHg" type="number" step="0.01" value="29.92"></div>
+      <div><label>Humidity (%)</label><input id="humidPct" type="number" value="0"></div>
+      <div><label>Wind (mph)</label><input id="windMph" type="number" value="0"></div>
+      <div><label>Wind (o'clock)</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12"></div>
+    </div>
+  </details>
+
+  <button id="solveBtn">GET SOLUTION</button>
+  <div id="status"></div>
+  <div id="error"></div>
+
+  <div id="result">
+    <div class="result-card">
+      <div class="label">Drop (dial/hold up)</div>
+      <div class="big" id="dropIn">--</div>
+      <div class="sub" id="dropSub">--</div>
+    </div>
+    <div class="result-card">
+      <div class="label">Windage</div>
+      <div class="big" id="windIn">--</div>
+      <div class="sub" id="windSub">--</div>
+    </div>
+    <div class="meta" id="velMeta"></div>
+  </div>
+
+<script>
+const rifleSelect = document.getElementById('rifleSelect');
+const loadSelect = document.getElementById('loadSelect');
+const rangeInput = document.getElementById('rangeInput');
+const solveBtn = document.getElementById('solveBtn');
+const statusEl = document.getElementById('status');
+const errorEl = document.getElementById('error');
+const resultEl = document.getElementById('result');
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = 'block';
+  resultEl.style.display = 'none';
+}
+function clearError() {
+  errorEl.style.display = 'none';
+}
+function setStatus(msg) {
+  statusEl.textContent = msg;
+}
+
+async function api(path, options) {
+  let res;
+  try {
+    res = await fetch(path, options);
+  } catch (e) {
+    throw new Error('Network error -- check the connection and try again.');
+  }
+  let body;
+  try { body = await res.json(); } catch (e) { body = null; }
+  if (!res.ok) {
+    const detail = body && body.detail ? body.detail : `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return body;
+}
+
+async function loadRifles() {
+  setStatus('Loading rifles...');
+  try {
+    const rifles = await api('/rifles');
+    if (!rifles.length) {
+      showError('No rifle profiles found on the server yet.');
+      setStatus('');
+      return;
+    }
+    rifleSelect.innerHTML = rifles.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
+    await loadRifleDetail(rifles[0].name);
+  } catch (e) {
+    showError('Could not reach Ballistica: ' + e.message);
+  }
+  setStatus('');
+}
+
+async function loadRifleDetail(name) {
+  const detail = await api('/rifles/' + encodeURIComponent(name));
+  loadSelect.innerHTML = detail.loads.map(l =>
+    `<option value="${l.name}" ${l.name === detail.active_load_name ? 'selected' : ''}>${l.name}</option>`
+  ).join('');
+}
+
+rifleSelect.addEventListener('change', async () => {
+  clearError();
+  try {
+    await loadRifleDetail(rifleSelect.value);
+  } catch (e) {
+    showError('Could not load that rifle: ' + e.message);
+  }
+});
+
+solveBtn.addEventListener('click', async () => {
+  clearError();
+  const range = parseFloat(rangeInput.value);
+  if (!range || range <= 0) {
+    showError('Enter a distance in yards.');
+    return;
+  }
+  if (!rifleSelect.value || !loadSelect.value) {
+    showError('Select a rifle and load first.');
+    return;
+  }
+  solveBtn.disabled = true;
+  setStatus('Calculating...');
+  try {
+    const payload = {
+      range_yd: range,
+      rifle: rifleSelect.value,
+      load: loadSelect.value,
+      atmosphere: {
+        temp_f: parseFloat(document.getElementById('tempF').value) || 59,
+        altitude_ft: parseFloat(document.getElementById('altFt').value) || 0,
+        pressure_inhg: parseFloat(document.getElementById('pressInHg').value) || 29.92,
+        humidity_pct: parseFloat(document.getElementById('humidPct').value) || 0,
+      },
+      wind: {
+        speed_mph: parseFloat(document.getElementById('windMph').value) || 0,
+        clock_deg: (parseFloat(document.getElementById('windClock').value) || 0) * 30,
+      },
+    };
+    const r = await api('/calc/drop-at-range', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    document.getElementById('dropIn').textContent = r.drop_in.toFixed(1) + ' in';
+    document.getElementById('dropSub').textContent =
+      r.drop_mrad.toFixed(2) + ' mrad  /  ' + r.drop_clicks.toFixed(1) + ' clicks';
+    document.getElementById('windIn').textContent = r.windage_in.toFixed(1) + ' in';
+    document.getElementById('windSub').textContent =
+      r.windage_mrad.toFixed(2) + ' mrad  /  ' + r.windage_clicks.toFixed(1) + ' clicks';
+    document.getElementById('velMeta').textContent =
+      r.velocity_fps.toFixed(0) + ' fps at ' + r.range_yd.toFixed(0) + ' yd (Mach ' + r.mach.toFixed(2) + ')';
+    resultEl.style.display = 'block';
+  } catch (e) {
+    showError(e.message);
+  }
+  solveBtn.disabled = false;
+  setStatus('');
+});
+
+loadRifles();
+</script>
+</body>
+</html>
