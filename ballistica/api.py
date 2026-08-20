@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
+from .cli import bootstrap_default_profile
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -39,6 +40,14 @@ app.add_middleware(
 )
 
 store = ProfileStore()
+if not store.rifles:
+    # Render's free tier has no persistent disk -- data/profiles.json
+    # (correctly gitignored, since it's local runtime data, not source)
+    # won't exist on a fresh container, and won't survive a redeploy
+    # even if written at runtime. Falling back to the same bootstrap
+    # profile the CLI uses on first run, so the deployed app is never
+    # stuck with an empty rifle list.
+    bootstrap_default_profile(store)
 
 _WEB_INDEX = Path(__file__).resolve().parent / "web" / "index.html"
 
