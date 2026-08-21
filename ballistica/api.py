@@ -32,7 +32,8 @@ import httpx2
 import openai
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .angle import solve_incline_angle
@@ -72,12 +73,20 @@ if not store.rifles:
 # already relies on (it's this exact class).
 voice_cli = BallisticaCLI(store)
 
-_WEB_INDEX = Path(__file__).resolve().parent / "web" / "index.html"
+_WEB_DIR = Path(__file__).resolve().parent / "web"
+_WEB_INDEX = _WEB_DIR / "index.html"
+
+app.mount("/icons", StaticFiles(directory=_WEB_DIR / "icons"), name="icons")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def web_ui():
     return _WEB_INDEX.read_text(encoding="utf-8")
+
+
+@app.get("/manifest.json", include_in_schema=False)
+def web_manifest():
+    return FileResponse(_WEB_DIR / "manifest.json", media_type="application/manifest+json")
 
 
 # ---------------------------------------------------------------- schemas
