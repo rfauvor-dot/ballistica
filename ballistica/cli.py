@@ -159,7 +159,10 @@ class BallisticaCLI:
                 temp_f=float(m.group(1)), pressure_inhg=float(m.group(2)),
                 altitude_ft=float(m.group(3)), humidity_pct=float(m.group(4)),
             )
-            return f"Conditions set: {self.atmosphere}"
+            return (f"Conditions set: {self.atmosphere.temp_f:.0f} degrees, "
+                    f"{self.atmosphere.pressure_inhg:.2f} inches mercury, "
+                    f"{self.atmosphere.humidity_pct:.0f} percent humidity, "
+                    f"{self.atmosphere.altitude_ft:.0f} feet.")
 
         m = re.search(r"set wind ([\d.]+)\s*mph from ([\d.]+)\s*o.?clock", low)
         if m:

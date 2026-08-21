@@ -164,3 +164,53 @@ def test_profile_store_roundtrip_and_fuzzy_switching(tmp_path):
 
     reloaded_again = ProfileStore(path)
     assert reloaded_again.find_rifle("faxon").find_load("21.0").muzzle_velocity_fps == 2450
+
+
+def test_voice_query_conversation_state_and_error_handling():
+    """/voice/query is the seam a future STT->this->TTS loop calls. It
+    deliberately keeps conversation state across calls (switching load,
+    setting conditions) unlike the stateless /calc/* endpoints -- pins
+    that continuity, plus that "quit" and a nonsense utterance both
+    come back as spoken-safe text instead of ever 500ing, and that the
+    "set conditions" reply doesn't leak a raw Python object repr into
+    what's meant to be read aloud by TTS (regression: it used to)."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from ballistica.cli import bootstrap_default_profile
+    from ballistica.trajectory import WindCondition
+    from fastapi.testclient import TestClient
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+    bootstrap_default_profile(api_module.store)
+    api_module.voice_cli.atmosphere = STANDARD_ATMOSPHERE
+    api_module.voice_cli.wind = WindCondition()
+
+    client = TestClient(api_module.app)
+
+    r = client.post("/voice/query", json={"text": "switch to 21.0gr"})
+    assert r.status_code == 200
+    assert "21.0gr" in r.json()["reply"]
+
+    baseline = client.post("/voice/query", json={"text": "what's my drop at 500 yards"}).json()["reply"]
+
+    r = client.post("/voice/query", json={
+        "text": "set conditions temp 90 pressure 26.5 altitude 3500 humidity 40",
+    })
+    reply = r.json()["reply"]
+    assert "AtmosphereConditions" not in reply
+    assert "90 degrees" in reply
+
+    after = client.post("/voice/query", json={"text": "what's my drop at 500 yards"}).json()["reply"]
+    assert after != baseline
+
+    r = client.post("/voice/query", json={"text": "quit"})
+    assert r.status_code == 200
+    assert "session" in r.json()["reply"].lower()
+
+    r = client.post("/voice/query", json={"text": "gibberish nonsense query"})
+    assert r.status_code == 200

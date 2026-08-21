@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE, pressure_at_altitude_inhg
-from .cli import bootstrap_default_profile
+from .cli import BallisticaCLI, bootstrap_default_profile
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -48,6 +48,17 @@ if not store.rifles:
     # profile the CLI uses on first run, so the deployed app is never
     # stuck with an empty rifle list.
     bootstrap_default_profile(store)
+
+# One shared voice session for the whole server, deliberately -- unlike
+# the /calc/* endpoints (which take atmosphere/wind per-request so
+# concurrent phone+web clients can't race on shared state), a voice
+# conversation genuinely needs continuity: "it's about 90 out, wind 5
+# from the west" said once should still apply when you ask for a drop
+# a minute later. This is a personal single-user tool used by one
+# person at a time in the field, so one shared conversation state is
+# the right call here, not a bug -- same reasoning the CLI itself
+# already relies on (it's this exact class).
+voice_cli = BallisticaCLI(store)
 
 _WEB_INDEX = Path(__file__).resolve().parent / "web" / "index.html"
 
@@ -208,6 +219,14 @@ class AngleResultOut(BaseModel):
     corrected_holdover_clicks: float
 
 
+class VoiceQueryIn(BaseModel):
+    text: str = Field(description="Transcribed speech, e.g. \"what's my drop at 500 yards\"")
+
+
+class VoiceQueryOut(BaseModel):
+    reply: str = Field(description="Text meant to be spoken back via TTS -- terse and numeric by design")
+
+
 # ------------------------------------------------------------------ helpers
 
 def _msg(exc: Exception) -> str:
@@ -356,6 +375,28 @@ def status():
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=_msg(exc))
     return {"rifle": _rifle_to_detail(rifle), "active_load": _load_to_out(load)}
+
+
+@app.post("/voice/query", response_model=VoiceQueryOut)
+def voice_query(payload: VoiceQueryIn):
+    """The one seam a future STT->this->TTS voice loop needs: transcribed
+    text in, spoken-back text out. Reuses BallisticaCLI.handle() verbatim
+    so voice and the text CLI understand queries identically -- no second
+    copy of the "what did they actually ask for" parsing logic to drift
+    out of sync with the first."""
+    try:
+        reply = voice_cli.handle(payload.text)
+    except SystemExit:
+        # handle() raises this for "quit"/"exit" in the REPL, where it's
+        # correct -- exiting the process. Here there is no process-per-
+        # conversation to exit, just acknowledge and keep the server up.
+        reply = "Ending session."
+    except (KeyError, ValueError) as exc:
+        # A handler hit a real error (e.g. unreachable angle-solve
+        # inputs) -- speak it back rather than surfacing a raw 500 to
+        # whatever's about to pipe this through TTS.
+        reply = _msg(exc)
+    return VoiceQueryOut(reply=reply or "Didn't catch that.")
 
 
 @app.post("/calc/drop-at-range", response_model=RangeReportOut)
