@@ -203,9 +203,26 @@ class BallisticaCLI:
         solver, rifle, load = self.solver()
         point = solver.at_range(load.zero_distance_yd, range_yd)
         r = report_for_point(point, rifle.click_value_mrad)
-        return (f"Solution locked, {r.range_yd:.0f} yards. "
-                f"Drop {r.drop_in:.1f} inches, {r.drop_mrad:.2f} mils, {r.drop_clicks:.1f} clicks. "
-                f"Windage {r.windage_in:.1f} inches. Velocity {r.velocity_fps:.0f} feet per second. Confirmed.")
+
+        # Speak in whatever unit the rifle's own turrets/reticle actually
+        # use -- not inches, not clicks, not "give three numbers and let
+        # the shooter do the conversion in their head at the line." Rick's
+        # feedback after the first live wake-word test: too much at once,
+        # wrong units for what he actually dials.
+        if rifle.reticle_unit == "MOA":
+            elev_val, wind_val, unit_word = r.drop_moa, r.windage_moa, "M O A"
+        else:
+            elev_val, wind_val, unit_word = r.drop_mrad, r.windage_mrad, "mils"
+
+        elev_dir = "up" if elev_val >= 0 else "down"
+        wind_dir = "left" if wind_val >= 0 else "right"
+
+        # Two full sentences, not one comma-separated run-on: the period
+        # gives TTS a natural pause between elevation and windage instead
+        # of both numbers running together.
+        return (f"Solution, {r.range_yd:.0f} yards. "
+                f"Elevation, {elev_dir} {abs(elev_val):.1f} {unit_word}. "
+                f"Windage, {wind_dir} {abs(wind_val):.1f} {unit_word}.")
 
     def _table(self, max_range_yd: float, step_yd: float) -> str:
         solver, rifle, load = self.solver()

@@ -150,6 +150,7 @@ class RifleIn(BaseModel):
     barrel_length_in: float | None = None
     twist_rate: str = ""
     click_value_mrad: float = 0.1
+    reticle_unit: str = Field("MRAD", description="'MRAD' or 'MOA' -- which unit the scope's turrets use")
     loads: list[LoadIn] = []
 
 
@@ -160,6 +161,7 @@ class RifleUpdate(BaseModel):
     barrel_length_in: float | None = None
     twist_rate: str = ""
     click_value_mrad: float = 0.1
+    reticle_unit: str = "MRAD"
 
 
 class RifleSummary(BaseModel):
@@ -175,6 +177,7 @@ class RifleDetail(BaseModel):
     barrel_length_in: float | None
     twist_rate: str
     click_value_mrad: float
+    reticle_unit: str
     active_load_name: str | None
     loads: list[LoadOut]
 
@@ -255,6 +258,11 @@ class VoiceSpeakIn(BaseModel):
                                 "samples of all 9 stock voices on the actual reply phrasing -- "
                                 "not a guess, don't second-guess it without asking first.",
     )
+    speed: float = Field(
+        0.9, ge=0.25, le=4.0,
+        description="OpenAI TTS speed multiplier. Default slowed from the API's own 1.0 default "
+                    "after live feedback that full-speed replies were hard to follow at the range.",
+    )
 
 
 # ------------------------------------------------------------------ helpers
@@ -302,7 +310,8 @@ def _rifle_to_detail(rifle: Rifle) -> RifleDetail:
     return RifleDetail(
         name=rifle.name, scope_height_in=rifle.scope_height_in, caliber=rifle.caliber,
         barrel_length_in=rifle.barrel_length_in, twist_rate=rifle.twist_rate,
-        click_value_mrad=rifle.click_value_mrad, active_load_name=rifle.active_load_name,
+        click_value_mrad=rifle.click_value_mrad, reticle_unit=rifle.reticle_unit,
+        active_load_name=rifle.active_load_name,
         loads=[_load_to_out(load) for load in rifle.loads.values()],
     )
 
@@ -353,6 +362,7 @@ def create_rifle(payload: RifleIn):
             name=payload.name, scope_height_in=payload.scope_height_in,
             caliber=payload.caliber, barrel_length_in=payload.barrel_length_in,
             twist_rate=payload.twist_rate, click_value_mrad=payload.click_value_mrad,
+            reticle_unit=payload.reticle_unit,
         )
         for i, load_in in enumerate(payload.loads):
             rifle.add_load(Load(**load_in.model_dump()), make_active=(i == 0))
@@ -467,7 +477,9 @@ def voice_speak(payload: VoiceSpeakIn):
         raise HTTPException(status_code=400, detail="text must not be empty")
     try:
         client = _get_openai_client()
-        result = client.audio.speech.create(model="tts-1", voice=payload.voice, input=text)
+        result = client.audio.speech.create(
+            model="tts-1", voice=payload.voice, input=text, speed=payload.speed,
+        )
     except openai.OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"TTS request failed: {exc}")
     return Response(content=result.content, media_type="audio/mpeg")

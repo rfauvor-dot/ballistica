@@ -151,7 +151,11 @@
         <div class="field w-sm"><label for="rBarrel">Barrel</label><input id="rBarrel" type="number" step="0.1" title="Barrel length, inches"></div>
         <div class="field w-md"><label for="rTwist">Twist rate</label><input id="rTwist" type="text" placeholder="e.g. 1:7"></div>
         <div class="field w-sm"><label for="rScope">Scope ht</label><input id="rScope" type="number" step="0.1" title="Scope height over bore, inches"></div>
-        <div class="field w-sm"><label for="rClick">Click</label><input id="rClick" type="number" step="0.01" value="0.1" title="Click value, mrad"></div>
+        <div class="field w-md">
+          <label for="rReticle">Reticle unit</label>
+          <select id="rReticle"><option value="MRAD">MRAD</option><option value="MOA">MOA</option></select>
+        </div>
+        <div class="field w-sm"><label for="rClick">Click</label><input id="rClick" type="number" step="0.01" value="0.1" title="Click value, in the reticle unit above"></div>
       </div>
       <button id="saveRifleBtn" class="primary">Save rifle</button>
       <div id="rifleOk"></div>
@@ -310,6 +314,7 @@ function fillRifleForm(r) {
   document.getElementById('rBarrel').value = r.barrel_length_in ?? '';
   document.getElementById('rTwist').value = r.twist_rate;
   document.getElementById('rScope').value = r.scope_height_in;
+  document.getElementById('rReticle').value = r.reticle_unit || 'MRAD';
   document.getElementById('rClick').value = r.click_value_mrad;
 }
 function openRifleFormBlank() {
@@ -318,6 +323,7 @@ function openRifleFormBlank() {
   document.getElementById('rBarrel').value = '';
   document.getElementById('rTwist').value = '';
   document.getElementById('rScope').value = '';
+  document.getElementById('rReticle').value = 'MRAD';
   document.getElementById('rClick').value = '0.1';
   rifleDetails.open = true;
 }
@@ -374,6 +380,7 @@ document.getElementById('saveRifleBtn').addEventListener('click', async () => {
     caliber: document.getElementById('rCaliber').value.trim(),
     barrel_length_in: document.getElementById('rBarrel').value === '' ? null : parseFloat(document.getElementById('rBarrel').value),
     twist_rate: document.getElementById('rTwist').value.trim(),
+    reticle_unit: document.getElementById('rReticle').value,
     click_value_mrad: parseFloat(document.getElementById('rClick').value) || 0.1,
   };
   try {

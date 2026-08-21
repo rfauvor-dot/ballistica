@@ -65,8 +65,13 @@ class Rifle:
     barrel_length_in: float | None = None
     twist_rate: str = ""
     click_value_mrad: float = 0.1
+    reticle_unit: str = "MRAD"  # "MRAD" or "MOA" -- which unit the scope's turrets/reticle actually use
     loads: dict[str, Load] = field(default_factory=dict)
     active_load_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.reticle_unit not in ("MRAD", "MOA"):
+            raise ValueError("reticle_unit must be 'MRAD' or 'MOA'")
 
     def add_load(self, load: Load, make_active: bool = True) -> None:
         self.loads[load.name] = load
