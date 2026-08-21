@@ -216,6 +216,49 @@ def test_voice_query_conversation_state_and_error_handling():
     assert r.status_code == 200
 
 
+def test_voice_query_understands_natural_range_phrasing():
+    """Regression: the parser used to only recognize the literal phrase
+    "drop at X yards" -- real speech doesn't come out that precisely.
+    Caught live: "set range for 400 yard and give solution" (Rick's
+    actual wake-word command) returned "Didn't understand that" even
+    though a working drop-at-range command exists for that same load."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from ballistica.cli import bootstrap_default_profile
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+    bootstrap_default_profile(api_module.store)
+
+    from fastapi.testclient import TestClient
+    client = TestClient(api_module.app)
+
+    baseline = client.post("/voice/query", json={"text": "what's my drop at 400 yards"}).json()["reply"]
+
+    for phrasing in [
+        "set range for 400 yard and give solution",
+        "set raNGE FOR 400 YRD AND GIVE SOLUTION",
+        "give me a solution for 400 yards",
+    ]:
+        r = client.post("/voice/query", json={"text": phrasing})
+        assert r.status_code == 200
+        assert r.json()["reply"] == baseline, f"{phrasing!r} didn't match the drop-at-range reply"
+
+    # Still must not hijack the other command types, which all also
+    # mention "yards" -- these have to keep routing to their own handlers.
+    assert "Active load" in client.post("/voice/query", json={"text": "switch to 21.0gr"}).json()["reply"]
+    assert "Zero solution" in client.post(
+        "/voice/query", json={"text": "what zero minimizes my spread out to 500 yards"},
+    ).json()["reply"]
+    assert "Angle confirmed" in client.post(
+        "/voice/query", json={"text": "I'm seeing 12 clicks at 400 yards"},
+    ).json()["reply"]
+
+
 def test_voice_speak_rejects_empty_text():
     """The one piece of /voice/speak worth unit-testing without a live,
     billed OpenAI call: empty input is rejected before ever reaching the

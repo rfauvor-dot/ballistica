@@ -171,6 +171,17 @@ class BallisticaCLI:
             self.wind = WindCondition(speed_mph=speed, clock_deg=clock_hours * 30.0)
             return f"Wind set: {speed:.0f} mph from {clock_hours:g} o'clock"
 
+        # Fallback for natural phrasing that doesn't match "drop at X
+        # yards" literally -- "set range for 400 yard and give solution",
+        # "range 400 yards", "give me a solution for 400 yards" all land
+        # here. A range number is by far the most common thing anyone
+        # actually says, spoken or typed, so once nothing more specific
+        # matched, any bare "<number> yd/yard/yards/yrd" is treated as a
+        # drop-at-range request rather than forcing one exact phrasing.
+        m = re.search(r"(\d+\.?\d*)\s*(?:yd|yrd|yard|yards)\b", low)
+        if m:
+            return self._drop_at(float(m.group(1)))
+
         return "Didn't understand that. Type 'help' for supported commands."
 
     def _status(self) -> str:
