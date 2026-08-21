@@ -214,3 +214,17 @@ def test_voice_query_conversation_state_and_error_handling():
 
     r = client.post("/voice/query", json={"text": "gibberish nonsense query"})
     assert r.status_code == 200
+
+
+def test_voice_speak_rejects_empty_text():
+    """The one piece of /voice/speak worth unit-testing without a live,
+    billed OpenAI call: empty input is rejected before ever reaching the
+    network. Full TTS behavior (real audio bytes back) was verified
+    manually against the live API, not here -- this suite shouldn't
+    make paid third-party calls on every run."""
+    import ballistica.api as api_module
+    from fastapi.testclient import TestClient
+
+    client = TestClient(api_module.app)
+    r = client.post("/voice/speak", json={"text": "   "})
+    assert r.status_code == 400

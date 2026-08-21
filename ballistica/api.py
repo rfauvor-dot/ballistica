@@ -18,9 +18,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Loads .env (gitignored, holds OPENAI_API_KEY) into the process
+# environment before anything below reads it -- must run before the
+# OpenAI import/client construction, not after.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+import ssl
+
+import certifi
+import httpx2
+import openai
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from .angle import solve_incline_angle
@@ -227,6 +239,15 @@ class VoiceQueryOut(BaseModel):
     reply: str = Field(description="Text meant to be spoken back via TTS -- terse and numeric by design")
 
 
+class VoiceSpeakIn(BaseModel):
+    text: str
+    voice: str = Field(
+        "onyx", description="OpenAI TTS voice name. 'onyx' is the deepest/most grounded of the "
+                             "stock voices, a reasonable starting point for a confident/tactical "
+                             "tone -- swap it once you've actually heard it against the alternatives.",
+    )
+
+
 # ------------------------------------------------------------------ helpers
 
 def _msg(exc: Exception) -> str:
@@ -234,6 +255,34 @@ def _msg(exc: Exception) -> str:
     str(KeyError("no rifle")) == '"no rifle"', quotes and all) -- this
     unwraps that so API error details read as plain text either way."""
     return exc.args[0] if exc.args else str(exc)
+
+
+_openai_client: openai.OpenAI | None = None
+
+
+def _get_openai_client() -> openai.OpenAI:
+    """Lazily builds (and caches) the OpenAI client.
+
+    httpx2/httpcore2's default SSL context construction routes through
+    `truststore` for native OS certificate-store integration, which has
+    a confirmed infinite-recursion bug (RecursionError) against Python
+    3.14's ssl module as of truststore 0.10.4 -- reproduced directly,
+    not assumed. Supplying our own pre-built context via certifi's CA
+    bundle instead of letting httpcore2 construct its default one skips
+    that code path entirely. This is a workaround for an upstream
+    library bug, not a security downgrade: it still verifies against a
+    real, current CA bundle.
+
+    Lazy + cached rather than built at import time so importing this
+    module doesn't hard-fail in environments with no OPENAI_API_KEY set
+    (tests, or Render before the env var is configured).
+    """
+    global _openai_client
+    if _openai_client is None:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        http_client = httpx2.Client(verify=ssl_context)
+        _openai_client = openai.OpenAI(http_client=http_client)
+    return _openai_client
 
 
 def _load_to_out(load: Load) -> LoadOut:
@@ -397,6 +446,22 @@ def voice_query(payload: VoiceQueryIn):
         # whatever's about to pipe this through TTS.
         reply = _msg(exc)
     return VoiceQueryOut(reply=reply or "Didn't catch that.")
+
+
+@app.post("/voice/speak")
+def voice_speak(payload: VoiceSpeakIn):
+    """Text in, MP3 bytes out via OpenAI TTS. The other half of the
+    voice loop from /voice/query -- feed that endpoint's reply straight
+    into this one to get spoken audio back."""
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    try:
+        client = _get_openai_client()
+        result = client.audio.speech.create(model="tts-1", voice=payload.voice, input=text)
+    except openai.OpenAIError as exc:
+        raise HTTPException(status_code=502, detail=f"TTS request failed: {exc}")
+    return Response(content=result.content, media_type="audio/mpeg")
 
 
 @app.post("/calc/drop-at-range", response_model=RangeReportOut)

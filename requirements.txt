@@ -2,3 +2,7 @@ pytest
 fastapi
 uvicorn[standard]
 httpx
+python-dotenv
+openai
+certifi
+httpx2
