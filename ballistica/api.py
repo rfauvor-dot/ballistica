@@ -251,9 +251,9 @@ class VoiceQueryOut(BaseModel):
 class VoiceSpeakIn(BaseModel):
     text: str
     voice: str = Field(
-        "onyx", description="OpenAI TTS voice name. 'onyx' is the deepest/most grounded of the "
-                             "stock voices, a reasonable starting point for a confident/tactical "
-                             "tone -- swap it once you've actually heard it against the alternatives.",
+        "shimmer", description="OpenAI TTS voice name. Rick's pick, chosen by ear against real "
+                                "samples of all 9 stock voices on the actual reply phrasing -- "
+                                "not a guess, don't second-guess it without asking first.",
     )
 
 
