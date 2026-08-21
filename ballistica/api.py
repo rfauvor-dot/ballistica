@@ -30,7 +30,7 @@ import ssl
 import certifi
 import httpx2
 import openai
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
@@ -462,6 +462,27 @@ def voice_speak(payload: VoiceSpeakIn):
     except openai.OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"TTS request failed: {exc}")
     return Response(content=result.content, media_type="audio/mpeg")
+
+
+@app.post("/voice/transcribe")
+async def voice_transcribe(audio: UploadFile = File(...)):
+    """Recorded audio in (whatever format the browser's MediaRecorder
+    produced -- webm/ogg/mp4 are all fine, OpenAI's transcription
+    endpoint handles the common ones), transcribed text out. First
+    third of the full voice loop: this -> /voice/query -> /voice/speak."""
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="audio file was empty")
+    try:
+        client = _get_openai_client()
+        # OpenAI's SDK identifies the audio format from the filename's
+        # extension, not the content-type header, so this needs a real
+        # name attached, not just raw bytes.
+        file_tuple = (audio.filename or "recording.webm", audio_bytes, audio.content_type or "audio/webm")
+        result = client.audio.transcriptions.create(model="whisper-1", file=file_tuple)
+    except openai.OpenAIError as exc:
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}")
+    return {"text": result.text}
 
 
 @app.post("/calc/drop-at-range", response_model=RangeReportOut)

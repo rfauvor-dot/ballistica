@@ -192,9 +192,9 @@ class BallisticaCLI:
         solver, rifle, load = self.solver()
         point = solver.at_range(load.zero_distance_yd, range_yd)
         r = report_for_point(point, rifle.click_value_mrad)
-        return (f"At {r.range_yd:.0f} yd: drop {r.drop_in:.1f} in "
-                f"({r.drop_mrad:.2f} mrad / {r.drop_clicks:.1f} clicks), "
-                f"windage {r.windage_in:.1f} in, {r.velocity_fps:.0f} fps")
+        return (f"Solution locked, {r.range_yd:.0f} yards. "
+                f"Drop {r.drop_in:.1f} inches, {r.drop_mrad:.2f} mils, {r.drop_clicks:.1f} clicks. "
+                f"Windage {r.windage_in:.1f} inches. Velocity {r.velocity_fps:.0f} feet per second. Confirmed.")
 
     def _table(self, max_range_yd: float, step_yd: float) -> str:
         solver, rifle, load = self.solver()
@@ -205,10 +205,10 @@ class BallisticaCLI:
     def _minimum_spread_zero(self, max_range_yd: float) -> str:
         solver, rifle, load = self.solver()
         result = find_minimum_spread_zero(solver, max_range_yd)
-        return (f"Zero at {result.zero_distance_yd:.0f} yd minimizes spread out to "
-                f"{max_range_yd:.0f} yd: peak rise {result.max_height_in:.1f} in, "
-                f"drop at {max_range_yd:.0f} yd is {result.min_height_in:.1f} in "
-                f"(total spread {result.spread_in:.1f} in)")
+        return (f"Zero solution confirmed. {result.zero_distance_yd:.0f} yards minimizes spread "
+                f"out to {max_range_yd:.0f} yards. Peak rise {result.max_height_in:.1f} inches, "
+                f"terminal drop {result.min_height_in:.1f} inches. "
+                f"Total spread {result.spread_in:.1f} inches.")
 
     def _solve_angle(self, observed_clicks: float, los_yd: float, ref_yd: float) -> str:
         solver, rifle, load = self.solver()
@@ -220,10 +220,9 @@ class BallisticaCLI:
         except ValueError as exc:
             return str(exc)
         holdover = result.corrected_holdover_clicks(solver, load.zero_distance_yd, los_yd, rifle.click_value_mrad)
-        return (f"Implied angle: {result.angle_deg:.1f} deg "
-                f"(shoot-to distance {result.shoot_to_distance_yd:.0f} yd). "
-                f"Level-ground would've needed {result.level_ground_diff_clicks:.1f} clicks from "
-                f"{ref_yd:.0f} yd; corrected hold for this shot is {holdover:.1f} clicks.")
+        return (f"Angle confirmed, {result.angle_deg:.1f} degrees. "
+                f"Shoot-to distance {result.shoot_to_distance_yd:.0f} yards. "
+                f"Corrected holdover {holdover:.1f} clicks. Solution locked.")
 
 
 def main() -> None:

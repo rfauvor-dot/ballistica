@@ -105,10 +105,27 @@
   .meta { text-align: center; color: var(--muted); font-size: 15px; margin-top: 8px; }
 
   #status { text-align: center; color: var(--muted); font-size: 14px; margin-top: 4px; min-height: 18px; }
+
+  .voice-panel {
+    border: 2px solid var(--line); border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 16px; text-align: center;
+  }
+  .voice-panel .state-line { font-size: 15px; font-weight: 700; color: var(--muted); min-height: 20px; }
+  .voice-panel .state-line.hot { color: var(--accent); }
+  .voice-panel .heard-line { font-size: 14px; color: var(--muted); font-style: italic; min-height: 18px; margin-top: 2px; }
+  #enableVoiceBtn { margin-top: 8px; }
+  #voiceUnsupported { display: none; color: var(--error-text); font-size: 13px; margin-top: 6px; }
 </style>
 </head>
 <body>
   <h1>BALLISTICA</h1>
+
+  <div class="voice-panel">
+    <div class="state-line" id="voiceState">Voice: off</div>
+    <div class="heard-line" id="voiceHeard"></div>
+    <button id="enableVoiceBtn" class="primary">Enable voice ("Ballistica")</button>
+    <div id="voiceUnsupported">This browser doesn't support wake-word listening (needs Chrome). Use the manual controls below instead.</div>
+  </div>
 
   <div class="rifle-header">
     <select id="rifleSelect"></select>
@@ -451,6 +468,230 @@ solveBtn.addEventListener('click', async () => {
   }
   solveBtn.disabled = false;
   setStatus('');
+});
+
+// ---------------------------------------------------------------- voice
+// Two speech engines, deliberately: the browser's free, built-in
+// SpeechRecognition runs continuously watching only for the wake word
+// ("Ballistica") -- that's what makes always-on listening not cost
+// money or ship a stream of background range-talk to a cloud API.
+// Once the wake word fires, that recognizer stops and the actual
+// command gets recorded properly and sent to OpenAI's Whisper via
+// /voice/transcribe for better accuracy on numbers and ballistics
+// terms, then /voice/query for the answer, then /voice/speak for the
+// reply. One tap is unavoidable to arm this the first time (browsers
+// require a user gesture before granting microphone access) -- after
+// that it's hands-free until you tap again to disable it.
+
+const ACK_PHRASES = [
+  "Copy that, standing by.",
+  "Ballistica up, go ahead.",
+  "I'm here, Rick. Go ahead.",
+];
+
+let voiceEnabled = false;
+let voiceState = 'off'; // off | idle | acknowledging | listening | processing | speaking
+let wakeRecognition = null;
+
+const voiceStateEl = document.getElementById('voiceState');
+const voiceHeardEl = document.getElementById('voiceHeard');
+const enableVoiceBtn = document.getElementById('enableVoiceBtn');
+const voiceUnsupportedEl = document.getElementById('voiceUnsupported');
+
+function setVoiceState(text, hot) {
+  voiceStateEl.textContent = text;
+  voiceStateEl.classList.toggle('hot', !!hot);
+}
+
+async function playAudioBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  await new Promise((resolve) => {
+    audio.onended = resolve;
+    audio.onerror = resolve;
+    audio.play().catch(resolve);
+  });
+  URL.revokeObjectURL(url);
+}
+
+async function speak(text) {
+  try {
+    const res = await fetch('/voice/speak', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return;
+    await playAudioBlob(await res.blob());
+  } catch (e) {
+    // Voice output failing shouldn't break the loop -- the state line
+    // still shows what was going on, silently.
+  }
+}
+
+async function recordCommand() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4'].find(
+    t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioCtx();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  const levels = new Uint8Array(analyser.frequencyBinCount);
+
+  const SILENCE_LEVEL = 8;
+  const SILENCE_MS = 1200;
+  const MIN_RECORD_MS = 500;
+  const MAX_RECORD_MS = 8000;
+  const startedAt = Date.now();
+  let silenceStartedAt = null;
+
+  return new Promise((resolve) => {
+    recorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      audioCtx.close();
+      resolve(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+    };
+    recorder.start();
+
+    function tick() {
+      if (recorder.state !== 'recording') return;
+      analyser.getByteFrequencyData(levels);
+      const avg = levels.reduce((a, b) => a + b, 0) / levels.length;
+      const elapsed = Date.now() - startedAt;
+      if (avg < SILENCE_LEVEL) {
+        if (silenceStartedAt === null) silenceStartedAt = Date.now();
+        if (elapsed > MIN_RECORD_MS && Date.now() - silenceStartedAt > SILENCE_MS) {
+          recorder.stop();
+          return;
+        }
+      } else {
+        silenceStartedAt = null;
+      }
+      if (elapsed > MAX_RECORD_MS) { recorder.stop(); return; }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
+function getSpeechRecognition() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition;
+}
+
+function startWakeListening() {
+  const SR = getSpeechRecognition();
+  if (!SR) {
+    voiceUnsupportedEl.style.display = 'block';
+    voiceEnabled = false;
+    return;
+  }
+  wakeRecognition = new SR();
+  wakeRecognition.continuous = true;
+  wakeRecognition.interimResults = true;
+  wakeRecognition.lang = 'en-US';
+
+  wakeRecognition.onresult = (event) => {
+    if (voiceState !== 'idle') return;
+    let heard = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      heard += event.results[i][0].transcript;
+    }
+    if (heard.toLowerCase().includes('ballistica')) {
+      try { wakeRecognition.stop(); } catch (e) {}
+      handleWakeWord();
+    }
+  };
+
+  wakeRecognition.onend = () => {
+    if (voiceEnabled && voiceState === 'idle') {
+      try { wakeRecognition.start(); } catch (e) {}
+    }
+  };
+
+  wakeRecognition.onerror = (event) => {
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      voiceEnabled = false;
+      voiceState = 'off';
+      setVoiceState('Voice: microphone permission denied');
+      enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
+    }
+    // Other errors (no-speech timeouts, transient network hiccups) are
+    // routine for continuous recognition -- onend already restarts it.
+  };
+
+  voiceState = 'idle';
+  setVoiceState('Voice: listening for "Ballistica"...');
+  voiceHeardEl.textContent = '';
+  wakeRecognition.start();
+}
+
+async function handleWakeWord() {
+  voiceState = 'acknowledging';
+  setVoiceState('Ballistica heard -- acknowledging', true);
+  await speak(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
+
+  voiceState = 'listening';
+  setVoiceState('Listening for your command...', true);
+  let blob;
+  try {
+    blob = await recordCommand();
+  } catch (e) {
+    setVoiceState('Voice: microphone error');
+    voiceState = 'idle';
+    if (voiceEnabled) startWakeListening();
+    return;
+  }
+
+  voiceState = 'processing';
+  setVoiceState('Processing...', true);
+  try {
+    const form = new FormData();
+    form.append('audio', blob, 'command.webm');
+    const transcribeRes = await fetch('/voice/transcribe', { method: 'POST', body: form });
+    const transcribeData = await transcribeRes.json();
+    if (!transcribeRes.ok) throw new Error(transcribeData.detail || 'transcription failed');
+    const heardText = (transcribeData.text || '').trim();
+    voiceHeardEl.textContent = heardText ? `Heard: "${heardText}"` : '';
+
+    if (!heardText) {
+      voiceState = 'speaking';
+      await speak("Didn't catch that. Say again.");
+    } else {
+      const queryRes = await fetch('/voice/query', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: heardText }),
+      });
+      const queryData = await queryRes.json();
+      voiceState = 'speaking';
+      setVoiceState('Speaking...', true);
+      await speak(queryData.reply || "Didn't catch that.");
+    }
+  } catch (e) {
+    setVoiceState('Voice: error handling that command');
+  }
+
+  voiceState = 'idle';
+  if (voiceEnabled) startWakeListening();
+}
+
+enableVoiceBtn.addEventListener('click', () => {
+  if (voiceEnabled) {
+    voiceEnabled = false;
+    voiceState = 'off';
+    if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
+    setVoiceState('Voice: off');
+    voiceHeardEl.textContent = '';
+    enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
+    return;
+  }
+  voiceEnabled = true;
+  enableVoiceBtn.textContent = 'Disable voice';
+  startWakeListening();
 });
 
 loadRifles();

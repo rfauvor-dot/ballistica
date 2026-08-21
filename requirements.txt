@@ -6,3 +6,4 @@ python-dotenv
 openai
 certifi
 httpx2
+python-multipart
