@@ -157,6 +157,19 @@
         </div>
         <div class="field w-sm"><label for="rClick">Click</label><input id="rClick" type="number" step="0.01" value="0.1" title="Click value, in the reticle unit above"></div>
       </div>
+      <div class="row">
+        <div class="field w-md"><label for="rScopeMake">Scope make</label><input id="rScopeMake" type="text" placeholder="e.g. Vortex"></div>
+        <div class="field w-lg"><label for="rScopeModel">Scope model</label><input id="rScopeModel" type="text" placeholder="e.g. Viper PST Gen II 5-25x50"></div>
+      </div>
+      <div class="row">
+        <div class="field w-sm"><label for="rMag">Power</label><input id="rMag" type="text" placeholder="5-25x" title="Magnification, e.g. 5-25x or a fixed 10x"></div>
+        <div class="field w-sm"><label for="rObjective">Objective</label><input id="rObjective" type="number" step="1" title="Objective lens diameter, mm"></div>
+        <div class="field w-md">
+          <label for="rFocalPlane">Focal plane</label>
+          <select id="rFocalPlane"><option value="">Unknown</option><option value="FFP">FFP</option><option value="SFP">SFP</option></select>
+        </div>
+        <div class="field w-lg"><label for="rReticleType">Reticle type</label><input id="rReticleType" type="text" placeholder="e.g. MOA Christmas tree"></div>
+      </div>
       <button id="saveRifleBtn" class="primary">Save rifle</button>
       <div id="rifleOk"></div>
       <div id="rifleError"></div>
@@ -316,6 +329,12 @@ function fillRifleForm(r) {
   document.getElementById('rScope').value = r.scope_height_in;
   document.getElementById('rReticle').value = r.reticle_unit || 'MRAD';
   document.getElementById('rClick').value = r.click_value_mrad;
+  document.getElementById('rScopeMake').value = r.scope_make || '';
+  document.getElementById('rScopeModel').value = r.scope_model || '';
+  document.getElementById('rMag').value = r.magnification || '';
+  document.getElementById('rObjective').value = r.objective_lens_mm ?? '';
+  document.getElementById('rFocalPlane').value = r.focal_plane || '';
+  document.getElementById('rReticleType').value = r.reticle_type || '';
 }
 function openRifleFormBlank() {
   document.getElementById('rName').value = '';
@@ -325,6 +344,12 @@ function openRifleFormBlank() {
   document.getElementById('rScope').value = '';
   document.getElementById('rReticle').value = 'MRAD';
   document.getElementById('rClick').value = '0.1';
+  document.getElementById('rScopeMake').value = '';
+  document.getElementById('rScopeModel').value = '';
+  document.getElementById('rMag').value = '';
+  document.getElementById('rObjective').value = '';
+  document.getElementById('rFocalPlane').value = '';
+  document.getElementById('rReticleType').value = '';
   rifleDetails.open = true;
 }
 
@@ -382,6 +407,12 @@ document.getElementById('saveRifleBtn').addEventListener('click', async () => {
     twist_rate: document.getElementById('rTwist').value.trim(),
     reticle_unit: document.getElementById('rReticle').value,
     click_value_mrad: parseFloat(document.getElementById('rClick').value) || 0.1,
+    scope_make: document.getElementById('rScopeMake').value.trim(),
+    scope_model: document.getElementById('rScopeModel').value.trim(),
+    magnification: document.getElementById('rMag').value.trim(),
+    objective_lens_mm: document.getElementById('rObjective').value === '' ? null : parseFloat(document.getElementById('rObjective').value),
+    focal_plane: document.getElementById('rFocalPlane').value,
+    reticle_type: document.getElementById('rReticleType').value.trim(),
   };
   try {
     if (isNew) {

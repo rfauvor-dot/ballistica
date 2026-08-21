@@ -151,6 +151,14 @@ class RifleIn(BaseModel):
     twist_rate: str = ""
     click_value_mrad: float = 0.1
     reticle_unit: str = Field("MRAD", description="'MRAD' or 'MOA' -- which unit the scope's turrets use")
+    scope_make: str = ""
+    scope_model: str = ""
+    magnification: str = ""
+    objective_lens_mm: float | None = None
+    focal_plane: str = Field("", description="'FFP', 'SFP', or '' if unknown -- not used by today's "
+                                              "turret-dial calculations, but will matter once a "
+                                              "reticle-holdover or rangefinder feature exists")
+    reticle_type: str = ""
     loads: list[LoadIn] = []
 
 
@@ -162,6 +170,12 @@ class RifleUpdate(BaseModel):
     twist_rate: str = ""
     click_value_mrad: float = 0.1
     reticle_unit: str = "MRAD"
+    scope_make: str = ""
+    scope_model: str = ""
+    magnification: str = ""
+    objective_lens_mm: float | None = None
+    focal_plane: str = ""
+    reticle_type: str = ""
 
 
 class RifleSummary(BaseModel):
@@ -178,6 +192,12 @@ class RifleDetail(BaseModel):
     twist_rate: str
     click_value_mrad: float
     reticle_unit: str
+    scope_make: str
+    scope_model: str
+    magnification: str
+    objective_lens_mm: float | None
+    focal_plane: str
+    reticle_type: str
     active_load_name: str | None
     loads: list[LoadOut]
 
@@ -311,6 +331,9 @@ def _rifle_to_detail(rifle: Rifle) -> RifleDetail:
         name=rifle.name, scope_height_in=rifle.scope_height_in, caliber=rifle.caliber,
         barrel_length_in=rifle.barrel_length_in, twist_rate=rifle.twist_rate,
         click_value_mrad=rifle.click_value_mrad, reticle_unit=rifle.reticle_unit,
+        scope_make=rifle.scope_make, scope_model=rifle.scope_model,
+        magnification=rifle.magnification, objective_lens_mm=rifle.objective_lens_mm,
+        focal_plane=rifle.focal_plane, reticle_type=rifle.reticle_type,
         active_load_name=rifle.active_load_name,
         loads=[_load_to_out(load) for load in rifle.loads.values()],
     )
@@ -362,7 +385,10 @@ def create_rifle(payload: RifleIn):
             name=payload.name, scope_height_in=payload.scope_height_in,
             caliber=payload.caliber, barrel_length_in=payload.barrel_length_in,
             twist_rate=payload.twist_rate, click_value_mrad=payload.click_value_mrad,
-            reticle_unit=payload.reticle_unit,
+            reticle_unit=payload.reticle_unit, scope_make=payload.scope_make,
+            scope_model=payload.scope_model, magnification=payload.magnification,
+            objective_lens_mm=payload.objective_lens_mm, focal_plane=payload.focal_plane,
+            reticle_type=payload.reticle_type,
         )
         for i, load_in in enumerate(payload.loads):
             rifle.add_load(Load(**load_in.model_dump()), make_active=(i == 0))

@@ -66,6 +66,12 @@ class Rifle:
     twist_rate: str = ""
     click_value_mrad: float = 0.1
     reticle_unit: str = "MRAD"  # "MRAD" or "MOA" -- which unit the scope's turrets/reticle actually use
+    scope_make: str = ""
+    scope_model: str = ""
+    magnification: str = ""  # free text, e.g. "5-25x" or a fixed "10x"
+    objective_lens_mm: float | None = None
+    focal_plane: str = ""  # "FFP", "SFP", or "" if unknown/not applicable
+    reticle_type: str = ""  # e.g. "MOA Christmas tree"
     loads: dict[str, Load] = field(default_factory=dict)
     active_load_name: str | None = None
 
