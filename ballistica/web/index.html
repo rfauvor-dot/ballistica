@@ -805,12 +805,44 @@ async function handleWakeWord() {
   if (voiceEnabled) startWakeListening();
 }
 
+// Keeps the screen from locking/sleeping while voice is on -- otherwise
+// the OS screensaver kicks in during a hands-free session at the range
+// and the app disappears out from under an in-progress conversation.
+// Held only while voice is actively enabled (not the whole time the page
+// is open), so it doesn't needlessly burn battery outside active use.
+// The lock is auto-released by the browser whenever the tab loses
+// visibility (switching apps, screen manually turned off) even if
+// voiceEnabled hasn't changed -- re-acquired on visibilitychange so
+// coming back to the app doesn't leave it silently unprotected.
+let wakeLock = null;
+
+async function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) {
+    // Permission/state errors here are routine (e.g. backgrounded tab) --
+    // nothing to show the shooter, voice still works, the screen just
+    // might sleep.
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) { try { wakeLock.release(); } catch (e) {} }
+  wakeLock = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (voiceEnabled && document.visibilityState === 'visible') acquireWakeLock();
+});
+
 enableVoiceBtn.addEventListener('click', () => {
   if (voiceEnabled) {
     const hadSession = sessionWakeCount > 0;
     voiceEnabled = false;
     voiceState = 'off';
     if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
+    releaseWakeLock();
     setVoiceState('Voice: off');
     voiceHeardEl.textContent = '';
     enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
@@ -824,6 +856,7 @@ enableVoiceBtn.addEventListener('click', () => {
   voiceEnabled = true;
   sessionWakeCount = 0;
   enableVoiceBtn.textContent = 'Disable voice';
+  acquireWakeLock();
   startWakeListening();
 });
 
