@@ -17,11 +17,20 @@ OpenAI; only the "what did they mean" layer moved.
 """
 from __future__ import annotations
 
+import logging
 import re
 
 import anthropic
 
 from .anthropic_client import get_anthropic_client
+
+# Every failure path here used to swallow the real exception and just
+# return None/{} -- which meant a genuine auth/billing/API error and a
+# clean "nothing matched" looked identical from the outside, including in
+# Render's own log stream (nothing was ever written to it). Logged at
+# ERROR with the traceback so an actual failure is visible in production
+# logs, not just inferred from the caller getting "didn't understand".
+logger = logging.getLogger(__name__)
 
 _MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS = 1024
@@ -201,7 +210,10 @@ def extract_intent(text: str) -> tuple[str, dict] | None:
         # actually raises for a missing/misconfigured ANTHROPIC_API_KEY --
         # reproduced directly. Caught here so that misconfiguration
         # degrades to "didn't understand" like any other fallback failure,
-        # not a 500 in the middle of a voice conversation.
+        # not a 500 in the middle of a voice conversation -- but logged
+        # first so the failure is actually visible in production logs
+        # instead of just inferred from "didn't understand" on the phone.
+        logger.exception("extract_intent failed for %r", text)
         return None
 
 
@@ -276,6 +288,7 @@ def generate_warm_reply(text: str) -> str | None:
             return None
         return reply
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):
+        logger.exception("generate_warm_reply failed for %r", text)
         return None
 
 
@@ -379,4 +392,5 @@ def extract_setup_fields(text: str, kind: str) -> dict | None:
         block = _first_tool_use(response)
         return dict(block.input)
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):
+        logger.exception("extract_setup_fields failed for %r (kind=%s)", text, kind)
         return None
