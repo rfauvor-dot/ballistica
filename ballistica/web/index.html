@@ -607,9 +607,16 @@ async function recordCommand() {
   const SILENCE_LEVEL = 8;
   const SILENCE_MS = 1200;
   const MIN_RECORD_MS = 500;
-  const MAX_RECORD_MS = 8000;
+  const MAX_RECORD_MS = 10000;
+  // Consecutive above-threshold frames (~60/sec via requestAnimationFrame)
+  // required before speech is considered to have actually started -- a
+  // single noisy frame shouldn't count, but real speech onset should
+  // register within ~50ms.
+  const SPEECH_ONSET_FRAMES = 3;
   const startedAt = Date.now();
   let silenceStartedAt = null;
+  let hasSpokenYet = false;
+  let aboveThresholdStreak = 0;
 
   return new Promise((resolve) => {
     recorder.onstop = () => {
@@ -625,13 +632,25 @@ async function recordCommand() {
       const avg = levels.reduce((a, b) => a + b, 0) / levels.length;
       const elapsed = Date.now() - startedAt;
       if (avg < SILENCE_LEVEL) {
+        aboveThresholdStreak = 0;
         if (silenceStartedAt === null) silenceStartedAt = Date.now();
-        if (elapsed > MIN_RECORD_MS && Date.now() - silenceStartedAt > SILENCE_MS) {
+        // Only silence *after* real speech counts as "done talking" --
+        // without hasSpokenYet, a natural pause before the shooter starts
+        // talking (common right after the wake-word ack: a breath, a
+        // beat to think) reads as 1200ms of silence and stops the
+        // recording before anything was said, sending Whisper a near-
+        // empty clip that it then hallucinates plausible-sounding text
+        // from (confirmed live, Addendum 14: "I want to set up a new
+        // rifle" transcribed as "grateful" -- not a mishearing of real
+        // speech, there wasn't enough real speech captured to mishear).
+        if (hasSpokenYet && elapsed > MIN_RECORD_MS && Date.now() - silenceStartedAt > SILENCE_MS) {
           recorder.stop();
           return;
         }
       } else {
         silenceStartedAt = null;
+        aboveThresholdStreak++;
+        if (aboveThresholdStreak >= SPEECH_ONSET_FRAMES) hasSpokenYet = true;
       }
       if (elapsed > MAX_RECORD_MS) { recorder.stop(); return; }
       requestAnimationFrame(tick);
