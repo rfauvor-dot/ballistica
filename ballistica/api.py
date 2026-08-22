@@ -266,6 +266,12 @@ class VoiceQueryIn(BaseModel):
 
 class VoiceQueryOut(BaseModel):
     reply: str = Field(description="Text meant to be spoken back via TTS -- terse and numeric by design")
+    awaiting_response: bool = Field(
+        False,
+        description="True mid-conversation (guided load/rifle setup, chronograph calibration): the "
+                     "frontend should keep listening for the next answer without requiring the wake "
+                     "word again.",
+    )
 
 
 class VoiceSpeakIn(BaseModel):
@@ -459,7 +465,8 @@ def voice_query(payload: VoiceQueryIn):
         # inputs) -- speak it back rather than surfacing a raw 500 to
         # whatever's about to pipe this through TTS.
         reply = _msg(exc)
-    return VoiceQueryOut(reply=reply or "Didn't catch that.")
+    awaiting_response = voice_cli._setup is not None or voice_cli._calibration is not None
+    return VoiceQueryOut(reply=reply or "Didn't catch that.", awaiting_response=awaiting_response)
 
 
 @app.post("/voice/speak")

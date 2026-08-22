@@ -262,6 +262,42 @@ def test_repeat_solution_reuses_last_drop_without_recalculating():
     assert "Elevation" not in windage
 
 
+def test_voice_query_signals_awaiting_response_during_conversation():
+    """Regression: the voice frontend used to always drop back to
+    wake-word-only listening after one question/answer exchange, which
+    silently ate every field after the first during guided setup (Rick
+    would answer the first question, get silence, and only "waking" her
+    back up mid-setup would resume it -- but from the frontend's
+    perspective every answer given without saying "Ballistica" again
+    was never even sent). /voice/query now tells the frontend whether
+    to keep listening without the wake word: true while a guided setup
+    is genuinely mid-conversation, false once it's done, cancelled, or
+    for an ordinary one-shot command."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from ballistica.cli import bootstrap_default_profile
+    from fastapi.testclient import TestClient
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+    bootstrap_default_profile(api_module.store)
+
+    client = TestClient(api_module.app)
+
+    r = client.post("/voice/query", json={"text": "what's my drop at 400 yards"})
+    assert r.json()["awaiting_response"] is False
+
+    r = client.post("/voice/query", json={"text": "let's set up a new load"})
+    assert r.json()["awaiting_response"] is True
+
+    r = client.post("/voice/query", json={"text": "never mind, cancel"})
+    assert r.json()["awaiting_response"] is False
+
+
 def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp_path):
     """Guided voice setup for a new load: multi-turn slot-filling, a
     same-breath correction after the read-back summary ("no, actually

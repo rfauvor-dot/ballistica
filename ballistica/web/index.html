@@ -691,23 +691,22 @@ function startWakeListening() {
   wakeRecognition.start();
 }
 
-async function handleWakeWord() {
-  voiceState = 'acknowledging';
-  setVoiceState('Ballistica heard -- acknowledging', true);
-  const ackPool = sessionWakeCount === 0 ? GREETING_PHRASES : ACK_PHRASES;
-  sessionWakeCount++;
-  await speak(ackPool[Math.floor(Math.random() * ackPool.length)]);
-
+// One record -> transcribe -> query -> speak cycle. Returns true if the
+// backend says we're mid-conversation (guided load/rifle setup, chrono
+// calibration) and should keep listening for the next answer without
+// requiring the wake word again -- false to drop back to sleep. A silent/
+// failed turn also returns false rather than looping blindly forever; the
+// backend session itself (e.g. an in-progress setup) is untouched by a
+// frontend hiccup like this, so saying "Ballistica" again just resumes it.
+async function runConversationTurn() {
   voiceState = 'listening';
-  setVoiceState('Listening for your command...', true);
+  setVoiceState('Listening...', true);
   let blob;
   try {
     blob = await recordCommand();
   } catch (e) {
     setVoiceState('Voice: microphone error');
-    voiceState = 'idle';
-    if (voiceEnabled) startWakeListening();
-    return;
+    return false;
   }
 
   voiceState = 'processing';
@@ -724,18 +723,34 @@ async function handleWakeWord() {
     if (!heardText) {
       voiceState = 'speaking';
       await speak("Didn't catch that. Say again.");
-    } else {
-      const queryRes = await fetch('/voice/query', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: heardText }),
-      });
-      const queryData = await queryRes.json();
-      voiceState = 'speaking';
-      setVoiceState('Speaking...', true);
-      await speak(queryData.reply || "Didn't catch that.");
+      return false;
     }
+
+    const queryRes = await fetch('/voice/query', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: heardText }),
+    });
+    const queryData = await queryRes.json();
+    voiceState = 'speaking';
+    setVoiceState('Speaking...', true);
+    await speak(queryData.reply || "Didn't catch that.");
+    return !!queryData.awaiting_response;
   } catch (e) {
     setVoiceState('Voice: error handling that command');
+    return false;
+  }
+}
+
+async function handleWakeWord() {
+  voiceState = 'acknowledging';
+  setVoiceState('Ballistica heard -- acknowledging', true);
+  const ackPool = sessionWakeCount === 0 ? GREETING_PHRASES : ACK_PHRASES;
+  sessionWakeCount++;
+  await speak(ackPool[Math.floor(Math.random() * ackPool.length)]);
+
+  let keepGoing = true;
+  while (keepGoing) {
+    keepGoing = await runConversationTurn();
   }
 
   voiceState = 'idle';
