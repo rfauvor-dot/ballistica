@@ -10,6 +10,7 @@ more conversational -- see the handler methods below for the split.
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 import random
 import re
@@ -24,7 +25,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
-from .intent import extract_intent, generate_warm_reply
+from .intent import extract_intent, extract_setup_fields, generate_warm_reply
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -41,11 +42,51 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
   set conditions temp <T> pressure <P> altitude <A> humidity <H>
   set wind <speed> mph from <clock> oclock
   repeat solution / repeat elevation / repeat windage -- re-speak the last drop-at solution
+  new load / new rifle                      -- guided voice setup, "cancel" to bail out
   status                                    -- show active rifle/load/atmosphere
   list rifles / list loads
   help
   quit
 """
+
+# Required fields for a new load/rifle to be saveable -- everything else on
+# Load/Rifle has a usable default and stays optional during voice setup, so
+# the interview only chases down what's actually needed and doesn't force a
+# shooter through every scope-info field just to log a load.
+_LOAD_REQUIRED = ["name", "bullet_weight_gr", "bc", "drag_model", "muzzle_velocity_fps", "zero_distance_yd"]
+_LOAD_PROMPTS = {
+    "name": "What do you want to call this load?",
+    "bullet_weight_gr": "What's the bullet weight, in grains?",
+    "bc": "What's the ballistic coefficient?",
+    "drag_model": "G1 or G7 drag model?",
+    "muzzle_velocity_fps": "What's the muzzle velocity, in feet per second?",
+    "zero_distance_yd": "What yardage is it zeroed at?",
+}
+
+_RIFLE_REQUIRED = ["name", "scope_height_in"]
+_RIFLE_PROMPTS = {
+    "name": "What do you want to call this rifle?",
+    "scope_height_in": "What's the scope height above bore, in inches?",
+}
+
+# Optional fields worth reading back in the confirmation summary if the
+# shooter volunteered them -- otherwise they'd be captured silently and
+# never actually confirmed before being saved.
+_LOAD_EXTRA_FIELDS = ["bullet_type", "powder", "powder_charge_gr", "notes"]
+_RIFLE_EXTRA_FIELDS = ["caliber", "barrel_length_in", "twist_rate", "click_value_mrad",
+                       "reticle_unit", "scope_make", "scope_model", "magnification",
+                       "objective_lens_mm", "focal_plane", "reticle_type"]
+
+
+class _SetupSession:
+    """In-progress voice interview for a new load or rifle. Lives only in
+    memory for the duration of the conversation -- nothing's written to
+    the store until the shooter confirms."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind  # "load" or "rifle"
+        self.draft: dict = {}
+        self.confirming = False
 
 
 def bootstrap_default_profile(store: ProfileStore) -> None:
@@ -96,6 +137,7 @@ class BallisticaCLI:
         self.atmosphere: AtmosphereConditions = STANDARD_ATMOSPHERE
         self.wind = WindCondition()
         self._last_solution: dict | None = None
+        self._setup: _SetupSession | None = None
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -115,6 +157,14 @@ class BallisticaCLI:
         if not t:
             return ""
         low = t.lower()
+
+        # A guided load/rifle setup interview is modal: once it's running,
+        # every utterance is directed at it (a field value, a correction,
+        # or a way out) until it's confirmed or cancelled -- including
+        # "quit"/"exit", which cancel the interview here rather than the
+        # whole session.
+        if self._setup is not None:
+            return self._handle_setup_turn(t)
 
         if low in ("help", "?"):
             return HELP_TEXT
@@ -158,6 +208,14 @@ class BallisticaCLI:
             if re.search(r"\belevation\b", low):
                 return self._repeat("elevation")
             return self._repeat("solution")
+
+        # Start a guided voice interview for a brand new load/rifle --
+        # deliberately distinct from "switch to <name>" above, which only
+        # ever selects among loads/rifles that already exist.
+        if re.search(r"\b(?:new|add|set ?up|create)\b.*\bload\b", low):
+            return self._start_setup("load")
+        if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b", low):
+            return self._start_setup("rifle")
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
@@ -241,7 +299,8 @@ class BallisticaCLI:
                 clock_hours = float(args["clock_hours"])
             elif name == "repeat_last_solution":
                 part = str(args.get("part") or "solution")
-            elif name not in ("set_conditions", "get_status", "no_match"):
+            elif name not in ("set_conditions", "get_status", "no_match",
+                               "start_load_setup", "start_rifle_setup"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
             return "Didn't understand that. Type 'help' for supported commands."
@@ -265,6 +324,10 @@ class BallisticaCLI:
             return self._set_wind(speed, clock_hours)
         if name == "repeat_last_solution":
             return self._repeat(part if part in ("elevation", "windage") else "solution")
+        if name == "start_load_setup":
+            return self._start_setup("load")
+        if name == "start_rifle_setup":
+            return self._start_setup("rifle")
         if name == "no_match":
             warm = generate_warm_reply(original_text)
             return warm or "Didn't understand that. Type 'help' for supported commands."
@@ -288,6 +351,104 @@ class BallisticaCLI:
     def _set_wind(self, speed_mph: float, clock_hours: float) -> str:
         self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
         return f"Got it -- wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock."
+
+    # Guided load/rifle setup -- a stateful, multi-turn interview. See
+    # _SetupSession above: nothing gets written to the store until the
+    # shooter explicitly confirms the read-back summary.
+
+    def _start_setup(self, kind: str) -> str:
+        self._setup = _SetupSession(kind)
+        intro = "Alright, let's set up a new load." if kind == "load" else "Alright, let's set up a new rifle."
+        return f"{intro} {self._prompt_for(self._next_missing_field())}"
+
+    def _next_missing_field(self) -> str | None:
+        required = _LOAD_REQUIRED if self._setup.kind == "load" else _RIFLE_REQUIRED
+        for field in required:
+            if self._setup.draft.get(field) in (None, ""):
+                return field
+        return None
+
+    def _prompt_for(self, field: str) -> str:
+        prompts = _LOAD_PROMPTS if self._setup.kind == "load" else _RIFLE_PROMPTS
+        return prompts[field]
+
+    def _extras_summary(self) -> str:
+        d = self._setup.draft
+        extra_fields = _LOAD_EXTRA_FIELDS if self._setup.kind == "load" else _RIFLE_EXTRA_FIELDS
+        parts = [str(d[f]) for f in extra_fields if d.get(f) not in (None, "")]
+        return f" Also got: {', '.join(parts)}." if parts else ""
+
+    def _setup_summary(self) -> str:
+        d = self._setup.draft
+        if self._setup.kind == "load":
+            base = (f"Here's what I've got -- {d['name']}: {d['bullet_weight_gr']:.0f} grain, "
+                    f"BC {d['bc']} {d['drag_model']}, {d['muzzle_velocity_fps']:.0f} feet per second, "
+                    f"zeroed at {d['zero_distance_yd']:.0f} yards.")
+        else:
+            base = f"Here's what I've got -- {d['name']}, scope height {d['scope_height_in']:g} inches."
+        return f"{base}{self._extras_summary()} Sound right?"
+
+    def _finalize_setup(self) -> str:
+        d = self._setup.draft
+        kind = self._setup.kind
+        try:
+            if kind == "load":
+                valid = {f.name for f in dataclasses.fields(Load)}
+                load = Load(**{k: v for k, v in d.items() if k in valid})
+                rifle = self.store.get_active_rifle()
+                rifle.add_load(load, make_active=True)
+                self.store.save()
+                self._setup = None
+                return f"Saved -- you're on the {load.name} now."
+            valid = {f.name for f in dataclasses.fields(Rifle)}
+            rifle = Rifle(**{k: v for k, v in d.items() if k in valid})
+            self.store.add_rifle(rifle, make_active=True)
+            self.store.save()
+            self._setup = None
+            return f"Saved -- switched you to the {rifle.name}."
+        except (ValueError, TypeError) as exc:
+            # Deliberately don't clear self._setup here -- the draft is
+            # still good except for whatever's wrong, so the interview
+            # stays open and the next utterance is treated as a
+            # correction rather than forcing a restart from scratch.
+            return f"That didn't work -- {exc}. What should I fix?"
+
+    def _handle_setup_turn(self, text: str) -> str:
+        low = text.lower().strip()
+
+        if re.match(r"^(cancel|never ?mind|stop|abort|forget it|quit|exit)\b", low):
+            kind = self._setup.kind
+            self._setup = None
+            return f"Okay, scrapped the new {kind}. Nothing saved."
+
+        if self._setup.confirming:
+            if re.match(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|correct|"
+                        r"that.s right|sounds good|good to go)\b", low):
+                return self._finalize_setup()
+            no_m = re.match(r"^(no|nope|not quite|wrong|that.s not right)\b[,.]?\s*(.*)$", low)
+            if no_m:
+                self._setup.confirming = False
+                # No correction stated in the same breath -- ask, rather than
+                # guess. If they *did* say more ("no, make the zero 50
+                # yards"), fall through below and extract from the full
+                # utterance instead of just acknowledging and losing it.
+                if not no_m.group(2).strip():
+                    return "Okay, what needs to change?"
+
+        fields = extract_setup_fields(text, self._setup.kind)
+        if not fields:
+            return "Didn't catch any details there -- try again?"
+
+        valid = {f.name for f in dataclasses.fields(Load if self._setup.kind == "load" else Rifle)}
+        self._setup.draft.update({k: v for k, v in fields.items() if k in valid and v not in (None, "")})
+
+        missing = self._next_missing_field()
+        if missing:
+            self._setup.confirming = False
+            return self._prompt_for(missing)
+
+        self._setup.confirming = True
+        return self._setup_summary()
 
     def _apply_conditions_update(
         self, temp_f: float | None = None, pressure_inhg: float | None = None,

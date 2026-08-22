@@ -139,6 +139,24 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "start_load_setup",
+            "description": "Begin a guided voice interview to add a new ammunition load "
+                            "(e.g. 'let's log a new load', 'I want to add a load').",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_rifle_setup",
+            "description": "Begin a guided voice interview to add a new rifle "
+                            "(e.g. 'set up a new rifle', 'let's build a new rifle profile').",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "repeat_last_solution",
             "description": "Re-speak the most recently given drop-at-range solution (elevation and/or "
                             "windage) without recalculating it -- for phrasing like 'say that again', "
@@ -276,5 +294,101 @@ def generate_warm_reply(text: str) -> str | None:
         if not reply or re.search(r"\d", reply):
             return None
         return reply
+    except (openai.OpenAIError, json.JSONDecodeError, IndexError, AttributeError):
+        return None
+
+
+# --- Load/rifle setup slot extraction -----------------------------------
+#
+# Used turn-by-turn by cli.py's guided setup flow (see _SetupSession /
+# _handle_setup_turn): each call extracts whatever profile fields the
+# shooter mentioned in one utterance, however many or few. It never
+# decides *whether* a value is valid (a bad drag_model or a non-positive
+# BC still gets caught by Load/Rifle's own __post_init__ in cli.py) -- it
+# only pulls out what was said.
+
+_SETUP_SYSTEM_PROMPT = (
+    "You are extracting structured fields from one turn of a spoken, "
+    "conversational rifle/load setup interview. The shooter is answering "
+    "whatever was just asked, but may volunteer extra fields in the same "
+    "breath, or restate/correct a field they already gave. Call the given "
+    "tool once, filling in only the fields actually stated or clearly "
+    "implied this turn -- never invent or guess a value for anything not "
+    "mentioned, and never fill in a field with a default just because it's "
+    "common (e.g. don't assume MRAD or G1 unless they said so)."
+)
+
+_LOAD_SETUP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "provide_load_fields",
+        "description": "Record any ammunition load fields mentioned in this utterance.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "A short label for this load, e.g. '23.5gr H335'"},
+                "bullet_weight_gr": {"type": "number"},
+                "bc": {"type": "number", "description": "Ballistic coefficient, e.g. 0.362"},
+                "drag_model": {"type": "string", "enum": ["G1", "G7"]},
+                "muzzle_velocity_fps": {"type": "number"},
+                "zero_distance_yd": {"type": "number"},
+                "bullet_type": {"type": "string", "description": "e.g. '77gr Sierra MatchKing'"},
+                "powder": {"type": "string"},
+                "powder_charge_gr": {"type": "number"},
+                "notes": {"type": "string"},
+            },
+        },
+    },
+}
+
+_RIFLE_SETUP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "provide_rifle_fields",
+        "description": "Record any rifle fields mentioned in this utterance.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "scope_height_in": {"type": "number", "description": "Scope height above bore, in inches"},
+                "caliber": {"type": "string"},
+                "barrel_length_in": {"type": "number"},
+                "twist_rate": {"type": "string", "description": "e.g. '1:7'"},
+                "click_value_mrad": {"type": "number"},
+                "reticle_unit": {"type": "string", "enum": ["MRAD", "MOA"]},
+                "scope_make": {"type": "string"},
+                "scope_model": {"type": "string"},
+                "magnification": {"type": "string", "description": "e.g. '5-25x'"},
+                "objective_lens_mm": {"type": "number"},
+                "focal_plane": {"type": "string", "enum": ["FFP", "SFP"]},
+                "reticle_type": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+def extract_setup_fields(text: str, kind: str) -> dict | None:
+    """Returns whatever Load/Rifle fields (kind: "load" or "rifle") were
+    mentioned in this utterance, or None on an outright API failure. An
+    utterance that genuinely stated nothing usable comes back as {},
+    distinct from None only in that the caller doesn't need to treat it
+    as a hard error -- both currently get the same "didn't catch that"
+    handling in cli.py, but keeping them distinct leaves room to do
+    better later without another API shape change."""
+    tool = _LOAD_SETUP_TOOL if kind == "load" else _RIFLE_SETUP_TOOL
+    try:
+        client = get_openai_client()
+        response = client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": _SETUP_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            tools=[tool],
+            tool_choice="required",
+        )
+        call = response.choices[0].message.tool_calls[0]
+        return json.loads(call.function.arguments) if call.function.arguments else {}
     except (openai.OpenAIError, json.JSONDecodeError, IndexError, AttributeError):
         return None

@@ -262,6 +262,105 @@ def test_repeat_solution_reuses_last_drop_without_recalculating():
     assert "Elevation" not in windage
 
 
+def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp_path):
+    """Guided voice setup for a new load: multi-turn slot-filling, a
+    same-breath correction after the read-back summary ("no, actually
+    zero it at 50 yards" -- regression: this used to discard the
+    correction and just re-ask "what needs to change?", leaving the
+    interview stuck), and a final save. The LLM extraction call is
+    stubbed so this is deterministic and doesn't hit the real API --
+    live behavior of the extraction itself was verified by hand."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    responses = iter([
+        {"name": "25gr Varget"},
+        {"bullet_weight_gr": 75, "bc": 0.37, "drag_model": "G1"},
+        {"muzzle_velocity_fps": 2900, "zero_distance_yd": 100},
+        {"zero_distance_yd": 50},
+    ])
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    assert "call this load" in cli.handle("let's set up a new load").lower()
+    assert "bullet weight" in cli.handle("call it 25gr Varget").lower()
+    assert "muzzle velocity" in cli.handle("75 grains, point three seven, G1").lower()
+
+    summary = cli.handle("2900 feet per second, zeroed at 100 yards")
+    assert "sound right" in summary.lower()
+    assert "100 yards" in summary
+
+    corrected = cli.handle("no, actually zero it at 50 yards")
+    assert "sound right" in corrected.lower()
+    assert "50 yards" in corrected
+    assert "100 yards" not in corrected
+
+    saved = cli.handle("yes, save it")
+    assert "25gr Varget" in saved
+    assert cli._setup is None
+
+    rifle = store.get_active_rifle()
+    assert rifle.active_load_name == "25gr Varget"
+    assert rifle.loads["25gr Varget"].zero_distance_yd == 50
+    assert rifle.loads["25gr Varget"].bc == 0.37
+
+
+def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
+    """Same guided-setup machinery, the other kind -- pins that only
+    name/scope_height_in are required (everything else on Rifle has a
+    default) and that a new rifle becomes the active one once saved."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    responses = iter([
+        {"name": "Creedmoor bolt gun", "caliber": "6.5 Creedmoor"},
+        {"scope_height_in": 2.0},
+    ])
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    assert "call this rifle" in cli.handle("set up a new rifle").lower()
+    summary = cli.handle("call it the Creedmoor bolt gun, caliber 6.5 Creedmoor")
+    assert "scope height" in summary.lower()
+
+    confirm_prompt = cli.handle("scope height is 2 inches")
+    assert "sound right" in confirm_prompt.lower()
+
+    saved = cli.handle("yes")
+    assert "Creedmoor bolt gun" in saved
+    assert store.active_rifle_name == "Creedmoor bolt gun"
+    assert store.rifles["Creedmoor bolt gun"].caliber == "6.5 Creedmoor"
+
+
+def test_setup_cancel_discards_draft_without_saving(monkeypatch, tmp_path):
+    """"never mind" mid-interview should walk away clean -- nothing
+    written to the store, and the CLI drops back to normal command
+    handling rather than staying stuck in setup mode."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {"name": "should not save"})
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    original_rifle_count = len(store.rifles)
+
+    cli.handle("let's build a new load")
+    cli.handle("call it something")
+    reply = cli.handle("never mind, forget it")
+    assert "scrapped" in reply.lower()
+    assert cli._setup is None
+    assert len(store.rifles) == original_rifle_count
+    assert "should not save" not in store.get_active_rifle().loads
+
+
 def test_voice_query_understands_natural_range_phrasing():
     """Regression: the parser used to only recognize the literal phrase
     "drop at X yards" -- real speech doesn't come out that precisely.
