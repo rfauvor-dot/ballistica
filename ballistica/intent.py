@@ -138,6 +138,25 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "repeat_last_solution",
+            "description": "Re-speak the most recently given drop-at-range solution (elevation and/or "
+                            "windage) without recalculating it -- for phrasing like 'say that again', "
+                            "'what was the elevation again', or 'repeat the windage'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "part": {
+                        "type": "string",
+                        "enum": ["elevation", "windage", "solution"],
+                        "description": "Which part to repeat; 'solution' for the full elevation+windage callout.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_status",
             "description": "Report the active rifle, load, and current conditions.",
             "parameters": {"type": "object", "properties": {}},

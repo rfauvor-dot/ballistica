@@ -216,6 +216,52 @@ def test_voice_query_conversation_state_and_error_handling():
     assert r.status_code == 200
 
 
+def test_repeat_solution_reuses_last_drop_without_recalculating():
+    """"repeat windage/elevation/solution" should re-speak the last
+    drop-at-range answer from memory, not recompute it -- so it still
+    reflects what was actually last spoken even if conditions changed
+    in between. Also pins the no-solution-yet case (fresh session,
+    asked to repeat before ever getting a solution) doesn't crash."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from ballistica.cli import bootstrap_default_profile
+    from ballistica.trajectory import WindCondition
+    from fastapi.testclient import TestClient
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+    bootstrap_default_profile(api_module.store)
+    api_module.voice_cli.atmosphere = STANDARD_ATMOSPHERE
+    api_module.voice_cli.wind = WindCondition()
+    api_module.voice_cli._last_solution = None
+
+    client = TestClient(api_module.app)
+
+    r = client.post("/voice/query", json={"text": "repeat solution"})
+    assert "no solution" in r.json()["reply"].lower()
+
+    baseline = client.post("/voice/query", json={"text": "drop at 400 yards"}).json()["reply"]
+
+    # Conditions change after the solution was spoken -- repeat should
+    # still hand back the original answer, not a freshly recalculated one.
+    client.post("/voice/query", json={"text": "set conditions temp 100 pressure 26.0 altitude 5000 humidity 10"})
+
+    full = client.post("/voice/query", json={"text": "repeat solution"}).json()["reply"]
+    assert full == baseline
+
+    elevation = client.post("/voice/query", json={"text": "repeat elevation"}).json()["reply"]
+    assert elevation in baseline
+    assert "Windage" not in elevation
+
+    windage = client.post("/voice/query", json={"text": "repeat the windage"}).json()["reply"]
+    assert windage in baseline
+    assert "Elevation" not in windage
+
+
 def test_voice_query_understands_natural_range_phrasing():
     """Regression: the parser used to only recognize the literal phrase
     "drop at X yards" -- real speech doesn't come out that precisely.

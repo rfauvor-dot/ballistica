@@ -38,6 +38,7 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
   I'm seeing <N> clicks at <X> yards[, from <R> yards]  -- solve incline angle
   set conditions temp <T> pressure <P> altitude <A> humidity <H>
   set wind <speed> mph from <clock> oclock
+  repeat solution / repeat elevation / repeat windage -- re-speak the last drop-at solution
   status                                    -- show active rifle/load/atmosphere
   list rifles / list loads
   help
@@ -92,6 +93,7 @@ class BallisticaCLI:
         self.store = store
         self.atmosphere: AtmosphereConditions = STANDARD_ATMOSPHERE
         self.wind = WindCondition()
+        self._last_solution: dict | None = None
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -134,6 +136,18 @@ class BallisticaCLI:
             max_range = float(m.group(1)) if m and m.group(1) else 500.0
             step = float(m.group(2)) if m and m.group(2) else 100.0
             return self._table(max_range, step)
+
+        # "repeat windage/elevation/solution" -- re-speaks the last drop-at
+        # solution from memory rather than recalculating, so it works even
+        # right after a load/condition switch that hasn't been re-queried
+        # yet. Checked with word boundaries so it doesn't fire on unrelated
+        # phrases that happen to contain "again".
+        if re.search(r"\b(repeat|again)\b", low):
+            if re.search(r"\bwindage\b", low):
+                return self._repeat("windage")
+            if re.search(r"\belevation\b", low):
+                return self._repeat("elevation")
+            return self._repeat("solution")
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
@@ -215,6 +229,8 @@ class BallisticaCLI:
             elif name == "set_wind":
                 speed = float(args["speed_mph"])
                 clock_hours = float(args["clock_hours"])
+            elif name == "repeat_last_solution":
+                part = str(args.get("part") or "solution")
             elif name not in ("set_conditions", "get_status"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
@@ -237,6 +253,8 @@ class BallisticaCLI:
             )
         if name == "set_wind":
             return self._set_wind(speed, clock_hours)
+        if name == "repeat_last_solution":
+            return self._repeat(part if part in ("elevation", "windage") else "solution")
         return self._status()  # only get_status left
 
     # Setup-tone helpers: switching load/rifle/wind happens at the bench,
@@ -310,12 +328,31 @@ class BallisticaCLI:
         elev_dir = "up" if elev_val >= 0 else "down"
         wind_dir = "left" if wind_val >= 0 else "right"
 
+        # Remembered so "repeat windage/elevation/solution" can re-speak
+        # this without recalculating -- see _repeat().
+        self._last_solution = {
+            "range_yd": r.range_yd, "elev_dir": elev_dir, "elev_val": abs(elev_val),
+            "wind_dir": wind_dir, "wind_val": abs(wind_val), "unit_word": unit_word,
+        }
+
         # Two full sentences, not one comma-separated run-on: the period
         # gives TTS a natural pause between elevation and windage instead
         # of both numbers running together.
         return (f"Solution, {r.range_yd:.0f} yards. "
                 f"Elevation, {elev_dir} {abs(elev_val):.1f} {unit_word}. "
                 f"Windage, {wind_dir} {abs(wind_val):.1f} {unit_word}.")
+
+    def _repeat(self, part: str) -> str:
+        s = self._last_solution
+        if s is None:
+            return "No solution given yet -- ask for a range first."
+        if part == "elevation":
+            return f"Elevation, {s['elev_dir']} {s['elev_val']:.1f} {s['unit_word']}."
+        if part == "windage":
+            return f"Windage, {s['wind_dir']} {s['wind_val']:.1f} {s['unit_word']}."
+        return (f"Solution, {s['range_yd']:.0f} yards. "
+                f"Elevation, {s['elev_dir']} {s['elev_val']:.1f} {s['unit_word']}. "
+                f"Windage, {s['wind_dir']} {s['wind_val']:.1f} {s['unit_word']}.")
 
     def _table(self, max_range_yd: float, step_yd: float) -> str:
         solver, rifle, load = self.solver()
