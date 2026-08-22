@@ -302,7 +302,15 @@ _SETUP_SYSTEM_PROMPT = (
     "something like 'call it the AR-15 18 inch Faxon', that whole phrase is "
     "the name. Only split a token out into caliber/twist_rate/bullet_type/"
     "etc. instead of the name when it's clearly stated as that specific "
-    "field (e.g. 'caliber is 6.5 Creedmoor')."
+    "field (e.g. 'caliber is 6.5 Creedmoor'). "
+    "If this turn doesn't actually answer or add anything (e.g. the shooter "
+    "asked a question back, or said something unrelated to any field), call "
+    "the tool with no fields set at all -- never fill a field with a "
+    "placeholder like 'unknown', 'n/a', or similar just because the tool "
+    "call needs some argument. An omitted field and a placeholder value are "
+    "not the same thing to the caller: omitting means 'not stated this "
+    "turn', a placeholder would be read as a real answer and could "
+    "overwrite one."
 )
 
 _LOAD_SETUP_TOOL = {

@@ -748,9 +748,24 @@ async function handleWakeWord() {
   sessionWakeCount++;
   await speak(ackPool[Math.floor(Math.random() * ackPool.length)]);
 
+  // voiceEnabled is re-checked every iteration -- without it, disabling
+  // voice mid-conversation did nothing: the sign-off phrase would play
+  // (that's a separate, immediate action in the disable button's own
+  // handler below) but this loop kept recording and retrying regardless,
+  // since it had no way to know the toggle had changed. Confirmed live
+  // (Addendum 11): a stuck setup session that couldn't be interpreted
+  // kept repeating "didn't understand" even after disabling, requiring a
+  // full app close to stop. MAX_TURNS is a hard backstop on top of that --
+  // the backend now gives up on its own after a few consecutive failures
+  // (see _MAX_FAILED_ATTEMPTS in cli.py), but a stuck loop was bad enough
+  // to also want a ceiling here that doesn't depend on the backend
+  // behaving.
   let keepGoing = true;
-  while (keepGoing) {
+  let turns = 0;
+  const MAX_TURNS = 20;
+  while (keepGoing && voiceEnabled && turns < MAX_TURNS) {
     keepGoing = await runConversationTurn();
+    turns++;
   }
 
   // The rifle/load panels were only ever loaded once, at page load --

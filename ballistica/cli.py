@@ -103,6 +103,39 @@ _RIFLE_EXTRA_PROMPTS = {
 
 _SKIP_RE = re.compile(r"^(skip|none|n/?a|not sure|don.t know|no|nothing|pass)\b")
 
+# Confirmed live (Addendum 11): asked something that isn't an answer to
+# the current field (e.g. "what caliber", said while scope height was
+# being asked), the extractor can hallucinate a placeholder value like
+# "<UNKNOWN>" instead of just omitting the field -- which then overwrites
+# a real value already in the draft with garbage, silently corrupting
+# data, and *also* defeats the no-progress failure counter above (the
+# draft dict genuinely changed, so it looks like progress every turn even
+# though the same required field keeps going unanswered forever). Filtered
+# out here so a hallucinated placeholder is never treated as a real value.
+_PLACEHOLDER_RE = re.compile(
+    r"^(unknown|n/?a|none|null|undefined|not specified|not given|not sure|unspecified)$"
+    r"|^[<\[].*[>\]]$",
+    re.IGNORECASE,
+)
+
+
+def _is_real_value(value) -> bool:
+    if value in (None, ""):
+        return False
+    return not (isinstance(value, str) and _PLACEHOLDER_RE.match(value.strip()))
+
+# A modal setup/calibration session used to stay open indefinitely on
+# repeated "didn't catch that" turns -- reasonable for one bad mic pickup,
+# but with no cap it could spin forever on wind noise, silence, or a
+# transcription hiccup, re-asking the same question every few seconds with
+# no way out except closing the app (confirmed live, Addendum 11: a
+# consecutive-failure loop that even ignored disabling voice, because the
+# frontend loop had no independent way to know the session was stuck vs.
+# genuinely still making progress). Auto-cancelling after a few consecutive
+# failures gives the loop a guaranteed exit regardless of what the
+# frontend does.
+_MAX_FAILED_ATTEMPTS = 3
+
 
 class _SetupSession:
     """In-progress voice interview for a new load or rifle. Lives only in
@@ -114,6 +147,7 @@ class _SetupSession:
         self.draft: dict = {}
         self.skipped: set = set()
         self.confirming = False
+        self.failed_attempts = 0
 
 
 class _CalibrationSession:
@@ -129,6 +163,7 @@ class _CalibrationSession:
         self.load_name = load_name
         self.shots: list[float] = []
         self.confirming = False
+        self.failed_attempts = 0
 
 
 def bootstrap_default_profile(store: ProfileStore) -> None:
@@ -509,6 +544,7 @@ class BallisticaCLI:
             if current_field in required:
                 return f"I need that one to save this {self._setup.kind} -- {self._prompt_for(current_field)}"
             self._setup.skipped.add(current_field)
+            self._setup.failed_attempts = 0
             nxt = self._next_field_to_ask()
             if nxt is None:
                 self._setup.confirming = True
@@ -516,11 +552,24 @@ class BallisticaCLI:
             return self._prompt_for(nxt)
 
         fields = extract_setup_fields(text, self._setup.kind)
-        if not fields:
-            return "Didn't catch any details there -- try again?"
-
         valid = {f.name for f in dataclasses.fields(Load if self._setup.kind == "load" else Rifle)}
-        self._setup.draft.update({k: v for k, v in fields.items() if k in valid and v not in (None, "")})
+        before = dict(self._setup.draft)
+        if fields:
+            self._setup.draft.update({k: v for k, v in fields.items() if k in valid and _is_real_value(v)})
+
+        # "No progress" -- not just "fields came back empty" -- is the real
+        # failure signal: a correction that overwrites an existing field
+        # with the same key ("no, actually zero it at 50 yards") must not
+        # count as a failure just because the draft's size didn't grow.
+        if self._setup.draft == before:
+            self._setup.failed_attempts += 1
+            if self._setup.failed_attempts >= _MAX_FAILED_ATTEMPTS:
+                kind = self._setup.kind
+                self._setup = None
+                return (f"Having trouble understanding you -- stopping the {kind} setup for now. "
+                        f"Say 'new {kind}' when you want to try again.")
+            return "Didn't catch any details there -- try again?"
+        self._setup.failed_attempts = 0
 
         missing = self._next_field_to_ask()
         if missing:
@@ -563,6 +612,7 @@ class BallisticaCLI:
             if deviation > 40 and deviation > 2 * stdev:
                 outlier_note = " -- that one's an outlier"
         self._calibration.shots.append(shot_fps)
+        self._calibration.failed_attempts = 0
         avg, _ = self._calibration_stats()
         return f"Shot {len(self._calibration.shots)}, {shot_fps:.0f}{outlier_note}. Average {avg:.0f}."
 
@@ -604,12 +654,14 @@ class BallisticaCLI:
                     f"Save as the new velocity for the {self._calibration.load_name}?")
 
         if re.search(r"\baverage\b", low):
+            self._calibration.failed_attempts = 0
             if not self._calibration.shots:
                 return "No shots recorded yet."
             avg, spread = self._calibration_stats()
             return f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}."
 
         if re.search(r"\b(discard|throw out|toss|scratch that|bad (reading|shot))\b", low):
+            self._calibration.failed_attempts = 0
             if not self._calibration.shots:
                 return "No shots to discard yet."
             removed = self._calibration.shots.pop()
@@ -620,6 +672,10 @@ class BallisticaCLI:
 
         m = re.search(r"(\d{3,5}(?:\.\d+)?)", low)
         if not m:
+            self._calibration.failed_attempts += 1
+            if self._calibration.failed_attempts >= _MAX_FAILED_ATTEMPTS:
+                self._calibration = None
+                return "Having trouble hearing shots -- calibration stopped. Say 'start calibration' to try again."
             return "Didn't catch a number there -- try again?"
         return self._record_shot(float(m.group(1)))
 

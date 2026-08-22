@@ -408,6 +408,130 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     assert store.rifles["Creedmoor bolt gun"].caliber == "6.5 Creedmoor"
 
 
+def test_setup_rejects_hallucinated_placeholder_values(monkeypatch, tmp_path):
+    """The actual root cause behind Addendum 11's infinite loop: asked
+    something that doesn't answer the current field (e.g. "what
+    caliber" said while scope height is being asked), the real Claude
+    extraction was observed live to sometimes return a placeholder like
+    "<UNKNOWN>" instead of just omitting the field. That value used to
+    sail straight through the None/empty-string filter, silently
+    overwriting a real captured value with garbage -- and worse, made
+    the draft dict register as "changed" every turn, which defeated the
+    no-progress failure counter entirely (the counter never tripped
+    because *something* always looked different). Placeholder-shaped
+    strings must be treated the same as no answer at all: rejected
+    before they reach the draft, so a real value can't be clobbered and
+    the failure counter counts correctly."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind: {"caliber": "5.7x28mm", "name": "CMMG"})
+    cli.handle("let's set up a new rifle")
+    cli.handle("5.7x28mm, 11.5 inch, CMMG")
+    assert cli._setup.draft["caliber"] == "5.7x28mm"
+
+    for placeholder in ["<UNKNOWN>", "unknown", "n/a", "N/A", "null", "[not specified]"]:
+        cli._setup.failed_attempts = 0  # isolate each placeholder, independent of the retry cap
+        monkeypatch.setattr(cli_module, "extract_setup_fields",
+                             lambda text, kind, p=placeholder: {"caliber": p})
+        reply = cli.handle("what caliber")
+        assert cli._setup.draft["caliber"] == "5.7x28mm", f"placeholder {placeholder!r} overwrote a real value"
+        assert "didn't catch" in reply.lower()
+        assert cli._setup.failed_attempts == 1, \
+            f"placeholder {placeholder!r} looked like progress and reset the failure counter"
+
+
+def test_setup_gives_up_after_repeated_failures_to_understand(monkeypatch, tmp_path):
+    """Regression (Addendum 11): a modal setup session that can't
+    understand a repeated answer used to stay open forever, re-asking
+    the same question indefinitely -- confirmed live as a real stuck
+    loop that even survived disabling voice, since the frontend had no
+    way to tell "stuck" apart from "still legitimately in progress".
+    After a few consecutive turns with zero actual progress, the
+    session must give up and cleanly exit setup instead of staying
+    open. Also pins that a correction which overwrites an existing
+    field (same key, new value) counts as real progress and does NOT
+    trip the failure counter, even though the draft's size doesn't
+    grow."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {"name": "AR-15"})
+    cli.handle("let's set up a new rifle")
+    cli.handle("call it the AR-15")  # real progress -- resets the counter
+
+    # Now every turn fails to extract anything new (simulates the LLM
+    # genuinely not understanding, or repeated silence/noise).
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {})
+    first = cli.handle("what's the scope height")
+    assert "didn't catch" in first.lower()
+    assert cli._setup is not None
+
+    second = cli.handle("still not understanding")
+    assert "didn't catch" in second.lower()
+    assert cli._setup is not None
+
+    gave_up = cli.handle("one more try")
+    assert "trouble understanding" in gave_up.lower()
+    assert cli._setup is None
+
+    # Confirms the CLI is back to normal command handling, not stuck.
+    assert "yards" in cli.handle("drop at 300 yards").lower()
+
+
+def test_setup_correction_overwriting_existing_field_resets_failure_counter(monkeypatch, tmp_path):
+    """A correction that changes an already-captured field's value (not
+    adding a new key) must count as progress, not a failure -- pins the
+    fix against the size-of-draft-only check that would have wrongly
+    penalized exactly this case."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    responses = iter([
+        {"name": "25gr Varget"},
+        {"bullet_weight_gr": 75, "bc": 0.37, "drag_model": "G1"},
+        {"muzzle_velocity_fps": 2900, "zero_distance_yd": 100},
+    ])
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+    cli.handle("let's set up a new load")
+    cli.handle("call it 25gr Varget")
+    cli.handle("75 grains, point three seven, G1")
+    cli.handle("2900 feet per second, zeroed at 100 yards")
+    for _ in range(4):
+        cli.handle("skip")
+
+    # Two "no progress" turns, then a same-key-overwrite correction --
+    # the correction must reset the counter, not be swallowed by it.
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {})
+    cli.handle("uh")
+    cli.handle("uh")
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {"zero_distance_yd": 50})
+    corrected = cli.handle("no, actually zero it at 50 yards")
+    assert "50 yards" in corrected
+    assert cli._setup.failed_attempts == 0
+
+    # Two more failures shouldn't be enough to trip the cap now that
+    # the counter was reset by the correction above.
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {})
+    cli.handle("uh")
+    still_open = cli.handle("uh")
+    assert "didn't catch" in still_open.lower()
+    assert cli._setup is not None
+
+
 def test_setup_cancel_discards_draft_without_saving(monkeypatch, tmp_path):
     """"never mind" mid-interview should walk away clean -- nothing
     written to the store, and the CLI drops back to normal command
@@ -559,4 +683,34 @@ def test_calibration_cancel_and_reject_leave_no_trace(tmp_path):
     assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == original_fps
 
     # Confirms the CLI is back to normal command handling, not stuck.
+    assert "yards" in cli.handle("drop at 300 yards").lower()
+
+
+def test_calibration_gives_up_after_repeated_unparseable_shots(tmp_path):
+    """Same Addendum 11 regression as the setup version, for calibration:
+    if shot readings genuinely can't be parsed turn after turn (silence,
+    noise, a garbled transcription with no number in it), the session
+    must give up rather than stay open and keep re-asking forever. A
+    real shot in between resets the counter."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("start calibration")
+    cli.handle("2780")  # a real shot resets the counter
+
+    first = cli.handle("uh what")
+    assert "didn't catch" in first.lower()
+    assert cli._calibration is not None
+
+    second = cli.handle("static noise")
+    assert "didn't catch" in second.lower()
+    assert cli._calibration is not None
+
+    gave_up = cli.handle("still nothing")
+    assert "trouble hearing" in gave_up.lower()
+    assert cli._calibration is None
+
     assert "yards" in cli.handle("drop at 300 yards").lower()
