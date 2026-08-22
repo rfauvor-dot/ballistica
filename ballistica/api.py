@@ -25,10 +25,6 @@ from dotenv import load_dotenv
 # OpenAI import/client construction, not after.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-import ssl
-
-import certifi
-import httpx2
 import openai
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +35,7 @@ from pydantic import BaseModel, Field
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE, pressure_at_altitude_inhg
 from .cli import BallisticaCLI, bootstrap_default_profile
+from .openai_client import get_openai_client
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -294,34 +291,6 @@ def _msg(exc: Exception) -> str:
     return exc.args[0] if exc.args else str(exc)
 
 
-_openai_client: openai.OpenAI | None = None
-
-
-def _get_openai_client() -> openai.OpenAI:
-    """Lazily builds (and caches) the OpenAI client.
-
-    httpx2/httpcore2's default SSL context construction routes through
-    `truststore` for native OS certificate-store integration, which has
-    a confirmed infinite-recursion bug (RecursionError) against Python
-    3.14's ssl module as of truststore 0.10.4 -- reproduced directly,
-    not assumed. Supplying our own pre-built context via certifi's CA
-    bundle instead of letting httpcore2 construct its default one skips
-    that code path entirely. This is a workaround for an upstream
-    library bug, not a security downgrade: it still verifies against a
-    real, current CA bundle.
-
-    Lazy + cached rather than built at import time so importing this
-    module doesn't hard-fail in environments with no OPENAI_API_KEY set
-    (tests, or Render before the env var is configured).
-    """
-    global _openai_client
-    if _openai_client is None:
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        http_client = httpx2.Client(verify=ssl_context)
-        _openai_client = openai.OpenAI(http_client=http_client)
-    return _openai_client
-
-
 def _load_to_out(load: Load) -> LoadOut:
     return LoadOut(**load.__dict__)
 
@@ -502,7 +471,7 @@ def voice_speak(payload: VoiceSpeakIn):
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
     try:
-        client = _get_openai_client()
+        client = get_openai_client()
         result = client.audio.speech.create(
             model="tts-1", voice=payload.voice, input=text, speed=payload.speed,
         )
@@ -521,7 +490,7 @@ async def voice_transcribe(audio: UploadFile = File(...)):
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="audio file was empty")
     try:
-        client = _get_openai_client()
+        client = get_openai_client()
         # OpenAI's SDK identifies the audio format from the filename's
         # extension, not the content-type header, so this needs a real
         # name attached, not just raw bytes.

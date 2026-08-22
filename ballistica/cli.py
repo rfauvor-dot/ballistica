@@ -9,11 +9,20 @@ matching how the brief says the voice interface should behave.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import re
 import sys
 
+from dotenv import load_dotenv
+
+# Idempotent: api.py also loads this, but cli.py needs its own copy so
+# the LLM intent fallback works when this module is used standalone
+# (python -m ballistica.cli), not just through the API server.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
+from .intent import extract_intent
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -155,14 +164,10 @@ class BallisticaCLI:
             r"set conditions temp (-?[\d.]+)\s*pressure ([\d.]+)\s*altitude (-?[\d.]+)\s*humidity ([\d.]+)",
             low)
         if m:
-            self.atmosphere = AtmosphereConditions(
+            return self._apply_conditions_update(
                 temp_f=float(m.group(1)), pressure_inhg=float(m.group(2)),
                 altitude_ft=float(m.group(3)), humidity_pct=float(m.group(4)),
             )
-            return (f"Conditions set: {self.atmosphere.temp_f:.0f} degrees, "
-                    f"{self.atmosphere.pressure_inhg:.2f} inches mercury, "
-                    f"{self.atmosphere.humidity_pct:.0f} percent humidity, "
-                    f"{self.atmosphere.altitude_ft:.0f} feet.")
 
         m = re.search(r"set wind ([\d.]+)\s*mph from ([\d.]+)\s*o.?clock", low)
         if m:
@@ -182,7 +187,88 @@ class BallisticaCLI:
         if m:
             return self._drop_at(float(m.group(1)))
 
-        return "Didn't understand that. Type 'help' for supported commands."
+        # Last resort: every fast, free, exact pattern above missed.
+        # Rather than keep discovering and patching one rigid regex at a
+        # time as new phrasings turn up, hand this off to an LLM that
+        # only decides *which* command was meant and *what* the
+        # parameters are -- the actual math still runs through the same
+        # deterministic functions every other path above uses.
+        result = extract_intent(t)
+        if result is None:
+            return "Didn't understand that. Type 'help' for supported commands."
+        return self._dispatch_intent(*result)
+
+    def _dispatch_intent(self, name: str, args: dict) -> str:
+        # Two different failure modes need two different responses: the
+        # LLM giving back malformed/missing arguments (its fault, a
+        # generic "didn't understand" is honest) versus a well-formed,
+        # correctly-understood request that just doesn't match anything
+        # (e.g. a genuinely unknown load name) -- that one should surface
+        # its real message, same as every deterministic regex path above
+        # already does by not catching KeyError/ValueError at all.
+        try:
+            if name == "get_drop_at_range":
+                range_yd = float(args["range_yd"])
+            elif name == "switch_load":
+                load_query = str(args["query"])
+            elif name == "switch_rifle":
+                rifle_query = str(args["query"])
+            elif name == "get_minimum_spread_zero":
+                max_range_yd = float(args["max_range_yd"])
+            elif name == "solve_incline_angle":
+                observed = float(args["observed_diff_clicks"])
+                los = float(args["line_of_sight_distance_yd"])
+                ref = float(args.get("reference_distance_yd") or 100.0)
+            elif name == "set_wind":
+                speed = float(args["speed_mph"])
+                clock_hours = float(args["clock_hours"])
+            elif name not in ("set_conditions", "get_status"):
+                return "Didn't understand that. Type 'help' for supported commands."
+        except (KeyError, ValueError, TypeError):
+            return "Didn't understand that. Type 'help' for supported commands."
+
+        if name == "get_drop_at_range":
+            return self._drop_at(range_yd)
+        if name == "switch_load":
+            load = self.store.set_active_load(load_query)
+            self.store.save()
+            return f"Active load: {load.name} ({load.muzzle_velocity_fps:.0f} fps)"
+        if name == "switch_rifle":
+            rifle = self.store.set_active_rifle(rifle_query)
+            self.store.save()
+            return f"Active rifle: {rifle.name}"
+        if name == "get_minimum_spread_zero":
+            return self._minimum_spread_zero(max_range_yd)
+        if name == "solve_incline_angle":
+            return self._solve_angle(observed, los, ref)
+        if name == "set_conditions":
+            return self._apply_conditions_update(
+                temp_f=args.get("temp_f"), pressure_inhg=args.get("pressure_inhg"),
+                altitude_ft=args.get("altitude_ft"), humidity_pct=args.get("humidity_pct"),
+            )
+        if name == "set_wind":
+            self.wind = WindCondition(speed_mph=speed, clock_deg=clock_hours * 30.0)
+            return f"Wind set: {speed:.0f} mph from {clock_hours:g} o'clock"
+        return self._status()  # only get_status left
+
+    def _apply_conditions_update(
+        self, temp_f: float | None = None, pressure_inhg: float | None = None,
+        altitude_ft: float | None = None, humidity_pct: float | None = None,
+    ) -> str:
+        """Merges into the currently-set conditions rather than requiring
+        every field restated -- "it's about 90 out" should work without
+        also having to repeat pressure/altitude/humidity that haven't
+        changed."""
+        self.atmosphere = AtmosphereConditions(
+            temp_f=temp_f if temp_f is not None else self.atmosphere.temp_f,
+            pressure_inhg=pressure_inhg if pressure_inhg is not None else self.atmosphere.pressure_inhg,
+            altitude_ft=altitude_ft if altitude_ft is not None else self.atmosphere.altitude_ft,
+            humidity_pct=humidity_pct if humidity_pct is not None else self.atmosphere.humidity_pct,
+        )
+        return (f"Conditions set: {self.atmosphere.temp_f:.0f} degrees, "
+                f"{self.atmosphere.pressure_inhg:.2f} inches mercury, "
+                f"{self.atmosphere.humidity_pct:.0f} percent humidity, "
+                f"{self.atmosphere.altitude_ft:.0f} feet.")
 
     def _status(self) -> str:
         try:

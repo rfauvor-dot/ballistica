@@ -15,6 +15,16 @@ DEFAULT_PROFILES_PATH = Path(__file__).resolve().parent.parent / "data" / "profi
 
 _TOKEN_RE = re.compile(r"\d+\.?\d*|[a-z]+")
 
+# Words a real spoken query naturally includes ("switch to MY 21 grain
+# LOAD") that never appear in a load/rifle's actual name -- stripped
+# from the query side only (never the target side) so they can't cause
+# an otherwise-correct fuzzy match to fail just because every query
+# token is required to match something.
+_QUERY_FILLER_WORDS = {
+    "my", "the", "a", "an", "to", "load", "rifle", "gun", "use", "please",
+    "switch", "for",
+}
+
 
 def _tokens(text: str) -> list[str]:
     """Loosens matching for voice-transcribed queries: lowercase, fold
@@ -24,6 +34,12 @@ def _tokens(text: str) -> list[str]:
     on."""
     text = text.lower().replace("grains", "gr").replace("grain", "gr")
     return _TOKEN_RE.findall(text)
+
+
+def _query_tokens(text: str) -> list[str]:
+    """Same as _tokens(), plus strips common filler words that a real
+    spoken query includes but a load/rifle's actual name never does."""
+    return [t for t in _tokens(text) if t not in _QUERY_FILLER_WORDS]
 
 
 def _tokens_match(query_tokens: list[str], target_tokens: list[str]) -> bool:
@@ -94,7 +110,7 @@ class Rifle:
         substring match against name/powder/notes."""
         if query in self.loads:
             return self.loads[query]
-        q_tokens = _tokens(query)
+        q_tokens = _query_tokens(query)
         matches = [
             load for load in self.loads.values()
             if _tokens_match(q_tokens, _tokens(f"{load.name} {load.powder} {load.notes}"))
@@ -128,7 +144,7 @@ class ProfileStore:
     def find_rifle(self, query: str) -> Rifle:
         if query in self.rifles:
             return self.rifles[query]
-        q_tokens = _tokens(query)
+        q_tokens = _query_tokens(query)
         matches = [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(r.name))]
         if len(matches) == 1:
             return matches[0]
