@@ -487,6 +487,19 @@ def voice_speak(payload: VoiceSpeakIn):
     return Response(content=result.content, media_type="audio/mpeg")
 
 
+_TRANSCRIBE_MODEL = "gpt-4o-transcribe"
+# Biases the model toward Ballistica's actual vocabulary -- verified live
+# (Addendum 15) that without this, terms like calibers and powder/BC
+# figures are exactly the kind of short, jargon-heavy phrase a general-
+# purpose transcription pass is most likely to mangle.
+_TRANSCRIBE_PROMPT = (
+    "Ballistics and rifle terminology: MOA, MRAD, elevation, windage, "
+    "zero, drag coefficient, chronograph, calibers like 5.7x28mm or "
+    "6.5 Creedmoor, powder charge, muzzle velocity, H335 powder, "
+    "Sierra MatchKing."
+)
+
+
 @app.post("/voice/transcribe")
 async def voice_transcribe(audio: UploadFile = File(...)):
     """Recorded audio in (whatever format the browser's MediaRecorder
@@ -502,7 +515,9 @@ async def voice_transcribe(audio: UploadFile = File(...)):
         # extension, not the content-type header, so this needs a real
         # name attached, not just raw bytes.
         file_tuple = (audio.filename or "recording.webm", audio_bytes, audio.content_type or "audio/webm")
-        result = client.audio.transcriptions.create(model="whisper-1", file=file_tuple)
+        result = client.audio.transcriptions.create(
+            model=_TRANSCRIBE_MODEL, file=file_tuple, language="en", prompt=_TRANSCRIBE_PROMPT,
+        )
     except openai.OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}")
     return {"text": result.text}
