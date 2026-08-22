@@ -250,8 +250,8 @@ def test_voice_query_understands_natural_range_phrasing():
 
     # Still must not hijack the other command types, which all also
     # mention "yards" -- these have to keep routing to their own handlers.
-    assert "Active load" in client.post("/voice/query", json={"text": "switch to 21.0gr"}).json()["reply"]
-    assert "Zero solution" in client.post(
+    assert "21.0gr" in client.post("/voice/query", json={"text": "switch to 21.0gr"}).json()["reply"]
+    assert "yard zero" in client.post(
         "/voice/query", json={"text": "what zero minimizes my spread out to 500 yards"},
     ).json()["reply"]
     assert "Angle confirmed" in client.post(

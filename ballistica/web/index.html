@@ -527,15 +527,32 @@ solveBtn.addEventListener('click', async () => {
 // require a user gesture before granting microphone access) -- after
 // that it's hands-free until you tap again to disable it.
 
+// In-session wakes stay terse/tactical -- these fire mid-string, between
+// shots, where a shooter wants an ack and nothing else. Session start/stop
+// get warmer phrasing instead (see GREETING_PHRASES/SIGNOFF_PHRASES below):
+// that's the one moment that isn't live fire, so it can afford a sentence.
 const ACK_PHRASES = [
   "Copy that, standing by.",
   "Ballistica up, go ahead.",
   "I'm here, Rick. Go ahead.",
 ];
 
+const GREETING_PHRASES = [
+  "Hey Rick, Ballistica's up. What are we working with today?",
+  "Good to go, Rick -- what do you need?",
+  "Ballistica's online. Let's get you dialed in.",
+];
+
+const SIGNOFF_PHRASES = [
+  "Alright, standing down. Good shooting.",
+  "Voice off -- catch you next session.",
+  "That's a wrap. I'm here when you need me.",
+];
+
 let voiceEnabled = false;
 let voiceState = 'off'; // off | idle | acknowledging | listening | processing | speaking
 let wakeRecognition = null;
+let sessionWakeCount = 0;
 
 const voiceStateEl = document.getElementById('voiceState');
 const voiceHeardEl = document.getElementById('voiceHeard');
@@ -677,7 +694,9 @@ function startWakeListening() {
 async function handleWakeWord() {
   voiceState = 'acknowledging';
   setVoiceState('Ballistica heard -- acknowledging', true);
-  await speak(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
+  const ackPool = sessionWakeCount === 0 ? GREETING_PHRASES : ACK_PHRASES;
+  sessionWakeCount++;
+  await speak(ackPool[Math.floor(Math.random() * ackPool.length)]);
 
   voiceState = 'listening';
   setVoiceState('Listening for your command...', true);
@@ -725,15 +744,22 @@ async function handleWakeWord() {
 
 enableVoiceBtn.addEventListener('click', () => {
   if (voiceEnabled) {
+    const hadSession = sessionWakeCount > 0;
     voiceEnabled = false;
     voiceState = 'off';
     if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
     setVoiceState('Voice: off');
     voiceHeardEl.textContent = '';
     enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
+    // Fire-and-forget: the toggle and mic should go quiet right away,
+    // the sign-off just plays out over it rather than blocking the UI.
+    if (hadSession) {
+      speak(SIGNOFF_PHRASES[Math.floor(Math.random() * SIGNOFF_PHRASES.length)]);
+    }
     return;
   }
   voiceEnabled = true;
+  sessionWakeCount = 0;
   enableVoiceBtn.textContent = 'Disable voice';
   startWakeListening();
 });

@@ -137,15 +137,11 @@ class BallisticaCLI:
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
-            rifle = self.store.set_active_rifle(m.group(1).strip())
-            self.store.save()
-            return f"Active rifle: {rifle.name}"
+            return self._switch_rifle(m.group(1).strip())
 
         m = re.search(r"switch to (.+)", low)
         if m:
-            load = self.store.set_active_load(m.group(1).strip())
-            self.store.save()
-            return f"Active load: {load.name} ({load.muzzle_velocity_fps:.0f} fps)"
+            return self._switch_load(m.group(1).strip())
 
         m = re.search(r"what zero minimizes my spread out to ([\d.]+)\s*(?:yd|yard|yards)", low)
         if m:
@@ -171,10 +167,7 @@ class BallisticaCLI:
 
         m = re.search(r"set wind ([\d.]+)\s*mph from ([\d.]+)\s*o.?clock", low)
         if m:
-            speed = float(m.group(1))
-            clock_hours = float(m.group(2))
-            self.wind = WindCondition(speed_mph=speed, clock_deg=clock_hours * 30.0)
-            return f"Wind set: {speed:.0f} mph from {clock_hours:g} o'clock"
+            return self._set_wind(float(m.group(1)), float(m.group(2)))
 
         # Fallback for natural phrasing that doesn't match "drop at X
         # yards" literally -- "set range for 400 yard and give solution",
@@ -230,13 +223,9 @@ class BallisticaCLI:
         if name == "get_drop_at_range":
             return self._drop_at(range_yd)
         if name == "switch_load":
-            load = self.store.set_active_load(load_query)
-            self.store.save()
-            return f"Active load: {load.name} ({load.muzzle_velocity_fps:.0f} fps)"
+            return self._switch_load(load_query)
         if name == "switch_rifle":
-            rifle = self.store.set_active_rifle(rifle_query)
-            self.store.save()
-            return f"Active rifle: {rifle.name}"
+            return self._switch_rifle(rifle_query)
         if name == "get_minimum_spread_zero":
             return self._minimum_spread_zero(max_range_yd)
         if name == "solve_incline_angle":
@@ -247,9 +236,27 @@ class BallisticaCLI:
                 altitude_ft=args.get("altitude_ft"), humidity_pct=args.get("humidity_pct"),
             )
         if name == "set_wind":
-            self.wind = WindCondition(speed_mph=speed, clock_deg=clock_hours * 30.0)
-            return f"Wind set: {speed:.0f} mph from {clock_hours:g} o'clock"
+            return self._set_wind(speed, clock_hours)
         return self._status()  # only get_status left
+
+    # Setup-tone helpers: switching load/rifle/wind happens at the bench,
+    # between strings -- not mid-shot -- so these read as a conversational
+    # confirmation rather than the clipped numeric callouts _drop_at() and
+    # _solve_angle() use for in-the-moment, live-fire solutions.
+
+    def _switch_load(self, query: str) -> str:
+        load = self.store.set_active_load(query)
+        self.store.save()
+        return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
+
+    def _switch_rifle(self, query: str) -> str:
+        rifle = self.store.set_active_rifle(query)
+        self.store.save()
+        return f"Switched you over to the {rifle.name}."
+
+    def _set_wind(self, speed_mph: float, clock_hours: float) -> str:
+        self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
+        return f"Got it -- wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock."
 
     def _apply_conditions_update(
         self, temp_f: float | None = None, pressure_inhg: float | None = None,
@@ -265,8 +272,8 @@ class BallisticaCLI:
             altitude_ft=altitude_ft if altitude_ft is not None else self.atmosphere.altitude_ft,
             humidity_pct=humidity_pct if humidity_pct is not None else self.atmosphere.humidity_pct,
         )
-        return (f"Conditions set: {self.atmosphere.temp_f:.0f} degrees, "
-                f"{self.atmosphere.pressure_inhg:.2f} inches mercury, "
+        return (f"Conditions updated -- {self.atmosphere.temp_f:.0f} degrees, "
+                f"{self.atmosphere.pressure_inhg:.2f} inches of mercury, "
                 f"{self.atmosphere.humidity_pct:.0f} percent humidity, "
                 f"{self.atmosphere.altitude_ft:.0f} feet.")
 
@@ -319,10 +326,10 @@ class BallisticaCLI:
     def _minimum_spread_zero(self, max_range_yd: float) -> str:
         solver, rifle, load = self.solver()
         result = find_minimum_spread_zero(solver, max_range_yd)
-        return (f"Zero solution confirmed. {result.zero_distance_yd:.0f} yards minimizes spread "
-                f"out to {max_range_yd:.0f} yards. Peak rise {result.max_height_in:.1f} inches, "
-                f"terminal drop {result.min_height_in:.1f} inches. "
-                f"Total spread {result.spread_in:.1f} inches.")
+        return (f"Your {result.zero_distance_yd:.0f} yard zero minimizes spread out to "
+                f"{max_range_yd:.0f} yards -- peak rise {result.max_height_in:.1f} inches, "
+                f"terminal drop {result.min_height_in:.1f} inches, "
+                f"total spread {result.spread_in:.1f} inches.")
 
     def _solve_angle(self, observed_clicks: float, los_yd: float, ref_yd: float) -> str:
         solver, rifle, load = self.solver()
