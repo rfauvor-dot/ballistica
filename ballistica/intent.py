@@ -12,6 +12,7 @@ recognized; only "what did they actually ask for" gets smarter.
 from __future__ import annotations
 
 import json
+import re
 
 import openai
 
@@ -191,5 +192,89 @@ def extract_intent(text: str) -> tuple[str, dict] | None:
         call = response.choices[0].message.tool_calls[0]
         args = json.loads(call.function.arguments) if call.function.arguments else {}
         return call.function.name, args
+    except (openai.OpenAIError, json.JSONDecodeError, IndexError, AttributeError):
+        return None
+
+
+# --- Personality layer -------------------------------------------------
+#
+# Only called after extract_intent() already came back no_match, i.e. the
+# utterance didn't fit any real ballistics command. A separate call (not
+# folded into extract_intent's own no_match branch) so this narrower,
+# safety-sensitive prompt -- and its guardrail -- can be reasoned about and
+# tightened on its own, without touching the 9 real command tools above.
+
+_PERSONALITY_MODEL = "gpt-4o-mini"
+
+_PERSONALITY_SYSTEM_PROMPT = (
+    "You are Ballistica's warm, off-duty voice -- used only when the shooter "
+    "said something that didn't match any ballistics command: a greeting, "
+    "small talk, thanks, a personal remark, banter. "
+    "Decide: is this genuine small talk, or does it actually sound like an "
+    "attempt at a ballistics/rifle/load/conditions request that just didn't "
+    "come through clearly? "
+    "If it's small talk, call warm_reply with a short (under 20 words), "
+    "natural, spoken-style reply in character -- friendly, capable, a little "
+    "dry humor is fine, never corny or over-the-top. "
+    "If it sounds like an unclear ballistics request, or you're genuinely "
+    "unsure, call not_smalltalk instead so the caller can ask them to "
+    "rephrase. "
+    "Hard rule, no exceptions: never state, estimate, or imply any numeric "
+    "ballistics value (yardage, elevation, MOA, mils, clicks, drop, "
+    "windage, velocity, angle, temperature, pressure) in warm_reply -- you "
+    "have no ability to compute one here, and guessing one would be "
+    "dangerous."
+)
+
+_PERSONALITY_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "warm_reply",
+            "description": "Genuine small talk -- respond warmly and briefly, with no ballistics numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {"reply": {"type": "string"}},
+                "required": ["reply"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "not_smalltalk",
+            "description": "This sounds like an unclear or unsupported ballistics request, not small talk.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
+
+def generate_warm_reply(text: str) -> str | None:
+    """Returns a short warm reply for genuine small talk, or None if this
+    wasn't small talk, the call failed, or the model's reply slipped past
+    the prompt's own guardrail and still contains a digit -- checked here
+    directly rather than trusting the prompt alone, since a fabricated
+    number read aloud as a real ballistics value is a safety issue, not
+    just a tone miss."""
+    try:
+        client = get_openai_client()
+        response = client.chat.completions.create(
+            model=_PERSONALITY_MODEL,
+            messages=[
+                {"role": "system", "content": _PERSONALITY_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            tools=_PERSONALITY_TOOLS,
+            tool_choice="required",
+        )
+        call = response.choices[0].message.tool_calls[0]
+        if call.function.name != "warm_reply":
+            return None
+        args = json.loads(call.function.arguments) if call.function.arguments else {}
+        reply = str(args.get("reply") or "").strip()
+        if not reply or re.search(r"\d", reply):
+            return None
+        return reply
     except (openai.OpenAIError, json.JSONDecodeError, IndexError, AttributeError):
         return None

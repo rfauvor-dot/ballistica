@@ -4,12 +4,14 @@ Real speech I/O (ElevenLabs STT/TTS, matching Rick's Pearl/Lucia stack)
 is not wired up here -- that needs API keys and a decision on the
 runtime. This REPL exists to exercise the same query patterns the
 voice interface will need to support, and to make the engine usable
-today from a terminal. Responses are deliberately terse and numeric,
-matching how the brief says the voice interface should behave.
+today from a terminal. Reply tone is mode-aware: live-fire/calibration
+answers stay terse and numeric, setup/status/small-talk replies are
+more conversational -- see the handler methods below for the split.
 """
 from __future__ import annotations
 
 from pathlib import Path
+import random
 import re
 import sys
 
@@ -22,7 +24,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
-from .intent import extract_intent
+from .intent import extract_intent, generate_warm_reply
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -118,6 +120,14 @@ class BallisticaCLI:
             return HELP_TEXT
         if low in ("quit", "exit"):
             raise SystemExit(0)
+        # Fast, free path for the small talk that's common enough not to
+        # burn an LLM call on -- everything else genuinely conversational
+        # ("rough day at the range", "you're the best") falls through to
+        # generate_warm_reply() via the no_match branch below.
+        if low in ("hi", "hello", "hey"):
+            return random.choice(["Hey, Rick.", "Hey there.", "What's up?"])
+        if re.search(r"\b(thanks|thank you|good job|nice work|well done)\b", low):
+            return random.choice(["Anytime.", "You got it.", "That's what I'm here for."])
         if low == "status":
             return self._status()
         if low == "list rifles":
@@ -203,9 +213,9 @@ class BallisticaCLI:
         result = extract_intent(t)
         if result is None:
             return "Didn't understand that. Type 'help' for supported commands."
-        return self._dispatch_intent(*result)
+        return self._dispatch_intent(*result, original_text=t)
 
-    def _dispatch_intent(self, name: str, args: dict) -> str:
+    def _dispatch_intent(self, name: str, args: dict, original_text: str) -> str:
         # Two different failure modes need two different responses: the
         # LLM giving back malformed/missing arguments (its fault, a
         # generic "didn't understand" is honest) versus a well-formed,
@@ -231,7 +241,7 @@ class BallisticaCLI:
                 clock_hours = float(args["clock_hours"])
             elif name == "repeat_last_solution":
                 part = str(args.get("part") or "solution")
-            elif name not in ("set_conditions", "get_status"):
+            elif name not in ("set_conditions", "get_status", "no_match"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
             return "Didn't understand that. Type 'help' for supported commands."
@@ -255,6 +265,9 @@ class BallisticaCLI:
             return self._set_wind(speed, clock_hours)
         if name == "repeat_last_solution":
             return self._repeat(part if part in ("elevation", "windage") else "solution")
+        if name == "no_match":
+            warm = generate_warm_reply(original_text)
+            return warm or "Didn't understand that. Type 'help' for supported commands."
         return self._status()  # only get_status left
 
     # Setup-tone helpers: switching load/rifle/wind happens at the bench,
