@@ -43,6 +43,8 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
   set wind <speed> mph from <clock> oclock
   repeat solution / repeat elevation / repeat windage -- re-speak the last drop-at solution
   new load / new rifle                      -- guided voice setup, "cancel" to bail out
+  start calibration                         -- chrono the active load; read shots as numbers,
+                                                "average", "discard that", "end calibration"
   status                                    -- show active rifle/load/atmosphere
   list rifles / list loads
   help
@@ -86,6 +88,21 @@ class _SetupSession:
     def __init__(self, kind: str) -> None:
         self.kind = kind  # "load" or "rifle"
         self.draft: dict = {}
+        self.confirming = False
+
+
+class _CalibrationSession:
+    """In-progress chronograph calibration for one load: a running list of
+    shot velocities, accumulated live as they're read off. Nothing is
+    written back to the load's muzzle_velocity_fps until the shooter ends
+    the session and confirms -- matches _SetupSession's don't-save-until-
+    confirmed pattern, for the same reason (a misheard number here is a
+    silent, hard-to-notice data corruption, not just an annoyance)."""
+
+    def __init__(self, rifle_name: str, load_name: str) -> None:
+        self.rifle_name = rifle_name
+        self.load_name = load_name
+        self.shots: list[float] = []
         self.confirming = False
 
 
@@ -138,6 +155,7 @@ class BallisticaCLI:
         self.wind = WindCondition()
         self._last_solution: dict | None = None
         self._setup: _SetupSession | None = None
+        self._calibration: _CalibrationSession | None = None
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -165,6 +183,12 @@ class BallisticaCLI:
         # whole session.
         if self._setup is not None:
             return self._handle_setup_turn(t)
+
+        # Same modal pattern as setup, above: while a calibration is
+        # running, every utterance is a shot reading, a control phrase
+        # ("average", "discard that", "end calibration"), or a way out.
+        if self._calibration is not None:
+            return self._handle_calibration_turn(t)
 
         if low in ("help", "?"):
             return HELP_TEXT
@@ -216,6 +240,9 @@ class BallisticaCLI:
             return self._start_setup("load")
         if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b", low):
             return self._start_setup("rifle")
+
+        if re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low):
+            return self._start_calibration()
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
@@ -300,7 +327,7 @@ class BallisticaCLI:
             elif name == "repeat_last_solution":
                 part = str(args.get("part") or "solution")
             elif name not in ("set_conditions", "get_status", "no_match",
-                               "start_load_setup", "start_rifle_setup"):
+                               "start_load_setup", "start_rifle_setup", "start_calibration"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
             return "Didn't understand that. Type 'help' for supported commands."
@@ -328,6 +355,8 @@ class BallisticaCLI:
             return self._start_setup("load")
         if name == "start_rifle_setup":
             return self._start_setup("rifle")
+        if name == "start_calibration":
+            return self._start_calibration()
         if name == "no_match":
             warm = generate_warm_reply(original_text)
             return warm or "Didn't understand that. Type 'help' for supported commands."
@@ -449,6 +478,99 @@ class BallisticaCLI:
 
         self._setup.confirming = True
         return self._setup_summary()
+
+    # Chronograph calibration -- live-fire tone throughout (terse, numeric):
+    # this runs mid-string, at the line, same as _drop_at()/_solve_angle().
+
+    def _start_calibration(self) -> str:
+        try:
+            _, rifle, load = self.solver()
+        except ValueError as exc:
+            return str(exc)
+        self._calibration = _CalibrationSession(rifle.name, load.name)
+        return (f"Calibration started, {load.name}. Book velocity {load.muzzle_velocity_fps:.0f}. "
+                f"Read me shots.")
+
+    def _calibration_stats(self) -> tuple[float, float]:
+        shots = self._calibration.shots
+        avg = sum(shots) / len(shots)
+        spread = max(shots) - min(shots) if len(shots) > 1 else 0.0
+        return avg, spread
+
+    def _record_shot(self, shot_fps: float) -> str:
+        prior = self._calibration.shots
+        outlier_note = ""
+        # Flag only a genuinely dramatic reading, not ordinary shot-to-shot
+        # spread: needs both several fps of statistical support (>2 stdev
+        # of the shots so far) AND a real-world-meaningful gap (>40 fps) --
+        # a tiny sample's stdev is too noisy to trust alone, and 2 stdev of
+        # a very tight string can be just a few fps.
+        if len(prior) >= 3:
+            mean = sum(prior) / len(prior)
+            stdev = (sum((s - mean) ** 2 for s in prior) / len(prior)) ** 0.5
+            deviation = abs(shot_fps - mean)
+            if deviation > 40 and deviation > 2 * stdev:
+                outlier_note = " -- that one's an outlier"
+        self._calibration.shots.append(shot_fps)
+        avg, _ = self._calibration_stats()
+        return f"Shot {len(self._calibration.shots)}, {shot_fps:.0f}{outlier_note}. Average {avg:.0f}."
+
+    def _finalize_calibration(self) -> str:
+        avg, spread = self._calibration_stats()
+        n = len(self._calibration.shots)
+        load = self.store.update_load_velocity(
+            self._calibration.rifle_name, self._calibration.load_name, avg,
+        )
+        chrono_note = f"Chrono-verified: {n} shots, avg {avg:.0f} fps, spread {spread:.0f} fps."
+        load.notes = f"{load.notes} {chrono_note}".strip() if load.notes else chrono_note
+        self.store.save()
+        self._calibration = None
+        return f"Saved -- {load.name} is now {avg:.0f} feet per second."
+
+    def _handle_calibration_turn(self, text: str) -> str:
+        low = text.lower().strip()
+
+        if re.match(r"^(cancel|never ?mind|abort)\b", low):
+            self._calibration = None
+            return "Calibration cancelled. Nothing saved."
+
+        if self._calibration.confirming:
+            if re.match(r"^(yes|yeah|yep|yup|save( it)?|confirm(ed)?)\b", low):
+                return self._finalize_calibration()
+            if re.match(r"^(no|nope|not now)\b", low):
+                self._calibration = None
+                return "Discarded. Nothing saved."
+            self._calibration.confirming = False
+            # Falls through -- most likely one more shot came in after
+            # "end calibration" was said a beat too early.
+
+        if re.match(r"^(end calibration|that.s it|we.re done|finished?|finish( calibration)?)\b", low):
+            if not self._calibration.shots:
+                return "No shots recorded yet -- read me at least one first."
+            self._calibration.confirming = True
+            avg, spread = self._calibration_stats()
+            return (f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}. "
+                    f"Save as the new velocity for the {self._calibration.load_name}?")
+
+        if re.search(r"\baverage\b", low):
+            if not self._calibration.shots:
+                return "No shots recorded yet."
+            avg, spread = self._calibration_stats()
+            return f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}."
+
+        if re.search(r"\b(discard|throw out|toss|scratch that|bad (reading|shot))\b", low):
+            if not self._calibration.shots:
+                return "No shots to discard yet."
+            removed = self._calibration.shots.pop()
+            if not self._calibration.shots:
+                return f"Tossed {removed:.0f}. No shots left."
+            avg, _ = self._calibration_stats()
+            return f"Tossed {removed:.0f}. Average {avg:.0f}."
+
+        m = re.search(r"(\d{3,5}(?:\.\d+)?)", low)
+        if not m:
+            return "Didn't catch a number there -- try again?"
+        return self._record_shot(float(m.group(1)))
 
     def _apply_conditions_update(
         self, temp_f: float | None = None, pressure_inhg: float | None = None,

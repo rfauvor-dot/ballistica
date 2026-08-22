@@ -157,6 +157,16 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "start_calibration",
+            "description": "Begin a live chronograph calibration session for the active load "
+                            "(e.g. 'let's chrono this load', 'start calibration', "
+                            "'true up the velocity on this one').",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "repeat_last_solution",
             "description": "Re-speak the most recently given drop-at-range solution (elevation and/or "
                             "windage) without recalculating it -- for phrasing like 'say that again', "

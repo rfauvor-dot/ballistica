@@ -416,3 +416,77 @@ def test_voice_speak_rejects_empty_text():
     client = TestClient(api_module.app)
     r = client.post("/voice/speak", json={"text": "   "})
     assert r.status_code == 400
+
+
+def test_calibration_flow_outlier_flag_discard_and_save(tmp_path):
+    """Chronograph calibration never calls the LLM (shot readings are
+    just numbers), so this covers the whole flow deterministically:
+    running average, outlier flagging on a wild reading, discarding the
+    last shot, ending, confirming, and the final save -- including that
+    it lands on update_load_velocity() (not a fresh Load) and appends
+    chrono provenance to notes rather than overwriting them."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    original_notes = store.get_active_rifle().get_active_load().notes
+
+    assert "Read me shots" in cli.handle("start calibration")
+    assert "Average 2780" in cli.handle("2780")
+    assert "Average 2788" in cli.handle("2795")
+    third = cli.handle("2788")
+    assert "outlier" not in third
+
+    fourth = cli.handle("2650")
+    assert "outlier" in fourth
+
+    avg_reply = cli.handle("average")
+    assert "4 shots" in avg_reply
+
+    discard_reply = cli.handle("discard that")
+    assert "Tossed 2650" in discard_reply
+
+    summary = cli.handle("end calibration")
+    assert "Save as the new velocity" in summary
+    assert "2788" in summary  # average of 2780/2795/2788
+
+    saved = cli.handle("yes")
+    assert "2788" in saved
+    assert cli._calibration is None
+
+    load = store.get_active_rifle().get_active_load()
+    assert load.muzzle_velocity_fps == pytest.approx((2780 + 2795 + 2788) / 3)
+    assert load.notes.startswith(original_notes)
+    assert "Chrono-verified: 3 shots" in load.notes
+
+
+def test_calibration_cancel_and_reject_leave_no_trace(tmp_path):
+    """"cancel" mid-string and "no" at the confirm prompt should both
+    walk away clean -- the load's velocity must be untouched either
+    way, and the CLI must drop back to normal command handling instead
+    of staying stuck in a calibration session."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    original_fps = store.get_active_rifle().get_active_load().muzzle_velocity_fps
+
+    cli.handle("start calibration")
+    cli.handle("2900")
+    reply = cli.handle("cancel")
+    assert "cancelled" in reply.lower()
+    assert cli._calibration is None
+    assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == original_fps
+
+    cli.handle("start calibration")
+    cli.handle("3000")
+    cli.handle("end calibration")
+    reply = cli.handle("no")
+    assert "discarded" in reply.lower()
+    assert cli._calibration is None
+    assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == original_fps
+
+    # Confirms the CLI is back to normal command handling, not stuck.
+    assert "yards" in cli.handle("drop at 300 yards").lower()
