@@ -42,7 +42,8 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
   set conditions temp <T> pressure <P> altitude <A> humidity <H>
   set wind <speed> mph from <clock> oclock
   repeat solution / repeat elevation / repeat windage -- re-speak the last drop-at solution
-  new load / new rifle                      -- guided voice setup, "cancel" to bail out
+  new load / new rifle                      -- guided voice setup, "cancel" to bail out,
+                                                "skip" to pass on an optional field
   start calibration                         -- chrono the active load; read shots as numbers,
                                                 "average", "discard that", "end calibration"
   status                                    -- show active rifle/load/atmosphere
@@ -51,10 +52,8 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
   quit
 """
 
-# Required fields for a new load/rifle to be saveable -- everything else on
-# Load/Rifle has a usable default and stays optional during voice setup, so
-# the interview only chases down what's actually needed and doesn't force a
-# shooter through every scope-info field just to log a load.
+# Required fields for a new load/rifle to be saveable -- these can't be
+# skipped, the interview keeps asking until they're answered.
 _LOAD_REQUIRED = ["name", "bullet_weight_gr", "bc", "drag_model", "muzzle_velocity_fps", "zero_distance_yd"]
 _LOAD_PROMPTS = {
     "name": "What do you want to call this load?",
@@ -71,13 +70,38 @@ _RIFLE_PROMPTS = {
     "scope_height_in": "What's the scope height above bore, in inches?",
 }
 
-# Optional fields worth reading back in the confirmation summary if the
-# shooter volunteered them -- otherwise they'd be captured silently and
-# never actually confirmed before being saved.
+# The rest of the same field set the manual Setup form has -- asked one at
+# a time after the required fields, same as the required ones, but "skip"
+# (or "none"/"not sure"/etc.) moves on without answering. Mirroring the
+# manual form's full field list is deliberate: the voice flow used to stop
+# at the required subset and silently never ask about scope info, twist
+# rate, etc., which looked like the interview was incomplete/broken.
 _LOAD_EXTRA_FIELDS = ["bullet_type", "powder", "powder_charge_gr", "notes"]
+_LOAD_EXTRA_PROMPTS = {
+    "bullet_type": "What bullet -- make and type?",
+    "powder": "What powder are you running?",
+    "powder_charge_gr": "What's the powder charge, in grains?",
+    "notes": "Any notes to add?",
+}
+
 _RIFLE_EXTRA_FIELDS = ["caliber", "barrel_length_in", "twist_rate", "click_value_mrad",
                        "reticle_unit", "scope_make", "scope_model", "magnification",
                        "objective_lens_mm", "focal_plane", "reticle_type"]
+_RIFLE_EXTRA_PROMPTS = {
+    "caliber": "What caliber?",
+    "barrel_length_in": "Barrel length, in inches?",
+    "twist_rate": "What's the twist rate?",
+    "click_value_mrad": "What's the click value?",
+    "reticle_unit": "Is the reticle MRAD or MOA?",
+    "scope_make": "What's the scope make?",
+    "scope_model": "What's the scope model?",
+    "magnification": "What magnification range?",
+    "objective_lens_mm": "Objective lens size, in millimeters?",
+    "focal_plane": "First or second focal plane?",
+    "reticle_type": "What reticle type?",
+}
+
+_SKIP_RE = re.compile(r"^(skip|none|n/?a|not sure|don.t know|no|nothing|pass)\b")
 
 
 class _SetupSession:
@@ -88,6 +112,7 @@ class _SetupSession:
     def __init__(self, kind: str) -> None:
         self.kind = kind  # "load" or "rifle"
         self.draft: dict = {}
+        self.skipped: set = set()
         self.confirming = False
 
 
@@ -388,18 +413,29 @@ class BallisticaCLI:
     def _start_setup(self, kind: str) -> str:
         self._setup = _SetupSession(kind)
         intro = "Alright, let's set up a new load." if kind == "load" else "Alright, let's set up a new rifle."
-        return f"{intro} {self._prompt_for(self._next_missing_field())}"
+        return f"{intro} {self._prompt_for(self._next_field_to_ask())}"
 
-    def _next_missing_field(self) -> str | None:
+    def _next_field_to_ask(self) -> str | None:
+        """Required fields first (can't be skipped), then every remaining
+        optional field the manual Setup form has, in order -- skipped or
+        already-filled ones are passed over. None once both are exhausted,
+        meaning it's time to read back the summary."""
         required = _LOAD_REQUIRED if self._setup.kind == "load" else _RIFLE_REQUIRED
         for field in required:
+            if self._setup.draft.get(field) in (None, ""):
+                return field
+        extras = _LOAD_EXTRA_FIELDS if self._setup.kind == "load" else _RIFLE_EXTRA_FIELDS
+        for field in extras:
+            if field in self._setup.skipped:
+                continue
             if self._setup.draft.get(field) in (None, ""):
                 return field
         return None
 
     def _prompt_for(self, field: str) -> str:
         prompts = _LOAD_PROMPTS if self._setup.kind == "load" else _RIFLE_PROMPTS
-        return prompts[field]
+        extra_prompts = _LOAD_EXTRA_PROMPTS if self._setup.kind == "load" else _RIFLE_EXTRA_PROMPTS
+        return prompts.get(field) or extra_prompts[field]
 
     def _extras_summary(self) -> str:
         d = self._setup.draft
@@ -464,6 +500,21 @@ class BallisticaCLI:
                 if not no_m.group(2).strip():
                     return "Okay, what needs to change?"
 
+        # "Skip" only applies to whichever optional field is currently
+        # being asked -- required fields can't be skipped, since there's
+        # nothing to save without them.
+        current_field = self._next_field_to_ask()
+        required = _LOAD_REQUIRED if self._setup.kind == "load" else _RIFLE_REQUIRED
+        if current_field is not None and _SKIP_RE.match(low):
+            if current_field in required:
+                return f"I need that one to save this {self._setup.kind} -- {self._prompt_for(current_field)}"
+            self._setup.skipped.add(current_field)
+            nxt = self._next_field_to_ask()
+            if nxt is None:
+                self._setup.confirming = True
+                return self._setup_summary()
+            return self._prompt_for(nxt)
+
         fields = extract_setup_fields(text, self._setup.kind)
         if not fields:
             return "Didn't catch any details there -- try again?"
@@ -471,7 +522,7 @@ class BallisticaCLI:
         valid = {f.name for f in dataclasses.fields(Load if self._setup.kind == "load" else Rifle)}
         self._setup.draft.update({k: v for k, v in fields.items() if k in valid and v not in (None, "")})
 
-        missing = self._next_missing_field()
+        missing = self._next_field_to_ask()
         if missing:
             self._setup.confirming = False
             return self._prompt_for(missing)

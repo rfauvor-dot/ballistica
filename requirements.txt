@@ -4,6 +4,7 @@ uvicorn[standard]
 httpx
 python-dotenv
 openai
+anthropic
 certifi
 httpx2
 python-multipart

@@ -753,6 +753,20 @@ async function handleWakeWord() {
     keepGoing = await runConversationTurn();
   }
 
+  // The rifle/load panels were only ever loaded once, at page load --
+  // a voice command (switch load, a saved setup interview, calibration)
+  // can change the active rifle/load without the on-screen form ever
+  // reflecting it. Resync from /status, which is the source of truth
+  // for what's actually active, rather than assuming.
+  try {
+    const s = await api('/status');
+    await loadRifles(s.rifle.name);
+  } catch (e) {
+    // No active rifle yet, or a transient fetch error -- not worth
+    // interrupting the voice loop over; the manual Setup panel still
+    // works if the shooter reloads.
+  }
+
   voiceState = 'idle';
   if (voiceEnabled) startWakeListening();
 }

@@ -299,13 +299,17 @@ def test_voice_query_signals_awaiting_response_during_conversation():
 
 
 def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp_path):
-    """Guided voice setup for a new load: multi-turn slot-filling, a
-    same-breath correction after the read-back summary ("no, actually
-    zero it at 50 yards" -- regression: this used to discard the
-    correction and just re-ask "what needs to change?", leaving the
-    interview stuck), and a final save. The LLM extraction call is
-    stubbed so this is deterministic and doesn't hit the real API --
-    live behavior of the extraction itself was verified by hand."""
+    """Guided voice setup for a new load: multi-turn slot-filling through
+    the full field set (required fields, then every optional field the
+    manual Setup form has -- regression: this used to stop asking the
+    moment the required subset was filled, which is exactly what Rick
+    flagged as an incomplete-feeling interview), "skip" moving past an
+    optional field, a same-breath correction after the read-back summary
+    ("no, actually zero it at 50 yards" -- regression: this used to
+    discard the correction and just re-ask "what needs to change?",
+    leaving the interview stuck), and a final save. The LLM extraction
+    call is stubbed so this is deterministic and doesn't hit the real
+    API -- live behavior of the extraction itself was verified by hand."""
     import ballistica.cli as cli_module
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
@@ -322,10 +326,26 @@ def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp
     cli = BallisticaCLI(store)
 
     assert "call this load" in cli.handle("let's set up a new load").lower()
+
+    # "skip" can't be used to bypass a required field.
+    refused = cli.handle("skip")
+    assert "need that one" in refused.lower()
+    assert "call this load" in refused.lower()
+
     assert "bullet weight" in cli.handle("call it 25gr Varget").lower()
     assert "muzzle velocity" in cli.handle("75 grains, point three seven, G1").lower()
 
-    summary = cli.handle("2900 feet per second, zeroed at 100 yards")
+    # All required fields are in now -- next it should walk through the
+    # optional ones (bullet_type, powder, powder_charge_gr, notes) rather
+    # than jumping straight to the summary.
+    next_prompt = cli.handle("2900 feet per second, zeroed at 100 yards")
+    assert "bullet" in next_prompt.lower()
+    assert "sound right" not in next_prompt.lower()
+
+    for _ in range(3):
+        skip_reply = cli.handle("skip")
+        assert "sound right" not in skip_reply.lower()
+    summary = cli.handle("skip")
     assert "sound right" in summary.lower()
     assert "100 yards" in summary
 
@@ -347,7 +367,11 @@ def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp
 def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     """Same guided-setup machinery, the other kind -- pins that only
     name/scope_height_in are required (everything else on Rifle has a
-    default) and that a new rifle becomes the active one once saved."""
+    default) and that a new rifle becomes the active one once saved.
+    Also covers the full field walkthrough: caliber was volunteered up
+    front, so it should be skipped automatically without being asked
+    again, while the other ten optional fields (barrel length, twist,
+    scope info, etc.) each get asked and are passed with "skip"."""
     import ballistica.cli as cli_module
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
@@ -362,11 +386,21 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     cli = BallisticaCLI(store)
 
     assert "call this rifle" in cli.handle("set up a new rifle").lower()
-    summary = cli.handle("call it the Creedmoor bolt gun, caliber 6.5 Creedmoor")
-    assert "scope height" in summary.lower()
+    next_prompt = cli.handle("call it the Creedmoor bolt gun, caliber 6.5 Creedmoor")
+    assert "scope height" in next_prompt.lower()
 
-    confirm_prompt = cli.handle("scope height is 2 inches")
-    assert "sound right" in confirm_prompt.lower()
+    after_required = cli.handle("scope height is 2 inches")
+    # Caliber was already given -- shouldn't be asked again. Required
+    # fields are done, so this should be the first *other* optional field,
+    # not caliber and not the confirmation summary yet.
+    assert "caliber" not in after_required.lower()
+    assert "sound right" not in after_required.lower()
+
+    for _ in range(9):
+        reply = cli.handle("skip")
+        assert "sound right" not in reply.lower()
+    summary = cli.handle("skip")
+    assert "sound right" in summary.lower()
 
     saved = cli.handle("yes")
     assert "Creedmoor bolt gun" in saved
