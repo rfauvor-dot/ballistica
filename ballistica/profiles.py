@@ -11,7 +11,18 @@ import json
 from pathlib import Path
 import re
 
-DEFAULT_PROFILES_PATH = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+# Addendum 37/38: Render's container filesystem is ephemeral -- every
+# restart (deploy, crash, free-tier spin-down/wake) used to silently wipe
+# this file, which is how a fully-configured rifle's optic data reverted
+# to blank. Rick added a persistent Render disk mounted at /data, which
+# survives restarts; detecting it here means production uses it
+# automatically while local dev (no such mount) keeps using the old
+# relative path unchanged.
+_PERSISTENT_DATA_DIR = Path("/data")
+DEFAULT_PROFILES_PATH = (
+    _PERSISTENT_DATA_DIR / "profiles.json" if _PERSISTENT_DATA_DIR.is_dir()
+    else Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+)
 
 _TOKEN_RE = re.compile(r"\d+\.?\d*|[a-z]+")
 
