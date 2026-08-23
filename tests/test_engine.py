@@ -298,6 +298,86 @@ def test_voice_query_signals_awaiting_response_during_conversation():
     assert r.json()["awaiting_response"] is False
 
 
+def test_setup_confirmation_recognizes_natural_phrasing(monkeypatch, tmp_path):
+    """Regression (Addendum 28): "that is correct" -- a completely
+    natural confirmation -- matched none of the old patterns (only
+    "correct" as the literal first word, and one specific "that's
+    right" phrasing). It fell through to field extraction, found
+    nothing, and got stuck repeating "didn't catch that" with the
+    setup session still open, which looked exactly like a dead mic
+    from the outside even though this reproduces identically with
+    plain text -- confirmed live to be an interpretation bug, not an
+    audio one. Also pins that a rejection phrased mid-sentence ("that's
+    not correct") is never misread as a confirmation just because it
+    contains the word "correct"."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"name": "Test Rifle"})
+    cli.handle("set up a new rifle")
+    cli.handle("call it Test Rifle")
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"scope_height_in": 2.5})
+    cli.handle("scope height 2.5")
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"optic_type": "scope"})
+    cli.handle("it's a magnified scope")
+
+    summary = None
+    for _ in range(15):
+        reply = cli.handle("skip")
+        if "sound right" in reply.lower():
+            summary = reply
+            break
+    assert summary is not None, "never reached the confirmation summary"
+
+    saved = cli.handle("that is correct")
+    assert "saved" in saved.lower()
+    assert store.active_rifle_name == "Test Rifle"
+
+
+def test_setup_confirmation_rejects_negated_mid_sentence_phrasing(monkeypatch, tmp_path):
+    """"that's not correct" must be read as a rejection, not a
+    confirmation, even though it contains the word "correct" -- the
+    unanchored yes-detection that fixes Addendum 28 must not fire when
+    that word is actually negated."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"name": "Test Rifle"})
+    cli.handle("set up a new rifle")
+    cli.handle("call it Test Rifle")
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"scope_height_in": 2.5})
+    cli.handle("scope height 2.5")
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"optic_type": "scope"})
+    cli.handle("it's a magnified scope")
+
+    reached_summary = False
+    for _ in range(15):
+        reply = cli.handle("skip")
+        if "sound right" in reply.lower():
+            reached_summary = True
+            break
+    assert reached_summary, "never reached the confirmation summary"
+
+    reply = cli.handle("that's not correct")
+    assert "what needs to change" in reply.lower()
+    assert cli._setup is not None
+    assert cli._setup.confirming is False
+
+
 def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp_path):
     """Guided voice setup for a new load: multi-turn slot-filling through
     the full field set (required fields, then every optional field the
@@ -775,6 +855,30 @@ def test_calibration_flow_outlier_flag_discard_and_save(tmp_path):
     assert load.muzzle_velocity_fps == pytest.approx((2780 + 2795 + 2788) / 3)
     assert load.notes.startswith(original_notes)
     assert "Chrono-verified: 3 shots" in load.notes
+
+
+def test_calibration_confirmation_recognizes_natural_phrasing(tmp_path):
+    """Same fix as setup's confirmation matching (Addendum 28), applied
+    proactively to calibration's identical confirming-state check
+    before it was independently hit live: "that is correct" must
+    confirm the save, not fall through to "one more shot came in"
+    handling."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("start calibration")
+    cli.handle("2780")
+    cli.handle("2795")
+    summary = cli.handle("end calibration")
+    assert "save as the new velocity" in summary.lower()
+
+    saved = cli.handle("that is correct")
+    assert "saved" in saved.lower()
+    assert cli._calibration is None
+    assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == 2787.5
 
 
 def test_calibration_cancel_and_reject_leave_no_trace(tmp_path):

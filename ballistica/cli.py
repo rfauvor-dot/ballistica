@@ -123,6 +123,24 @@ def _rifle_extra_fields(optic_type: str) -> list[str]:
 
 _SKIP_RE = re.compile(r"^(skip|none|n/?a|not sure|don.t know|no|nothing|pass)\b")
 
+# Confirmed live (Addendum 28): "that is correct" -- a completely natural
+# confirmation -- matched none of the old patterns (they only recognized
+# "correct" as the FIRST word, and "that's right" as one specific literal
+# phrase). It fell through to field extraction, found nothing, and got
+# stuck in the generic "didn't catch that" retry loop with the setup
+# session still open -- which looked exactly like a dead mic from the
+# outside, even though this reproduces identically with plain text, no
+# audio involved at all. Widened to an unanchored "correct"/"right"
+# check (safe here specifically because this only runs while confirming
+# a setup summary -- outside that state, `correct` is not treated as a
+# universal yes). Checked AFTER negation, and negation itself is checked
+# both anchored ("no, ...") and unanchored ("that's not right") so a
+# rejection is never misread as a confirmation just because it contains
+# the word "right" or "correct".
+_CONFIRM_NO_RE = re.compile(r"^(no|nope|not (quite|right|correct)|wrong|incorrect)\b[,.]?\s*(.*)$")
+_CONFIRM_YES_WORD_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|sounds good|good to go)\b")
+_NEGATED_CONFIRM_RE = re.compile(r"\b(not|isn.t|wasn.t|ain.t)\b[\w\s]{0,15}\b(correct|right)\b")
+
 # Confirmed live (Addendum 11): asked something that isn't an answer to
 # the current field (e.g. "what caliber", said while scope height was
 # being asked), the extractor can hallucinate a placeholder value like
@@ -544,18 +562,24 @@ class BallisticaCLI:
             return f"Okay, scrapped the new {kind}. Nothing saved."
 
         if self._setup.confirming:
-            if re.match(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|correct|"
-                        r"that.s right|sounds good|good to go)\b", low):
-                return self._finalize_setup()
-            no_m = re.match(r"^(no|nope|not quite|wrong|that.s not right)\b[,.]?\s*(.*)$", low)
+            no_m = _CONFIRM_NO_RE.match(low)
             if no_m:
                 self._setup.confirming = False
                 # No correction stated in the same breath -- ask, rather than
                 # guess. If they *did* say more ("no, make the zero 50
                 # yards"), fall through below and extract from the full
                 # utterance instead of just acknowledging and losing it.
-                if not no_m.group(2).strip():
+                if not no_m.group(3).strip():
                     return "Okay, what needs to change?"
+            elif _NEGATED_CONFIRM_RE.search(low):
+                # Rejection phrased mid-sentence rather than as the first
+                # word ("that's not correct") -- the correction text (if
+                # any) isn't cleanly separable here, so ask rather than
+                # guess, same as the bare "no" case above.
+                self._setup.confirming = False
+                return "Okay, what needs to change?"
+            elif _CONFIRM_YES_WORD_RE.match(low) or re.search(r"\b(correct|right)\b", low):
+                return self._finalize_setup()
 
         # "Skip" only applies to whichever optional field is currently
         # being asked -- required fields can't be skipped, since there's
@@ -668,11 +692,16 @@ class BallisticaCLI:
             return "Calibration cancelled. Nothing saved."
 
         if self._calibration.confirming:
-            if re.match(r"^(yes|yeah|yep|yup|save( it)?|confirm(ed)?)\b", low):
-                return self._finalize_calibration()
-            if re.match(r"^(no|nope|not now)\b", low):
+            # Same widened confirmation matching as setup's confirming
+            # block (Addendum 28) -- the same class of bug (narrow
+            # anchored-only patterns missing natural phrasing like "that
+            # is correct") applies here too, fixed proactively rather
+            # than waiting for it to be hit live separately.
+            if _CONFIRM_NO_RE.match(low) or re.match(r"^not now\b", low) or _NEGATED_CONFIRM_RE.search(low):
                 self._calibration = None
                 return "Discarded. Nothing saved."
+            if _CONFIRM_YES_WORD_RE.match(low) or re.search(r"\b(correct|right)\b", low):
+                return self._finalize_calibration()
             self._calibration.confirming = False
             # Falls through -- most likely one more shot came in after
             # "end calibration" was said a beat too early.
