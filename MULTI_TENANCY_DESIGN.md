@@ -9,10 +9,16 @@ Prepared: 2026-08-23
 
 ```
 Lenses applied: Build (architecture) / Security (threat model, data handling) / Finance (real infra cost) / Marketing (sync as a side-benefit) / CoS (synthesis)
-Key risks flagged: hand-rolled password auth is a common small-app vulnerability source; per-user conversation state has a real single-process limitation; the aggregate-data seam is illustrative, not final, per Rick's explicit scoping
-Alternatives considered: hand-rolled email/password auth vs. managed auth provider vs. OAuth-only; per-user JSON files vs. real database; in-memory vs. DB-persisted conversation state
-Recommendation + confidence: managed auth provider (Clerk) + Postgres + per-user-scoped queries + an events table as the aggregate-data seam — high confidence on the shape, medium on the specific auth vendor pending Rick's own evaluation
+Key risks flagged: hand-rolled password auth is a common small-app vulnerability source; the aggregate-data seam is illustrative, not final, per Rick's explicit scoping; unbounded voice-endpoint requests are a real cost exposure (added post-Grok-review)
+Alternatives considered: hand-rolled email/password auth vs. managed auth provider vs. OAuth-only; per-user JSON files vs. real database; in-memory vs. DB-persisted conversation state (resolved: DB-persisted, see §6.1); Clerk vs. Supabase Auth (open, see §6.5)
+Recommendation + confidence: managed auth provider + Postgres + per-user-scoped queries + DB-persisted conversation state + an events table as the aggregate-data seam — high confidence on the shape; two open items need Rick's decision before implementation (§6.2 deletion policy, §6.5 Clerk vs. Supabase Auth)
 ```
+
+**Revision note (2026-08-23): updated after Grok's adversarial review — see
+§6 for the full response.** The in-memory conversation-state call from
+§2.3 below is superseded by §6.1; §2.1's Clerk recommendation is narrowed
+by §6.5. Sections 1-5 are left as originally written for a clean record of
+what changed and why, rather than silently edited in place.
 
 ---
 
@@ -203,3 +209,123 @@ project to redesign around, not a locked schema.
    hold up — e.g., audit-log requirements this doesn't yet account for?
 5. Any cross-tenant leakage vector not covered by the two-layer
    (application + RLS) query-scoping approach?
+
+---
+
+## 6. Grok review response (2026-08-23)
+
+Grok's review confirmed the overall shape and flagged real gaps — five of
+its questions are addressed below with a design change or a concrete
+answer; the two genuine policy calls are left for Rick, not decided here.
+
+### 6.1 Design change: conversation state moves to DB-persisted, not in-memory
+
+Grok's pushback is right, and it changes the recommendation from §2.3.
+The original "in-memory, acceptable tradeoff" reasoning underweighted how
+often this app actually restarts — Render redeploys have happened
+repeatedly over the course of this same project, not as a rare edge case.
+For a voice-first product, dropping a mid-setup conversation on every
+deploy is a real, recurring rough edge, not a theoretical one.
+
+**Revised**: a `conversation_state` table (`user_id`, `state_json`,
+`updated_at`) replacing the in-memory dict. This is exactly the same
+"cheap to build in now, expensive to retrofit later" reasoning already
+applied to the aggregate-data seam — it should have been applied to this
+too. Low additional cost (one more small table, no new infra) for a real
+reliability gain.
+
+### 6.2 Genuine open policy decision: aggregate-data retention on account deletion
+
+Grok's framing is correct that this needs deciding now, since it changes
+how the delete path and the events table itself get built — not something
+to leave open past this checkpoint.
+
+**Recommendation: Option B — anonymize, don't hard-delete.** On account
+deletion, `events` rows are stripped of `user_id` and any identifying
+fields, and the remaining ballistic facts (range, drop, wind, etc.) are
+kept. This matches how the aggregate-data strategy was already framed
+elsewhere in this project (anonymized, not personally-identifying), and
+once a row genuinely can't be traced back to a person, most privacy
+frameworks (e.g. GDPR's anonymization concept) treat it as no longer
+personal data — so it isn't in tension with a real "delete my data"
+request. Option A (hard-delete everything) is simpler but throws away
+real aggregate value for every departed user; Option C (mark
+"deleted user" but keep the link) doesn't actually delete anything and
+likely doesn't satisfy a genuine deletion request.
+
+**This is Rick's call to confirm, not decided unilaterally here** — it's
+a user-trust/privacy policy question, not a technical one, even though
+the technical recommendation is clear.
+
+### 6.3 Missing pieces — addressed
+
+- **Rate limiting**: added to scope. Voice endpoints call paid APIs
+  (OpenAI STT/TTS, Anthropic) per request — an abusive or looped client
+  is a real, direct cost exposure, not just an availability concern. Needs
+  per-user request throttling before this ships to a second real user.
+- **Audit logging**: a minimal version added to scope — who did what,
+  when, for account-level actions (creation, deletion, auth events) at
+  least. Not a full activity log for every rifle/load edit at this stage.
+- **Secrets management**: no new pattern needed — Clerk and database
+  credentials follow the same server-side environment-variable approach
+  already in use for `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, confirmed
+  working in production today.
+- **Migration path**: smaller than the general concern suggests, given
+  Ballistica's actual current state — there is exactly one existing data
+  record (Rick's own profile) to migrate, not a real multi-user dataset.
+  The migration is a one-time script inserting that single profile's rows
+  under a first user account, not a dual-write/cutover project.
+
+### 6.4 Pre-implementation security test requirements (added to scope)
+
+Answering Grok's three adversarial questions with concrete acceptance
+criteria rather than reasoning alone:
+- **RLS bypass**: before shipping, a test must confirm that querying the
+  database directly (bypassing the application-level filter entirely,
+  simulating a bug in that layer) still cannot return another user's rows
+  — i.e. RLS alone has to hold, not just the app-level filter. This
+  becomes a required test, not just a design intention.
+- **Clerk webhook failure/delay**: the app's local `users` table can only
+  be a cache of Clerk's own state, never the source of truth — needs
+  either verifying against Clerk's session token at request time (not
+  trusting a possibly-stale local record) or a periodic reconciliation
+  job. Exact mechanism to confirm against Clerk's own documented best
+  practice during implementation, not solved from first principles here.
+- **Session/token theft for voice state**: no new attack surface beyond
+  what correct auth already has to handle — this rides on Clerk's own
+  session token security (expiry, rotation), which needs confirming
+  against Clerk's actual documented behavior during implementation.
+
+### 6.5 Clerk vs. alternatives — short comparison, as requested
+
+Real, verified-where-possible numbers, with one honest caveat: sources
+disagree on Clerk's exact current free-tier size (one search found it
+raised to 50,000 MRU as of Feb 2026; a separate comparison source still
+shows the older 10,000 MAU figure). Not resolved with full confidence
+either way — but Ballistica is nowhere near either number for a long
+time, so it doesn't change the recommendation.
+
+| Provider | Free tier (as found, see caveat) | Notes |
+|---|---|---|
+| Clerk | 10,000-50,000 MAU/MRU (sources disagree) | Best developer experience for this stack; the option evaluated in §2.1 |
+| Auth0 | ~25,000 MAU (recently expanded) | Deepest enterprise/compliance feature set — more than Ballistica needs right now |
+| Supabase Auth | ~50,000 MAU | **Worth real consideration**: bundles auth with Postgres hosting in one vendor, which would mean one vendor relationship instead of two (Supabase for both DB+auth, vs. Clerk+Render-Postgres). Cheapest at real scale if the app ever grows large (~$25/mo at 100k MAU vs. Clerk's ~$1,800/mo per one comparison). |
+
+**Updated recommendation given this**: Clerk remains reasonable for
+developer experience, but Supabase Auth is a real enough alternative
+(same cost class today, meaningfully cheaper at scale, and simplifies to
+one vendor instead of two) that it deserves a real side-by-side
+evaluation before implementation starts, not just a note that
+alternatives exist. Flagging as upgraded from "documented alternative"
+to "worth Rick's own evaluation before locking in."
+
+### 6.6 Updated recommendation
+
+Per Grok's own closing recommendation, three things need to close before
+implementation starts:
+1. Aggregate-data retention policy on deletion — **recommendation given
+   (§6.2, Option B), needs Rick's confirmation.**
+2. Conversation state persistence — **resolved above (§6.1): moving to
+   DB-persisted, no longer open.**
+3. Clerk vs. alternatives — **narrowed to Clerk vs. Supabase Auth
+   specifically (§6.5), needs Rick's evaluation before locking in.**
