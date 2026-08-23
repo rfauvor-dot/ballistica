@@ -605,9 +605,17 @@ async function recordCommand() {
   const levels = new Uint8Array(analyser.frequencyBinCount);
 
   const SILENCE_LEVEL = 8;
-  const SILENCE_MS = 1200;
+  // Confirmed live (Addendum 27): 1200ms was too tight even after the
+  // leading-silence fix -- it also cut off ordinary MID-sentence pauses
+  // ("I want to... set up a new rifle" has a natural beat after "to"),
+  // truncating real speech mid-utterance, not just before it starts.
+  // That's a different bug from the leading-silence one: this one fires
+  // on *any* pause once speech has already begun, not just a lead-in
+  // pause. Widened to give a deliberate speaker room to compose a full
+  // sentence without being cut off mid-thought.
+  const SILENCE_MS = 2200;
   const MIN_RECORD_MS = 500;
-  const MAX_RECORD_MS = 10000;
+  const MAX_RECORD_MS = 12000;
   // Consecutive above-threshold frames (~60/sec via requestAnimationFrame)
   // required before speech is considered to have actually started -- a
   // single noisy frame shouldn't count, but real speech onset should
