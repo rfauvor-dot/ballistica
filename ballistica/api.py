@@ -402,6 +402,18 @@ def update_rifle(rifle_name: str, payload: RifleUpdate):
     return _rifle_to_detail(rifle)
 
 
+@app.delete("/rifles/{rifle_name}")
+def delete_rifle(rifle_name: str):
+    """No way to do this existed at all before Addendum 29 -- a bad/
+    duplicate entry, or DT's own test data, was permanent."""
+    try:
+        rifle = store.delete_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    store.save()
+    return {"deleted": rifle.name}
+
+
 @app.post("/rifles/{rifle_name}/active", response_model=RifleDetail)
 def set_active_rifle(rifle_name: str):
     try:
@@ -475,7 +487,8 @@ def voice_query(payload: VoiceQueryIn):
         # inputs) -- speak it back rather than surfacing a raw 500 to
         # whatever's about to pipe this through TTS.
         reply = _msg(exc)
-    awaiting_response = voice_cli._setup is not None or voice_cli._calibration is not None
+    awaiting_response = (voice_cli._setup is not None or voice_cli._calibration is not None
+                         or voice_cli._pending_delete is not None)
     return VoiceQueryOut(reply=reply or "Didn't catch that.", awaiting_response=awaiting_response)
 
 

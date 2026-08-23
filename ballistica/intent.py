@@ -166,6 +166,34 @@ _TOOLS = [
         },
     },
     {
+        "name": "update_rifle_field",
+        "description": "Change one or more fields on the ACTIVE rifle's existing saved profile -- "
+                        "e.g. 'change the twist rate to 1:8', 'switch my reticle to MRAD', 'the scope "
+                        "height is actually 2.6 inches'. Only for editing a rifle that's already "
+                        "saved -- use start_rifle_setup instead for adding a brand new rifle. There "
+                        "was previously no command for this at all, which read as edits silently not "
+                        "saving when someone tried to speak a correction to an existing rifle.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope_height_in": {"type": "number"},
+                "caliber": {"type": "string"},
+                "barrel_length_in": {"type": "number"},
+                "twist_rate": {"type": "string", "description": "e.g. '1:7'"},
+                "click_value_mrad": {"type": "number"},
+                "reticle_unit": {"type": "string", "enum": ["MRAD", "MOA"]},
+                "optic_type": {"type": "string", "enum": ["scope", "red_dot"]},
+                "scope_make": {"type": "string"},
+                "scope_model": {"type": "string"},
+                "magnification": {"type": "string"},
+                "objective_lens_mm": {"type": "number"},
+                "focal_plane": {"type": "string", "enum": ["FFP", "SFP"]},
+                "reticle_type": {"type": "string"},
+                "dot_size_moa": {"type": "number"},
+            },
+        },
+    },
+    {
         "name": "get_status",
         "description": "Report the active rifle, load, and current conditions.",
         "input_schema": {"type": "object", "properties": {}},

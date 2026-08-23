@@ -166,6 +166,18 @@ class ProfileStore:
         self.active_rifle_name = rifle.name
         return rifle
 
+    def delete_rifle(self, query: str) -> Rifle:
+        """Removes a rifle (and its loads) entirely. There was previously
+        no way to do this at all -- confirmed as a real gap (Addendum 29),
+        both for cleaning up a bad/duplicate entry and for removing test
+        data. If the deleted rifle was active, an arbitrary remaining
+        rifle becomes active instead (or none, if it was the last one)."""
+        rifle = self.find_rifle(query)
+        del self.rifles[rifle.name]
+        if self.active_rifle_name == rifle.name:
+            self.active_rifle_name = next(iter(self.rifles), None)
+        return rifle
+
     def set_active_load(self, query: str) -> Load:
         """Switches the active load on the active rifle by fuzzy name."""
         rifle = self.get_active_rifle()
@@ -183,12 +195,30 @@ class ProfileStore:
 
     def update_rifle_fields(self, rifle_query: str, **fields) -> Rifle:
         """Updates rifle metadata (scope height, caliber, barrel length,
-        twist rate, click value) in place on an existing rifle."""
+        twist rate, click value, etc.) in place on an existing rifle."""
         rifle = self.find_rifle(rifle_query)
+        original = {}
         for key, value in fields.items():
             if not hasattr(rifle, key):
                 raise ValueError(f"Rifle has no field '{key}'")
+            original[key] = getattr(rifle, key)
             setattr(rifle, key, value)
+        try:
+            # setattr() bypasses __post_init__'s validation entirely -- a
+            # bad reticle_unit or optic_type would previously be written
+            # silently, with no error, and only surface later as a wrong
+            # or confusing ballistics result. Re-running it here closes
+            # that gap.
+            rifle.__post_init__()
+        except ValueError:
+            # setattr() already happened above -- without rolling back,
+            # a rejected update would leave the rifle silently corrupted
+            # for every subsequent call, not just this one (reproduced
+            # directly: a bad reticle_unit stuck around even after this
+            # call correctly raised).
+            for key, value in original.items():
+                setattr(rifle, key, value)
+            raise
         return rifle
 
     def save(self) -> None:

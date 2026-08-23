@@ -176,6 +176,7 @@
         <div class="field w-lg"><label for="rReticleType">Reticle type</label><input id="rReticleType" type="text" placeholder="e.g. MOA Christmas tree, or 65 MOA circle + dot"></div>
       </div>
       <button id="saveRifleBtn" class="primary">Save rifle</button>
+      <button id="deleteRifleBtn" style="display:none">Delete rifle</button>
       <div id="rifleOk"></div>
       <div id="rifleError"></div>
     </div>
@@ -342,6 +343,7 @@ function fillRifleForm(r) {
   document.getElementById('rFocalPlane').value = r.focal_plane || '';
   document.getElementById('rDotSize').value = r.dot_size_moa ?? '';
   document.getElementById('rReticleType').value = r.reticle_type || '';
+  document.getElementById('deleteRifleBtn').style.display = '';
 }
 function openRifleFormBlank() {
   document.getElementById('rName').value = '';
@@ -359,6 +361,7 @@ function openRifleFormBlank() {
   document.getElementById('rDotSize').value = '';
   document.getElementById('rFocalPlane').value = '';
   document.getElementById('rReticleType').value = '';
+  document.getElementById('deleteRifleBtn').style.display = 'none';
   rifleDetails.open = true;
 }
 
@@ -439,6 +442,21 @@ document.getElementById('saveRifleBtn').addEventListener('click', async () => {
     }
     flash(document.getElementById('rifleOk'), 'Saved.', 2000);
     await loadRifles(name);
+  } catch (e) {
+    flash(document.getElementById('rifleError'), e.message);
+  }
+});
+
+document.getElementById('deleteRifleBtn').addEventListener('click', async () => {
+  hide(document.getElementById('rifleError'));
+  if (!currentRifleDetail) return;
+  const name = currentRifleDetail.name;
+  if (!confirm(`Delete "${name}" and all its loads? This can't be undone.`)) return;
+  try {
+    await api('/rifles/' + encodeURIComponent(name), { method: 'DELETE' });
+    currentRifleDetail = null;
+    flash(document.getElementById('rifleOk'), 'Deleted.', 2000);
+    await loadRifles();
   } catch (e) {
     flash(document.getElementById('rifleError'), e.message);
   }

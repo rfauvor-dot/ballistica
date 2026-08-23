@@ -166,6 +166,60 @@ def test_profile_store_roundtrip_and_fuzzy_switching(tmp_path):
     assert reloaded_again.find_rifle("faxon").find_load("21.0").muzzle_velocity_fps == 2450
 
 
+def test_update_rifle_fields_persists_and_rejects_invalid_values_without_corrupting(tmp_path):
+    """Addendum 29: confirmed live that the raw save mechanism itself
+    works (a PUT persisted correctly through a fresh, separate GET) --
+    this pins that at the storage layer directly, plus a real bug found
+    while fixing the validation gap: update_rifle_fields() used to
+    setattr() before validating, so a rejected update (e.g. a bad
+    reticle_unit) still left the rifle mutated for every subsequent
+    call, not just the one that (correctly) raised."""
+    path = tmp_path / "profiles.json"
+    store = ProfileStore(path)
+    rifle = Rifle(name="Test Rifle", scope_height_in=2.5, twist_rate="1:7", reticle_unit="MRAD")
+    store.add_rifle(rifle)
+    store.save()
+
+    updated = store.update_rifle_fields("Test Rifle", twist_rate="1:8")
+    assert updated.twist_rate == "1:8"
+    store.save()
+    reloaded = ProfileStore(path)
+    assert reloaded.find_rifle("Test Rifle").twist_rate == "1:8"
+
+    with pytest.raises(ValueError):
+        store.update_rifle_fields("Test Rifle", reticle_unit="banana")
+    # The rejected update must not leave the object half-mutated --
+    # reticle_unit must still read a valid, unchanged value afterward.
+    assert store.find_rifle("Test Rifle").reticle_unit == "MRAD"
+    # And a subsequent valid call must still work correctly, proving the
+    # object wasn't left in a corrupted state by the rejected one.
+    again = store.update_rifle_fields("Test Rifle", reticle_unit="MOA")
+    assert again.reticle_unit == "MOA"
+
+
+def test_delete_rifle_removes_it_and_reassigns_active(tmp_path):
+    """No delete existed at all before Addendum 29. Also pins that
+    deleting the active rifle hands active status to whatever's left,
+    rather than leaving the store pointing at a rifle that no longer
+    exists."""
+    path = tmp_path / "profiles.json"
+    store = ProfileStore(path)
+    store.add_rifle(Rifle(name="Rifle A", scope_height_in=2.5), make_active=False)
+    store.add_rifle(Rifle(name="Rifle B", scope_height_in=2.6), make_active=True)
+
+    deleted = store.delete_rifle("Rifle B")
+    assert deleted.name == "Rifle B"
+    assert "Rifle B" not in store.rifles
+    assert store.active_rifle_name == "Rifle A"
+
+    store.delete_rifle("Rifle A")
+    assert store.rifles == {}
+    assert store.active_rifle_name is None
+
+    with pytest.raises(KeyError):
+        store.delete_rifle("Rifle A")
+
+
 def test_voice_query_conversation_state_and_error_handling():
     """/voice/query is the seam a future STT->this->TTS loop calls. It
     deliberately keeps conversation state across calls (switching load,
@@ -296,6 +350,71 @@ def test_voice_query_signals_awaiting_response_during_conversation():
 
     r = client.post("/voice/query", json={"text": "never mind, cancel"})
     assert r.json()["awaiting_response"] is False
+
+
+def test_update_rifle_fields_command_edits_the_active_rifle(tmp_path):
+    """Addendum 29: there was previously no voice command at all for
+    editing an existing rifle's fields -- "change the twist rate to
+    1:8" declined with "didn't understand", which reads exactly like a
+    save that silently failed even though nothing was ever attempted.
+    Exercises the dispatch method directly (bypassing the live LLM
+    classification step, which was verified by hand) to deterministically
+    cover the actual new logic: filtering to valid fields, persisting,
+    and surfacing a real error rather than crashing."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    reply = cli._update_rifle_fields({"twist_rate": "1:8", "reticle_unit": "MOA"})
+    assert "twist rate 1:8" in reply
+    assert "reticle unit MOA" in reply
+    rifle = store.get_active_rifle()
+    assert rifle.twist_rate == "1:8"
+    assert rifle.reticle_unit == "MOA"
+
+    # Reload from disk to prove it actually persisted, not just an
+    # in-memory mutation on the same object.
+    reloaded = ProfileStore(store.path)
+    assert reloaded.get_active_rifle().twist_rate == "1:8"
+
+    # An invalid value must surface as a real error, not crash or silently
+    # do nothing.
+    bad = cli._update_rifle_fields({"reticle_unit": "banana"})
+    assert "must be" in bad.lower()
+
+    # A dict with nothing recognizable declines cleanly.
+    empty = cli._update_rifle_fields({"unrelated_key": "value"})
+    assert "didn't catch" in empty.lower()
+
+
+def test_delete_rifle_voice_flow_requires_explicit_confirmation(tmp_path):
+    """Addendum 29: no delete existed at all before this. A destructive
+    action gets a confirm gate that defaults SAFE -- only an explicit
+    yes actually deletes; an ambiguous reply keeps the data."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    original_rifle = store.active_rifle_name
+
+    ask = cli.handle("delete this rifle")
+    assert "can't be undone" in ask.lower()
+    assert original_rifle in ask
+    assert cli._pending_delete == original_rifle
+
+    kept = cli.handle("hmm not sure")
+    assert "keeping it" in kept.lower()
+    assert cli._pending_delete is None
+    assert original_rifle in store.rifles
+
+    cli.handle("delete this rifle")
+    deleted = cli.handle("yes")
+    assert "deleted" in deleted.lower()
+    assert original_rifle not in store.rifles
+    assert cli._pending_delete is None
 
 
 def test_setup_confirmation_recognizes_natural_phrasing(monkeypatch, tmp_path):

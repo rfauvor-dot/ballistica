@@ -254,6 +254,7 @@ class BallisticaCLI:
         self._last_solution: dict | None = None
         self._setup: _SetupSession | None = None
         self._calibration: _CalibrationSession | None = None
+        self._pending_delete: str | None = None
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -287,6 +288,11 @@ class BallisticaCLI:
         # ("average", "discard that", "end calibration"), or a way out.
         if self._calibration is not None:
             return self._handle_calibration_turn(t)
+
+        # A destructive action -- one confirmation gate, no separate
+        # session class needed for a single yes/no.
+        if self._pending_delete is not None:
+            return self._handle_delete_confirm(t)
 
         if low in ("help", "?"):
             return HELP_TEXT
@@ -341,6 +347,9 @@ class BallisticaCLI:
 
         if re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low):
             return self._start_calibration()
+
+        if re.search(r"\b(?:delete|remove|get rid of)\b.*\brifle\b", low):
+            return self._request_delete_active_rifle()
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
@@ -424,7 +433,7 @@ class BallisticaCLI:
                 clock_hours = float(args["clock_hours"])
             elif name == "repeat_last_solution":
                 part = str(args.get("part") or "solution")
-            elif name not in ("set_conditions", "get_status", "no_match",
+            elif name not in ("set_conditions", "get_status", "no_match", "update_rifle_field",
                                "start_load_setup", "start_rifle_setup", "start_calibration"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
@@ -455,6 +464,8 @@ class BallisticaCLI:
             return self._start_setup("rifle")
         if name == "start_calibration":
             return self._start_calibration()
+        if name == "update_rifle_field":
+            return self._update_rifle_fields(args)
         if name == "no_match":
             warm = generate_warm_reply(original_text)
             return warm or "Didn't understand that. Type 'help' for supported commands."
@@ -478,6 +489,49 @@ class BallisticaCLI:
     def _set_wind(self, speed_mph: float, clock_hours: float) -> str:
         self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
         return f"Got it -- wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock."
+
+    def _update_rifle_fields(self, fields: dict) -> str:
+        """Edits fields on the ACTIVE rifle's existing saved profile --
+        the one-shot counterpart to the guided setup interview, for
+        correcting something already saved rather than adding a new
+        rifle. Confirmed live (Addendum 29): before this existed, there
+        was genuinely no voice command for this at all, so a spoken
+        correction like "change the twist rate to 1:8" just declined
+        with "didn't understand" -- which reads exactly like a save that
+        silently failed, even though nothing was ever attempted."""
+        valid = {f.name for f in dataclasses.fields(Rifle)} - {"name", "loads", "active_load_name"}
+        updates = {k: v for k, v in fields.items() if k in valid and _is_real_value(v)}
+        if not updates:
+            return "Didn't catch a specific field to change there -- try again?"
+        try:
+            rifle = self.store.get_active_rifle()
+            self.store.update_rifle_fields(rifle.name, **updates)
+            self.store.save()
+        except (KeyError, ValueError) as exc:
+            return str(exc)
+        parts = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in updates.items())
+        return f"Updated -- {parts}."
+
+    def _request_delete_active_rifle(self) -> str:
+        try:
+            rifle = self.store.get_active_rifle()
+        except ValueError as exc:
+            return str(exc)
+        self._pending_delete = rifle.name
+        return f"Delete the {rifle.name}, and all its loads? This can't be undone."
+
+    def _handle_delete_confirm(self, text: str) -> str:
+        low = text.lower().strip()
+        name = self._pending_delete
+        if _CONFIRM_YES_WORD_RE.match(low) or (
+            re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
+        ):
+            self._pending_delete = None
+            self.store.delete_rifle(name)
+            self.store.save()
+            return f"Deleted the {name}."
+        self._pending_delete = None
+        return "Okay, keeping it."
 
     # Guided load/rifle setup -- a stateful, multi-turn interview. See
     # _SetupSession above: nothing gets written to the store until the
