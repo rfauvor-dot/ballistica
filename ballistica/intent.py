@@ -354,6 +354,13 @@ _RIFLE_SETUP_TOOL = {
         "properties": {
             "name": {"type": "string"},
             "scope_height_in": {"type": "number", "description": "Scope height above bore, in inches"},
+            "optic_type": {
+                "type": "string",
+                "enum": ["scope", "red_dot"],
+                "description": "'scope' for any magnified optic, 'red_dot' for a fixed-1x reflex/"
+                                "holographic sight (e.g. Holosun, Aimpoint, EOTech). Infer this from "
+                                "the make/model or the word 'red dot' even if not stated explicitly.",
+            },
             "caliber": {"type": "string"},
             "barrel_length_in": {"type": "number"},
             "twist_rate": {"type": "string", "description": "e.g. '1:7'"},
@@ -361,10 +368,13 @@ _RIFLE_SETUP_TOOL = {
             "reticle_unit": {"type": "string", "enum": ["MRAD", "MOA"]},
             "scope_make": {"type": "string"},
             "scope_model": {"type": "string"},
-            "magnification": {"type": "string", "description": "e.g. '5-25x'"},
+            "magnification": {"type": "string", "description": "e.g. '5-25x' -- magnified scopes only"},
             "objective_lens_mm": {"type": "number"},
-            "focal_plane": {"type": "string", "enum": ["FFP", "SFP"]},
-            "reticle_type": {"type": "string"},
+            "focal_plane": {"type": "string", "enum": ["FFP", "SFP"], "description": "Magnified scopes only"},
+            "reticle_type": {"type": "string", "description": "Magnified scope: crosshair pattern, e.g. "
+                                                                "'MOA Christmas tree'. Red dot: the dot/"
+                                                                "circle pattern, e.g. '65 MOA circle + dot'"},
+            "dot_size_moa": {"type": "number", "description": "Red dot only -- the dot's size in MOA"},
         },
     },
 }

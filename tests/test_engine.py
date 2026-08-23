@@ -378,6 +378,7 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     responses = iter([
         {"name": "Creedmoor bolt gun", "caliber": "6.5 Creedmoor"},
         {"scope_height_in": 2.0},
+        {"optic_type": "scope"},
     ])
     monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
 
@@ -389,7 +390,10 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     next_prompt = cli.handle("call it the Creedmoor bolt gun, caliber 6.5 Creedmoor")
     assert "scope height" in next_prompt.lower()
 
-    after_required = cli.handle("scope height is 2 inches")
+    optic_prompt = cli.handle("scope height is 2 inches")
+    assert "magnified scope or a red dot" in optic_prompt.lower()
+
+    after_required = cli.handle("magnified scope")
     # Caliber was already given -- shouldn't be asked again. Required
     # fields are done, so this should be the first *other* optional field,
     # not caliber and not the confirmation summary yet.
@@ -406,6 +410,69 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     assert "Creedmoor bolt gun" in saved
     assert store.active_rifle_name == "Creedmoor bolt gun"
     assert store.rifles["Creedmoor bolt gun"].caliber == "6.5 Creedmoor"
+
+
+def test_rifle_setup_red_dot_skips_magnification_and_focal_plane(monkeypatch, tmp_path):
+    """Regression (Addendum 27): a Holosun 510C red dot couldn't get
+    through the setup interview because every optic-info question
+    assumed a magnified scope. optic_type="red_dot" must route the
+    walkthrough to dot_size_moa/reticle_type instead of magnification/
+    objective_lens_mm/focal_plane, which don't apply to a fixed-1x
+    reflex sight -- and those fields must never be asked about or
+    appear in the summary for a red dot."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    responses = iter([
+        {"name": "red dot AR"},
+        {"scope_height_in": 2.6},
+        {"optic_type": "red_dot", "scope_make": "Holosun", "scope_model": "510C"},
+        {"dot_size_moa": 2, "reticle_type": "65 MOA circle + dot"},
+    ])
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("set up a new rifle")
+    cli.handle("call it the red dot AR")
+    optic_prompt = cli.handle("scope height is 2.6 inches")
+    assert "magnified scope or a red dot" in optic_prompt.lower()
+
+    after_optic = cli.handle("it's a Holosun 510C red dot")
+    # A common field (not caliber-specific) should come next -- and
+    # crucially, never magnification/focal plane for a red dot.
+    assert "magnification" not in after_optic.lower()
+    assert "focal plane" not in after_optic.lower()
+
+    # Dot size/reticle volunteered out of sequence -- captured, but the
+    # remaining common fields still get asked before reaching them again.
+    cli.handle("2 MOA dot with a 65 MOA circle")
+
+    seen_prompts = []
+    for _ in range(20):
+        reply = cli.handle("skip")
+        if "sound right" in reply.lower():
+            summary = reply
+            break
+        seen_prompts.append(reply)
+    else:
+        raise AssertionError("never reached the confirmation summary")
+
+    assert not any("magnification" in p.lower() for p in seen_prompts)
+    assert not any("focal plane" in p.lower() for p in seen_prompts)
+    assert "magnification" not in summary.lower()
+    assert "focal" not in summary.lower()
+
+    saved = cli.handle("yes")
+    assert "red dot AR" in saved
+    rifle = store.rifles["red dot AR"]
+    assert rifle.optic_type == "red_dot"
+    assert rifle.dot_size_moa == 2
+    assert rifle.reticle_type == "65 MOA circle + dot"
+    assert rifle.magnification == ""
+    assert rifle.focal_plane == ""
 
 
 def test_setup_rejects_hallucinated_placeholder_values(monkeypatch, tmp_path):

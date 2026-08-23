@@ -81,19 +81,28 @@ class Rifle:
     barrel_length_in: float | None = None
     twist_rate: str = ""
     click_value_mrad: float = 0.1
-    reticle_unit: str = "MRAD"  # "MRAD" or "MOA" -- which unit the scope's turrets/reticle actually use
+    reticle_unit: str = "MRAD"  # "MRAD" or "MOA" -- which unit the optic's turrets/reticle actually use
+    # "" (unknown/legacy profile), "scope" (magnified), or "red_dot" (fixed
+    # 1x reflex/holographic) -- added after a real setup failure: a red dot
+    # has no magnification or focal plane at all, and the fields below were
+    # built assuming every optic is a magnified scope. This determines
+    # which of those fields the voice setup interview even asks about.
+    optic_type: str = ""
     scope_make: str = ""
     scope_model: str = ""
-    magnification: str = ""  # free text, e.g. "5-25x" or a fixed "10x"
+    magnification: str = ""  # free text, e.g. "5-25x" or a fixed "10x" -- magnified scopes only
     objective_lens_mm: float | None = None
-    focal_plane: str = ""  # "FFP", "SFP", or "" if unknown/not applicable
-    reticle_type: str = ""  # e.g. "MOA Christmas tree"
+    focal_plane: str = ""  # "FFP", "SFP", or "" if unknown/not applicable -- magnified scopes only
+    reticle_type: str = ""  # magnified scope: e.g. "MOA Christmas tree". Red dot: the dot/circle pattern, e.g. "65 MOA circle + 2 MOA dot"
+    dot_size_moa: float | None = None  # red dot only -- the dot's apparent size in MOA
     loads: dict[str, Load] = field(default_factory=dict)
     active_load_name: str | None = None
 
     def __post_init__(self) -> None:
         if self.reticle_unit not in ("MRAD", "MOA"):
             raise ValueError("reticle_unit must be 'MRAD' or 'MOA'")
+        if self.optic_type not in ("", "scope", "red_dot"):
+            raise ValueError("optic_type must be 'scope', 'red_dot', or unset")
 
     def add_load(self, load: Load, make_active: bool = True) -> None:
         self.loads[load.name] = load

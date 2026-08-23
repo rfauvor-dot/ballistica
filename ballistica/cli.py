@@ -64,10 +64,17 @@ _LOAD_PROMPTS = {
     "zero_distance_yd": "What yardage is it zeroed at?",
 }
 
-_RIFLE_REQUIRED = ["name", "scope_height_in"]
+_RIFLE_REQUIRED = ["name", "scope_height_in", "optic_type"]
 _RIFLE_PROMPTS = {
     "name": "What do you want to call this rifle?",
     "scope_height_in": "What's the scope height above bore, in inches?",
+    # Asked early, right after the other required fields, because it
+    # determines which optic-info questions make sense to ask next -- a
+    # red dot has no magnification or focal plane at all. Added after a
+    # real setup failure (Addendum 27): a Holosun 510C red dot couldn't
+    # get through the interview because every optic-info question assumed
+    # a magnified scope.
+    "optic_type": "Is this a magnified scope or a red dot?",
 }
 
 # The rest of the same field set the manual Setup form has -- asked one at
@@ -84,22 +91,35 @@ _LOAD_EXTRA_PROMPTS = {
     "notes": "Any notes to add?",
 }
 
-_RIFLE_EXTRA_FIELDS = ["caliber", "barrel_length_in", "twist_rate", "click_value_mrad",
-                       "reticle_unit", "scope_make", "scope_model", "magnification",
-                       "objective_lens_mm", "focal_plane", "reticle_type"]
+# Fields common to both optic types, plus the fields specific to each --
+# magnification and focal plane are meaningless on a fixed-1x red dot, and
+# a red dot's "reticle" is a dot/circle size in MOA, not a scope's
+# crosshair pattern. _rifle_extra_fields() picks the right set once
+# optic_type is known (see _RIFLE_REQUIRED above).
+_RIFLE_EXTRA_FIELDS_COMMON = ["caliber", "barrel_length_in", "twist_rate", "click_value_mrad",
+                              "reticle_unit", "scope_make", "scope_model"]
+_RIFLE_EXTRA_FIELDS_SCOPE = ["magnification", "objective_lens_mm", "focal_plane", "reticle_type"]
+_RIFLE_EXTRA_FIELDS_RED_DOT = ["dot_size_moa", "reticle_type"]
 _RIFLE_EXTRA_PROMPTS = {
     "caliber": "What caliber?",
     "barrel_length_in": "Barrel length, in inches?",
     "twist_rate": "What's the twist rate?",
     "click_value_mrad": "What's the click value?",
     "reticle_unit": "Is the reticle MRAD or MOA?",
-    "scope_make": "What's the scope make?",
-    "scope_model": "What's the scope model?",
+    "scope_make": "What's the make?",
+    "scope_model": "What's the model?",
     "magnification": "What magnification range?",
     "objective_lens_mm": "Objective lens size, in millimeters?",
     "focal_plane": "First or second focal plane?",
     "reticle_type": "What reticle type?",
+    "dot_size_moa": "What size dot, in MOA?",
 }
+
+
+def _rifle_extra_fields(optic_type: str) -> list[str]:
+    if optic_type == "red_dot":
+        return _RIFLE_EXTRA_FIELDS_COMMON + _RIFLE_EXTRA_FIELDS_RED_DOT
+    return _RIFLE_EXTRA_FIELDS_COMMON + _RIFLE_EXTRA_FIELDS_SCOPE
 
 _SKIP_RE = re.compile(r"^(skip|none|n/?a|not sure|don.t know|no|nothing|pass)\b")
 
@@ -459,7 +479,8 @@ class BallisticaCLI:
         for field in required:
             if self._setup.draft.get(field) in (None, ""):
                 return field
-        extras = _LOAD_EXTRA_FIELDS if self._setup.kind == "load" else _RIFLE_EXTRA_FIELDS
+        extras = (_LOAD_EXTRA_FIELDS if self._setup.kind == "load"
+                  else _rifle_extra_fields(self._setup.draft.get("optic_type", "")))
         for field in extras:
             if field in self._setup.skipped:
                 continue
@@ -474,7 +495,8 @@ class BallisticaCLI:
 
     def _extras_summary(self) -> str:
         d = self._setup.draft
-        extra_fields = _LOAD_EXTRA_FIELDS if self._setup.kind == "load" else _RIFLE_EXTRA_FIELDS
+        extra_fields = (_LOAD_EXTRA_FIELDS if self._setup.kind == "load"
+                        else _rifle_extra_fields(d.get("optic_type", "")))
         parts = [str(d[f]) for f in extra_fields if d.get(f) not in (None, "")]
         return f" Also got: {', '.join(parts)}." if parts else ""
 
