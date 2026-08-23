@@ -11,7 +11,7 @@ Prepared: 2026-08-23
 Lenses applied: Build (architecture) / Security (threat model, data handling) / Finance (real infra cost) / Marketing (sync as a side-benefit) / CoS (synthesis)
 Key risks flagged: hand-rolled password auth is a common small-app vulnerability source; the aggregate-data seam is illustrative, not final, per Rick's explicit scoping; unbounded voice-endpoint requests are a real cost exposure (added post-Grok-review)
 Alternatives considered: hand-rolled email/password auth vs. managed auth provider vs. OAuth-only; per-user JSON files vs. real database; in-memory vs. DB-persisted conversation state (resolved: DB-persisted, see §6.1); Clerk vs. Supabase Auth (open, see §6.5)
-Recommendation + confidence: managed auth provider + Postgres + per-user-scoped queries + DB-persisted conversation state + an events table as the aggregate-data seam — high confidence on the shape; two open items need Rick's decision before implementation (§6.2 deletion policy, §6.5 Clerk vs. Supabase Auth)
+Recommendation + confidence: managed auth provider + Postgres + per-user-scoped queries + DB-persisted conversation state + an events table as the aggregate-data seam — high confidence on the shape; one open item remains before implementation (§6.5 Clerk vs. Supabase Auth) — the deletion policy (§6.2) is decided and closed
 ```
 
 **Revision note (2026-08-23): updated after Grok's adversarial review — see
@@ -234,28 +234,44 @@ applied to the aggregate-data seam — it should have been applied to this
 too. Low additional cost (one more small table, no new infra) for a real
 reliability gain.
 
-### 6.2 Genuine open policy decision: aggregate-data retention on account deletion
+### 6.2 Account-deletion data policy — DECIDED, CLOSED (2026-08-23)
 
-Grok's framing is correct that this needs deciding now, since it changes
-how the delete path and the events table itself get built — not something
-to leave open past this checkpoint.
+**Rick's decision, final, no further input needed on this question:**
+anonymize, don't delete the ballistic data. Matches the Option B
+recommendation above, confirmed rather than left open.
 
-**Recommendation: Option B — anonymize, don't hard-delete.** On account
-deletion, `events` rows are stripped of `user_id` and any identifying
-fields, and the remaining ballistic facts (range, drop, wind, etc.) are
-kept. This matches how the aggregate-data strategy was already framed
-elsewhere in this project (anonymized, not personally-identifying), and
-once a row genuinely can't be traced back to a person, most privacy
-frameworks (e.g. GDPR's anonymization concept) treat it as no longer
-personal data — so it isn't in tension with a real "delete my data"
-request. Option A (hard-delete everything) is simpler but throws away
-real aggregate value for every departed user; Option C (mark
-"deleted user" but keep the link) doesn't actually delete anything and
-likely doesn't satisfy a genuine deletion request.
+**The policy, in Rick's own framing:** everything personally identifying
+about the departed user is deleted without exception — name, contact
+info, account credentials, any direct identifier tying data back to that
+specific person. The ballistic data itself, once it's part of the
+aggregate pool, is retained — fully anonymized, tied to no account.
+Rick's reasoning: once a contribution is folded into the aggregate pool
+it stops being meaningfully "theirs" — a blended dataset built from
+everyone's contributions together, the way a drop of dye disappears into
+a bucket of paint, with no clean way to re-isolate one person's
+contribution as a separate thing. What must be deleted without exception
+is anything that could re-identify the person, not the underlying facts
+once they've become part of something larger than any one account. The
+resulting honest answer to a departing user: *"you personally are gone —
+but the shooting data already became part of a shared pool that no
+longer belongs to any one person."*
 
-**This is Rick's call to confirm, not decided unilaterally here** — it's
-a user-trust/privacy policy question, not a technical one, even though
-the technical recommendation is clear.
+**Implementation implications, as specified:**
+- Cascading delete on account deletion targets three things: the user
+  record, auth credentials, and any direct-identifier fields on
+  historical records/profiles.
+- **Anonymization happens in the same deletion transaction as the
+  identity delete** — strip the identifying reference from `events` rows
+  atomically, not flagged for a later cleanup pass. A deletion that
+  removes the identity but leaves anonymization pending is not
+  acceptable; the two must be one operation.
+- No change to the events-table seam's shape (§3) — this only governs
+  what cascading delete does to rows that reference a deleted user, not
+  the schema itself.
+
+This closes the first of the two items §6.6 flagged as needing Rick's
+decision. Clerk vs. Supabase Auth (§6.5) remains open, pending ChatGPT's
+review pass.
 
 ### 6.3 Missing pieces — addressed
 
@@ -321,10 +337,11 @@ to "worth Rick's own evaluation before locking in."
 
 ### 6.6 Updated recommendation
 
-Per Grok's own closing recommendation, three things need to close before
-implementation starts:
-1. Aggregate-data retention policy on deletion — **recommendation given
-   (§6.2, Option B), needs Rick's confirmation.**
+Per Grok's own closing recommendation, three things needed to close
+before implementation starts:
+1. Aggregate-data retention policy on deletion — **CLOSED (§6.2):
+   anonymize on deletion, atomic with the identity delete. Final, no
+   further input needed.**
 2. Conversation state persistence — **resolved above (§6.1): moving to
    DB-persisted, no longer open.**
 3. Clerk vs. alternatives — **narrowed to Clerk vs. Supabase Auth
