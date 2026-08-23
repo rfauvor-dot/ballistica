@@ -316,6 +316,15 @@ _SETUP_SYSTEM_PROMPT = (
     "the name. Only split a token out into caliber/twist_rate/bullet_type/"
     "etc. instead of the name when it's clearly stated as that specific "
     "field (e.g. 'caliber is 6.5 Creedmoor'). "
+    "The user message tells you which field was just asked about. If that "
+    "field is 'name' and nothing in the answer reads as a distinct, "
+    "separate name (the whole thing sounds like a description of the "
+    "caliber/platform/type instead, e.g. 'pistol caliber carbine, nine "
+    "millimeter'), use the answer as the name anyway, cleaned up as a "
+    "short label -- in addition to extracting it into caliber/etc. too, "
+    "not instead of. Leaving name blank here just means asking the exact "
+    "same question again, which reads as not having heard the shooter at "
+    "all even though the words were understood. "
     "If this turn doesn't actually answer or add anything (e.g. the shooter "
     "asked a question back, or said something unrelated to any field), call "
     "the tool with no fields set at all -- never fill a field with a "
@@ -380,22 +389,32 @@ _RIFLE_SETUP_TOOL = {
 }
 
 
-def extract_setup_fields(text: str, kind: str) -> dict | None:
+def extract_setup_fields(text: str, kind: str, asking_about: str | None = None) -> dict | None:
     """Returns whatever Load/Rifle fields (kind: "load" or "rifle") were
     mentioned in this utterance, or None on an outright API failure. An
     utterance that genuinely stated nothing usable comes back as {},
     distinct from None only in that the caller doesn't need to treat it
     as a hard error -- both currently get the same "didn't catch that"
     handling in cli.py, but keeping them distinct leaves room to do
-    better later without another API shape change."""
+    better later without another API shape change.
+
+    asking_about: the field cli.py's setup flow just prompted for (see
+    _next_field_to_ask()). Passed through to the model so it can tell
+    "answers the question but isn't shaped like the target field" (e.g.
+    a caliber description answering "what's the name") apart from
+    "doesn't answer it at all" -- confirmed live (Addendum 27) that
+    without this context, an answer like "pistol caliber carbine, nine
+    millimeter" got read as pure caliber info and left name blank,
+    silently re-asking the identical question forever."""
     tool = _LOAD_SETUP_TOOL if kind == "load" else _RIFLE_SETUP_TOOL
+    user_content = f"[Currently being asked for: {asking_about}]\n{text}" if asking_about else text
     try:
         client = get_anthropic_client()
         response = client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             system=_SETUP_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": text}],
+            messages=[{"role": "user", "content": user_content}],
             tools=[tool],
             tool_choice={"type": "any"},
         )

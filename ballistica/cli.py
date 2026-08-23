@@ -573,7 +573,7 @@ class BallisticaCLI:
                 return self._setup_summary()
             return self._prompt_for(nxt)
 
-        fields = extract_setup_fields(text, self._setup.kind)
+        fields = extract_setup_fields(text, self._setup.kind, asking_about=current_field)
         valid = {f.name for f in dataclasses.fields(Load if self._setup.kind == "load" else Rifle)}
         before = dict(self._setup.draft)
         if fields:
@@ -596,6 +596,16 @@ class BallisticaCLI:
         missing = self._next_field_to_ask()
         if missing:
             self._setup.confirming = False
+            # Real progress happened, but not on the specific field just
+            # asked about (e.g. asked for a name, got a caliber instead) --
+            # confirmed live (Addendum 27): silently re-asking the exact
+            # same question reads as "didn't understand at all" even
+            # though something real was captured. Naming what was heard
+            # makes clear the utterance registered.
+            if current_field is not None and self._setup.draft.get(current_field) in (None, ""):
+                newly_captured = [str(v) for k, v in self._setup.draft.items() if k not in before]
+                if newly_captured:
+                    return f"Got it -- {', '.join(newly_captured)}. {self._prompt_for(missing)}"
             return self._prompt_for(missing)
 
         self._setup.confirming = True

@@ -319,7 +319,7 @@ def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp
         {"muzzle_velocity_fps": 2900, "zero_distance_yd": 100},
         {"zero_distance_yd": 50},
     ])
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: next(responses))
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
@@ -380,7 +380,7 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
         {"scope_height_in": 2.0},
         {"optic_type": "scope"},
     ])
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: next(responses))
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
@@ -429,7 +429,7 @@ def test_rifle_setup_red_dot_skips_magnification_and_focal_plane(monkeypatch, tm
         {"optic_type": "red_dot", "scope_make": "Holosun", "scope_model": "510C"},
         {"dot_size_moa": 2, "reticle_type": "65 MOA circle + dot"},
     ])
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: next(responses))
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
@@ -475,6 +475,61 @@ def test_rifle_setup_red_dot_skips_magnification_and_focal_plane(monkeypatch, tm
     assert rifle.focal_plane == ""
 
 
+def test_setup_extraction_told_which_field_is_being_asked(monkeypatch, tmp_path):
+    """Regression (Addendum 27): the extraction call didn't know which
+    field it was answering, so "pistol caliber carbine, nine
+    millimeter" (answering "what do you want to call this rifle?")
+    got read as pure caliber info with no name -- silently re-asking
+    the identical question forever, even though the words were
+    understood. Pins that the currently-asked field is actually passed
+    through to extract_setup_fields()."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    captured_calls = []
+
+    def fake_extract(text, kind, asking_about=None):
+        captured_calls.append((text, kind, asking_about))
+        return {"caliber": "9mm"}
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields", fake_extract)
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("set up a new rifle")
+    cli.handle("pistol caliber carbine, nine millimeter")
+
+    assert captured_calls[0] == ("pistol caliber carbine, nine millimeter", "rifle", "name")
+
+
+def test_setup_acknowledges_progress_when_asked_field_still_unfilled(monkeypatch, tmp_path):
+    """When a turn makes real progress but not on the specific field
+    that was just asked about (e.g. asked for a name, only got a
+    caliber back), the reply must say what it caught rather than
+    silently repeating the identical question -- a bare repeat reads
+    as "didn't understand at all" even when something real registered."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"caliber": "9mm"})
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("set up a new rifle")
+    reply = cli.handle("pistol caliber carbine, nine millimeter")
+
+    assert "9mm" in reply
+    assert "got it" in reply.lower()
+    assert "what do you want to call this rifle" in reply.lower()
+    assert cli._setup.draft.get("caliber") == "9mm"
+    assert cli._setup.draft.get("name") in (None, "")
+
+
 def test_setup_rejects_hallucinated_placeholder_values(monkeypatch, tmp_path):
     """The actual root cause behind Addendum 11's infinite loop: asked
     something that doesn't answer the current field (e.g. "what
@@ -497,7 +552,7 @@ def test_setup_rejects_hallucinated_placeholder_values(monkeypatch, tmp_path):
     cli = BallisticaCLI(store)
 
     monkeypatch.setattr(cli_module, "extract_setup_fields",
-                         lambda text, kind: {"caliber": "5.7x28mm", "name": "CMMG"})
+                         lambda text, kind, asking_about=None: {"caliber": "5.7x28mm", "name": "CMMG"})
     cli.handle("let's set up a new rifle")
     cli.handle("5.7x28mm, 11.5 inch, CMMG")
     assert cli._setup.draft["caliber"] == "5.7x28mm"
@@ -505,7 +560,7 @@ def test_setup_rejects_hallucinated_placeholder_values(monkeypatch, tmp_path):
     for placeholder in ["<UNKNOWN>", "unknown", "n/a", "N/A", "null", "[not specified]"]:
         cli._setup.failed_attempts = 0  # isolate each placeholder, independent of the retry cap
         monkeypatch.setattr(cli_module, "extract_setup_fields",
-                             lambda text, kind, p=placeholder: {"caliber": p})
+                             lambda text, kind, p=placeholder, asking_about=None: {"caliber": p})
         reply = cli.handle("what caliber")
         assert cli._setup.draft["caliber"] == "5.7x28mm", f"placeholder {placeholder!r} overwrote a real value"
         assert "didn't catch" in reply.lower()
@@ -532,13 +587,13 @@ def test_setup_gives_up_after_repeated_failures_to_understand(monkeypatch, tmp_p
     bootstrap_default_profile(store)
     cli = BallisticaCLI(store)
 
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {"name": "AR-15"})
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {"name": "AR-15"})
     cli.handle("let's set up a new rifle")
     cli.handle("call it the AR-15")  # real progress -- resets the counter
 
     # Now every turn fails to extract anything new (simulates the LLM
     # genuinely not understanding, or repeated silence/noise).
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {})
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {})
     first = cli.handle("what's the scope height")
     assert "didn't catch" in first.lower()
     assert cli._setup is not None
@@ -572,7 +627,7 @@ def test_setup_correction_overwriting_existing_field_resets_failure_counter(monk
         {"bullet_weight_gr": 75, "bc": 0.37, "drag_model": "G1"},
         {"muzzle_velocity_fps": 2900, "zero_distance_yd": 100},
     ])
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: next(responses))
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: next(responses))
     cli.handle("let's set up a new load")
     cli.handle("call it 25gr Varget")
     cli.handle("75 grains, point three seven, G1")
@@ -582,17 +637,17 @@ def test_setup_correction_overwriting_existing_field_resets_failure_counter(monk
 
     # Two "no progress" turns, then a same-key-overwrite correction --
     # the correction must reset the counter, not be swallowed by it.
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {})
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {})
     cli.handle("uh")
     cli.handle("uh")
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {"zero_distance_yd": 50})
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {"zero_distance_yd": 50})
     corrected = cli.handle("no, actually zero it at 50 yards")
     assert "50 yards" in corrected
     assert cli._setup.failed_attempts == 0
 
     # Two more failures shouldn't be enough to trip the cap now that
     # the counter was reset by the correction above.
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {})
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {})
     cli.handle("uh")
     still_open = cli.handle("uh")
     assert "didn't catch" in still_open.lower()
@@ -606,7 +661,7 @@ def test_setup_cancel_discards_draft_without_saving(monkeypatch, tmp_path):
     import ballistica.cli as cli_module
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind: {"name": "should not save"})
+    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {"name": "should not save"})
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
