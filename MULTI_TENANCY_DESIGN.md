@@ -529,3 +529,65 @@ flagged is closed, decided, or explicitly tracked as required
 implementation/test work — nothing is being carried forward as vague
 "someone should think about this later." **CONFIRMED by Rick, 2026-08-23
 — implementation begins now.**
+
+---
+
+## 8. Implementation progress
+
+### 8.1 Schema written — `db/001_multi_tenant_schema.sql`
+
+Full DDL for `profiles`, `rifles`, `loads`, `conversation_state`, and
+`events`, with RLS policies on every table. One implementation detail
+found while writing it that's stronger than what §7.2 described:
+
+**The atomic-anonymization requirement (§6.2) is satisfied at the
+database level, not just by careful application code.** `events.user_id`
+uses `ON DELETE SET NULL` rather than `ON DELETE CASCADE` — this is
+Supabase's own documented pattern for exactly this situation (a
+referencing row that should outlive the deleted user). When
+`auth.admin.deleteUser()` performs its underlying `DELETE FROM
+auth.users`, every foreign-key constraint referencing it fires as part
+of that *same* Postgres transaction automatically — `rifles`/`loads`/
+`conversation_state`/`profiles` are deleted, `events.user_id` is nulled,
+all atomically, guaranteed by Postgres itself rather than by
+remembering to write the right application-level transaction code. This
+is a stronger guarantee than the single-`BEGIN/COMMIT` framing in §7.2
+suggested.
+
+**One application-level requirement this schema can't enforce on its
+own, noted so it isn't lost**: `events.payload` must never contain
+identifying fields. Nulling `user_id` only anonymizes the row if the
+payload itself was never PII to begin with — that discipline has to
+hold wherever code writes to this table.
+
+### 8.2 Blocked on: a real Supabase project
+
+This is where implementation has to pause for something only Rick can
+do — creating third-party accounts and entering payment/billing
+information isn't something I'll do on his behalf, regardless of
+authorization, the same boundary that applied to Render's persistent
+disk in Addendum 38.
+
+**What's needed from Rick:**
+1. Create a Supabase project (free tier is enough to start —
+   supabase.com, sign up, "New Project").
+2. In the project's SQL Editor, run `db/001_multi_tenant_schema.sql`
+   (now in the repo) — creates the schema this design specifies.
+3. From Project Settings → API, get: the Project URL, the `anon` public
+   key, and the JWT secret (or JWKS URL, depending on how Supabase
+   currently exposes it for server-side verification). Set these as
+   environment variables the same way `OPENAI_API_KEY`/
+   `ANTHROPIC_API_KEY` already are — never paste them into chat.
+
+Once those env vars exist (locally in `.env` for testing, and in
+Render's environment config for production), implementation continues:
+a FastAPI dependency that verifies the Supabase JWT on every request,
+replacing the single shared `store`/`voice_cli` globals in `api.py` with
+per-user-scoped equivalents, and the migration script moving Rick's one
+existing profile from the flat JSON file into the new schema.
+
+Not writing that request-handling code blind before there's a real
+project to test it against — auth-critical code that's never been
+exercised against a live system is exactly the kind of thing that
+should be tested before being trusted, not assumed correct because it
+reads correctly.
