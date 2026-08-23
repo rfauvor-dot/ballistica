@@ -190,6 +190,10 @@ _TOOLS = [
                 "focal_plane": {"type": "string", "enum": ["FFP", "SFP"]},
                 "reticle_type": {"type": "string"},
                 "dot_size_moa": {"type": "number"},
+                "has_suppressor": {"type": "boolean"},
+                "suppressor_type": {"type": "string", "description": "Open text -- brand if known, "
+                                                                       "otherwise a generic/custom "
+                                                                       "description."},
             },
         },
     },
@@ -412,6 +416,14 @@ _RIFLE_SETUP_TOOL = {
                                                                 "'MOA Christmas tree'. Red dot: the dot/"
                                                                 "circle pattern, e.g. '65 MOA circle + dot'"},
             "dot_size_moa": {"type": "number", "description": "Red dot only -- the dot's size in MOA"},
+            "has_suppressor": {"type": "boolean", "description": "Whether this rifle runs a suppressor. "
+                                                                   "A property of the rifle itself, not any "
+                                                                   "one load -- the same can stays attached "
+                                                                   "regardless of which load is fired."},
+            "suppressor_type": {"type": "string", "description": "Open text -- a real brand if there is "
+                                                                   "one, or a generic/custom description "
+                                                                   "(e.g. 'custom build', 'not sure') if "
+                                                                   "not. Never force a brand guess."},
         },
     },
 }

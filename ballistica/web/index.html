@@ -78,9 +78,29 @@
   button.big { width: 100%; font-size: 22px; min-height: 58px; margin-top: 4px; }
   button:active { opacity: 0.85; }
 
-  .rifle-header { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
-  .rifle-header select { flex: 1; font-size: 20px; font-weight: 700; min-height: 52px; }
-  .rifle-header button { min-height: 52px; }
+  /* Addendum 35: a native <select> with appearance:none has no visual
+     affordance signaling it's tappable -- Rick never noticed it was
+     there. Reusing the same details/summary pattern as the other
+     panels below makes "tap to expand a list" obvious and consistent
+     with the rest of the app, and doubles as a plain, always-visible
+     way to confirm what's actually saved (Addendum 34's diagnostic ask). */
+  .rifle-picker-details { margin-top: 0; margin-bottom: 8px; }
+  .rifle-picker-details > summary { font-size: 20px; font-weight: 700; color: var(--text); padding: 12px 14px; }
+  .rifle-picker-details > summary::before { content: "\25B8  "; color: var(--muted); font-size: 14px; }
+  .rifle-picker-details[open] > summary::before { content: "\25BE  "; }
+  .rifle-list-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    width: 100%; text-align: left; padding: 12px 10px; font-size: 17px;
+    border: none; border-top: 1px solid var(--line); border-radius: 0;
+    background: transparent; color: var(--text); min-height: 0;
+  }
+  .rifle-list-row:first-child { border-top: none; }
+  .rifle-list-row.active { font-weight: 700; color: var(--accent); }
+  .rifle-list-row span:last-child { font-size: 14px; color: var(--muted); font-weight: 400; }
+  .rifle-list-row.active span:last-child { color: var(--accent); }
+  .rifle-list-empty { padding: 8px 10px; color: var(--muted); font-size: 15px; }
+  .rifle-actions { display: flex; gap: 8px; margin-bottom: 6px; }
+  .rifle-actions button { flex: 1; min-height: 46px; }
 
   .load-header { display: flex; gap: 8px; align-items: center; margin: 14px 0 6px; }
   .load-header select { flex: 1; font-size: 18px; min-height: 46px; }
@@ -133,8 +153,11 @@
     <div id="voiceUnsupported">This browser doesn't support wake-word listening (needs Chrome). Use the manual controls below instead.</div>
   </div>
 
-  <div class="rifle-header">
-    <select id="rifleSelect"></select>
+  <details id="riflePicker" class="rifle-picker-details">
+    <summary><span id="riflePickerLabel">Loading rifles...</span></summary>
+    <div class="panel-body" id="riflePickerList"></div>
+  </details>
+  <div class="rifle-actions">
     <button id="newRifleBtn" title="New rifle">+ New</button>
     <button id="editRifleBtn" title="Edit this rifle">Edit</button>
   </div>
@@ -164,6 +187,16 @@
       <div class="row">
         <div class="field w-md"><label for="rScopeMake">Make</label><input id="rScopeMake" type="text" placeholder="e.g. Vortex, Holosun"></div>
         <div class="field w-lg"><label for="rScopeModel">Model</label><input id="rScopeModel" type="text" placeholder="e.g. Viper PST Gen II 5-25x50, 510C"></div>
+      </div>
+      <div class="row">
+        <div class="field w-md">
+          <label for="rSuppressor">Suppressor</label>
+          <select id="rSuppressor"><option value="no">No</option><option value="yes">Yes</option></select>
+        </div>
+        <div class="field w-lg" id="rSuppressorTypeField" style="display:none">
+          <label for="rSuppressorType">Type / brand</label>
+          <input id="rSuppressorType" type="text" placeholder="e.g. Dead Air Sandman-S, or 'custom build'">
+        </div>
       </div>
       <div class="row">
         <div class="field w-sm"><label for="rMag">Power</label><input id="rMag" type="text" placeholder="5-25x" title="Magnification -- magnified scopes only, e.g. 5-25x or a fixed 10x"></div>
@@ -259,7 +292,6 @@
   </div>
 
 <script>
-const rifleSelect = document.getElementById('rifleSelect');
 const loadSelect = document.getElementById('loadSelect');
 const rangeInput = document.getElementById('rangeInput');
 const solveBtn = document.getElementById('solveBtn');
@@ -270,6 +302,9 @@ const rifleDetails = document.getElementById('rifleDetails');
 const loadDetails = document.getElementById('loadDetails');
 
 let currentRifleDetail = null;
+let allRifles = []; // [{name, active_load_name, load_count}] -- this listing never
+                     // requires an active load to exist (Addendum 36: zero loads is
+                     // a valid rifle state), unlike the per-rifle detail fetch below.
 
 function flash(el, msg, ms) {
   el.textContent = msg;
@@ -298,16 +333,32 @@ async function api(path, options) {
 async function loadRifles(selectName) {
   setStatus('Loading rifles...');
   try {
-    const rifles = await api('/rifles');
-    if (!rifles.length) {
-      rifleSelect.innerHTML = '<option value="">(none yet)</option>';
+    allRifles = await api('/rifles');
+    if (!allRifles.length) {
+      currentRifleDetail = null;
+      renderRiflePicker();
       openRifleFormBlank();
       setStatus('');
       return;
     }
-    rifleSelect.innerHTML = rifles.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
-    if (selectName) rifleSelect.value = selectName;
-    await loadRifleDetail(rifleSelect.value);
+    if (!selectName) {
+      // No explicit hint -- ask which rifle is actually active rather
+      // than defaulting to "first in the list" (Addendum 34: that
+      // default could silently skip right past a rifle that was just
+      // created and made active). /status 404s when the active rifle
+      // has no active load yet -- normal for a rifle just created by
+      // voice before any load exists (Addendum 36) -- so this falls
+      // through to the existing-detail/first-item fallback below rather
+      // than failing the whole refresh.
+      try {
+        selectName = (await api('/status')).rifle.name;
+      } catch (e) { /* fall through */ }
+    }
+    const stillExists = (name) => name && allRifles.some(r => r.name === name);
+    const name = stillExists(selectName) ? selectName
+      : stillExists(currentRifleDetail && currentRifleDetail.name) ? currentRifleDetail.name
+      : allRifles[0].name;
+    await loadRifleDetail(name);
   } catch (e) {
     flash(calcError, 'Could not reach Ballistica: ' + e.message);
   }
@@ -325,6 +376,41 @@ async function loadRifleDetail(name) {
   } else {
     openLoadFormBlank();
   }
+  renderRiflePicker();
+}
+
+// Addendum 35: a visible, always-current list of every saved rifle --
+// also the diagnostic Rick asked for to independently confirm whether a
+// rifle actually exists server-side, instead of only trusting whatever
+// confirmation message a voice command gave (Addendum 34).
+function renderRiflePicker() {
+  document.getElementById('riflePickerLabel').textContent =
+    currentRifleDetail ? currentRifleDetail.name : (allRifles.length ? 'Select a rifle' : 'No rifles saved yet');
+  const list = document.getElementById('riflePickerList');
+  if (!allRifles.length) {
+    list.innerHTML = '<div class="rifle-list-empty">No saved rifles yet -- use + New below.</div>';
+    return;
+  }
+  list.innerHTML = allRifles.map(r => {
+    const active = currentRifleDetail && r.name === currentRifleDetail.name;
+    // load_count shown here directly answers "did that load I just saved
+    // really attach to this rifle" without opening the rifle at all.
+    return `<button type="button" class="rifle-list-row${active ? ' active' : ''}" data-name="${r.name.replace(/"/g, '&quot;')}">` +
+      `<span>${r.name}</span><span>${r.load_count} load${r.load_count === 1 ? '' : 's'}${active ? '  ✓' : ''}</span></button>`;
+  }).join('');
+  list.querySelectorAll('.rifle-list-row').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.name;
+      document.getElementById('riflePicker').open = false;
+      if (currentRifleDetail && name === currentRifleDetail.name) return;
+      hide(calcError);
+      try {
+        await loadRifleDetail(name);
+      } catch (e) {
+        flash(calcError, 'Could not load that rifle: ' + e.message);
+      }
+    });
+  });
 }
 
 function fillRifleForm(r) {
@@ -343,8 +429,16 @@ function fillRifleForm(r) {
   document.getElementById('rFocalPlane').value = r.focal_plane || '';
   document.getElementById('rDotSize').value = r.dot_size_moa ?? '';
   document.getElementById('rReticleType').value = r.reticle_type || '';
+  document.getElementById('rSuppressor').value = r.has_suppressor ? 'yes' : 'no';
+  document.getElementById('rSuppressorType').value = r.suppressor_type || '';
+  toggleSuppressorType();
   document.getElementById('deleteRifleBtn').style.display = '';
 }
+function toggleSuppressorType() {
+  document.getElementById('rSuppressorTypeField').style.display =
+    document.getElementById('rSuppressor').value === 'yes' ? '' : 'none';
+}
+document.getElementById('rSuppressor').addEventListener('change', toggleSuppressorType);
 function openRifleFormBlank() {
   document.getElementById('rName').value = '';
   document.getElementById('rCaliber').value = '';
@@ -361,6 +455,9 @@ function openRifleFormBlank() {
   document.getElementById('rDotSize').value = '';
   document.getElementById('rFocalPlane').value = '';
   document.getElementById('rReticleType').value = '';
+  document.getElementById('rSuppressor').value = 'no';
+  document.getElementById('rSuppressorType').value = '';
+  toggleSuppressorType();
   document.getElementById('deleteRifleBtn').style.display = 'none';
   rifleDetails.open = true;
 }
@@ -384,15 +481,6 @@ function openLoadFormBlank() {
   document.getElementById('lDragModel').value = 'G1';
   loadDetails.open = true;
 }
-
-rifleSelect.addEventListener('change', async () => {
-  hide(document.getElementById('calcError'));
-  try {
-    await loadRifleDetail(rifleSelect.value);
-  } catch (e) {
-    flash(calcError, 'Could not load that rifle: ' + e.message);
-  }
-});
 
 document.getElementById('newRifleBtn').addEventListener('click', () => {
   openRifleFormBlank();
@@ -427,6 +515,8 @@ document.getElementById('saveRifleBtn').addEventListener('click', async () => {
     focal_plane: document.getElementById('rFocalPlane').value,
     dot_size_moa: document.getElementById('rDotSize').value === '' ? null : parseFloat(document.getElementById('rDotSize').value),
     reticle_type: document.getElementById('rReticleType').value.trim(),
+    has_suppressor: document.getElementById('rSuppressor').value === 'yes',
+    suppressor_type: document.getElementById('rSuppressorType').value.trim(),
   };
   try {
     if (isNew) {
@@ -502,14 +592,14 @@ solveBtn.addEventListener('click', async () => {
   hide(calcError);
   const range = parseFloat(rangeInput.value);
   if (!range || range <= 0) { flash(calcError, 'Enter a distance in yards.'); return; }
-  if (!rifleSelect.value || !loadSelect.value) { flash(calcError, 'Select a rifle and load first.'); return; }
+  if (!currentRifleDetail || !loadSelect.value) { flash(calcError, 'Select a rifle and load first.'); return; }
   solveBtn.disabled = true;
   setStatus('Calculating...');
   try {
     const pressRaw = document.getElementById('pressInHg').value.trim();
     const payload = {
       range_yd: range,
-      rifle: rifleSelect.value,
+      rifle: currentRifleDetail.name,
       load: loadSelect.value,
       atmosphere: {
         temp_f: parseFloat(document.getElementById('tempF').value) || 59,
@@ -593,13 +683,21 @@ function setVoiceState(text, hot) {
   voiceStateEl.classList.toggle('hot', !!hot);
 }
 
+// Addendum 30: a single Audio element reused across every reply, instead
+// of a fresh one per playback -- pairs with the persistent mic stream
+// below, since repeatedly tearing down and recreating audio objects is
+// the same class of thing suspected of causing the reported click/pop
+// (an audio route re-negotiation) on Bluetooth earbuds.
+let sharedAudioEl = null;
+
 async function playAudioBlob(blob) {
   const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
+  if (!sharedAudioEl) sharedAudioEl = new Audio();
+  sharedAudioEl.src = url;
   await new Promise((resolve) => {
-    audio.onended = resolve;
-    audio.onerror = resolve;
-    audio.play().catch(resolve);
+    sharedAudioEl.onended = resolve;
+    sharedAudioEl.onerror = resolve;
+    sharedAudioEl.play().catch(resolve);
   });
   URL.revokeObjectURL(url);
 }
@@ -618,20 +716,49 @@ async function speak(text) {
   }
 }
 
+// Addendum 30 (root-caused from code, pending Rick's live confirmation):
+// recordCommand() used to call getUserMedia() and tear the stream/
+// AudioContext back down on EVERY voice turn, not once per session --
+// during a multi-distance test that's a full mic acquire/release cycle
+// per query, since a plain drop-at-range answer doesn't set
+// awaiting_response and so exits handleWakeWord()'s loop after one
+// turn. Repeatedly opening and closing mic access is a well-documented
+// trigger for Bluetooth earbuds to audibly click as they renegotiate
+// between the A2DP (media playback) and HFP (mic) profiles. Held open
+// for the whole voice-enabled session instead -- acquired once in the
+// enable-voice handler, released once in the disable handler -- so
+// that renegotiation happens at most once per session rather than once
+// per query.
+let sharedMicStream = null;
+let sharedAudioCtx = null;
+let sharedAnalyser = null;
+
+async function ensureMicStream() {
+  if (sharedMicStream) return;
+  sharedMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  sharedAudioCtx = new AudioCtx();
+  sharedAnalyser = sharedAudioCtx.createAnalyser();
+  sharedAnalyser.fftSize = 512;
+  sharedAudioCtx.createMediaStreamSource(sharedMicStream).connect(sharedAnalyser);
+}
+
+function releaseMicStream() {
+  if (sharedMicStream) sharedMicStream.getTracks().forEach(t => t.stop());
+  sharedMicStream = null;
+  if (sharedAudioCtx) { try { sharedAudioCtx.close(); } catch (e) {} }
+  sharedAudioCtx = null;
+  sharedAnalyser = null;
+}
+
 async function recordCommand() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  await ensureMicStream();
   const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4'].find(
     t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
-  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const recorder = new MediaRecorder(sharedMicStream, mimeType ? { mimeType } : undefined);
   const chunks = [];
   recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const audioCtx = new AudioCtx();
-  const analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 512;
-  audioCtx.createMediaStreamSource(stream).connect(analyser);
-  const levels = new Uint8Array(analyser.frequencyBinCount);
+  const levels = new Uint8Array(sharedAnalyser.frequencyBinCount);
 
   const SILENCE_LEVEL = 8;
   // Confirmed live (Addendum 27): 1200ms was too tight even after the
@@ -656,16 +783,18 @@ async function recordCommand() {
   let aboveThresholdStreak = 0;
 
   return new Promise((resolve) => {
+    // The stream/AudioContext are no longer torn down here -- they're
+    // shared across the whole voice-enabled session (see ensureMicStream/
+    // releaseMicStream above), only the per-recording MediaRecorder and
+    // its chunks are single-use.
     recorder.onstop = () => {
-      stream.getTracks().forEach(t => t.stop());
-      audioCtx.close();
       resolve(new Blob(chunks, { type: mimeType || 'audio/webm' }));
     };
     recorder.start();
 
     function tick() {
       if (recorder.state !== 'recording') return;
-      analyser.getByteFrequencyData(levels);
+      sharedAnalyser.getByteFrequencyData(levels);
       const avg = levels.reduce((a, b) => a + b, 0) / levels.length;
       const elapsed = Date.now() - startedAt;
       if (avg < SILENCE_LEVEL) {
@@ -827,16 +956,19 @@ async function handleWakeWord() {
   // The rifle/load panels were only ever loaded once, at page load --
   // a voice command (switch load, a saved setup interview, calibration)
   // can change the active rifle/load without the on-screen form ever
-  // reflecting it. Resync from /status, which is the source of truth
-  // for what's actually active, rather than assuming.
+  // reflecting it. Root-caused live (Addendum 34): this resync used to
+  // fetch /status itself and silently swallow ANY failure from it
+  // (including the ordinary case of a freshly-created rifle with no
+  // active load yet -- Addendum 36), which meant the GET /rifles list
+  // refresh never even ran, so a rifle that really did save server-side
+  // never showed up on screen. loadRifles() below now does its own
+  // /status lookup internally with the same graceful fallback, and
+  // always refreshes the list regardless of whether that lookup
+  // succeeds -- so a genuine fetch failure here is now visible (it
+  // flashes calcError) rather than silently discarded.
   try {
-    const s = await api('/status');
-    await loadRifles(s.rifle.name);
-  } catch (e) {
-    // No active rifle yet, or a transient fetch error -- not worth
-    // interrupting the voice loop over; the manual Setup panel still
-    // works if the shooter reloads.
-  }
+    await loadRifles();
+  } catch (e) {}
 
   voiceState = 'idle';
   if (voiceEnabled) startWakeListening();
@@ -873,13 +1005,14 @@ document.addEventListener('visibilitychange', () => {
   if (voiceEnabled && document.visibilityState === 'visible') acquireWakeLock();
 });
 
-enableVoiceBtn.addEventListener('click', () => {
+enableVoiceBtn.addEventListener('click', async () => {
   if (voiceEnabled) {
     const hadSession = sessionWakeCount > 0;
     voiceEnabled = false;
     voiceState = 'off';
     if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
     releaseWakeLock();
+    releaseMicStream();
     setVoiceState('Voice: off');
     voiceHeardEl.textContent = '';
     enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
@@ -893,6 +1026,12 @@ enableVoiceBtn.addEventListener('click', () => {
   voiceEnabled = true;
   sessionWakeCount = 0;
   enableVoiceBtn.textContent = 'Disable voice';
+  // Acquired once per session, here, rather than once per command inside
+  // recordCommand() -- see the Addendum 30 comment above it. If this is
+  // denied/unavailable, wake-word listening (a separate API) still
+  // starts below; recordCommand() will surface the real error on first
+  // use if it's still failing by then.
+  try { await ensureMicStream(); } catch (e) {}
   acquireWakeLock();
   startWakeListening();
 });

@@ -220,6 +220,178 @@ def test_delete_rifle_removes_it_and_reassigns_active(tmp_path):
         store.delete_rifle("Rifle A")
 
 
+def test_rifle_supports_zero_or_multiple_loads_and_suppressor_tracking(tmp_path):
+    """Addendum 36 (correction from Rick): a rifle with no loads yet is a
+    valid, normal state -- e.g. building the profile before load
+    development -- and one rifle can hold multiple loads. Rick's own
+    example: a single suppressed .300 BLK carrying both a subsonic and a
+    supersonic load. Suppressor data lives on the RIFLE, not any one
+    load, since the same can stays attached across both -- and it's
+    deliberately open text, not a brand enum, since plenty of real cans
+    are homemade/custom builds with no commercial name to pick from."""
+    path = tmp_path / "profiles.json"
+    store = ProfileStore(path)
+
+    rifle = Rifle(name="300 BLK SBR", scope_height_in=2.0, caliber=".300 BLK",
+                  has_suppressor=True, suppressor_type="custom build, ATF Form 1")
+    store.add_rifle(rifle)
+    store.save()  # zero loads -- must not raise
+
+    reloaded = ProfileStore(path)
+    saved = reloaded.find_rifle("300 BLK SBR")
+    assert saved.loads == {}
+    assert saved.active_load_name is None
+    assert saved.has_suppressor is True
+    assert saved.suppressor_type == "custom build, ATF Form 1"
+
+    saved.add_load(Load(name="Subsonic 220gr", bullet_weight_gr=220, bc=0.35, drag_model="G1",
+                         muzzle_velocity_fps=1050, zero_distance_yd=50), make_active=False)
+    saved.add_load(Load(name="Supersonic 125gr", bullet_weight_gr=125, bc=0.28, drag_model="G1",
+                         muzzle_velocity_fps=2150, zero_distance_yd=100), make_active=True)
+    reloaded.save()
+
+    final = ProfileStore(path).find_rifle("300 BLK SBR")
+    assert set(final.loads.keys()) == {"Subsonic 220gr", "Supersonic 125gr"}
+    assert final.active_load_name == "Supersonic 125gr"
+    # Suppressor stays a rifle-level property regardless of which load is active.
+    assert final.has_suppressor is True
+    assert final.suppressor_type == "custom build, ATF Form 1"
+
+
+def test_api_persists_suppressor_fields_on_the_rifle(tmp_path):
+    """Addendum 36: suppressor tracking round-trips through the REST API
+    (create, then PUT to edit) same as any other rifle field, as a
+    plain open-text field rather than a constrained brand enum."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from fastapi.testclient import TestClient
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+
+    client = TestClient(api_module.app)
+
+    r = client.post("/rifles", json={
+        "name": "Suppressed 45", "scope_height_in": 2.0, "click_value_mrad": 0.1,
+        "has_suppressor": True, "suppressor_type": "unclear -- inherited, no markings", "loads": [],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["has_suppressor"] is True
+    assert body["suppressor_type"] == "unclear -- inherited, no markings"
+
+    r = client.get("/rifles/Suppressed 45")
+    assert r.json()["has_suppressor"] is True
+
+    r = client.put("/rifles/Suppressed 45", json={
+        "scope_height_in": 2.0, "click_value_mrad": 0.1, "has_suppressor": False, "suppressor_type": "",
+    })
+    assert r.status_code == 200
+    assert r.json()["has_suppressor"] is False
+
+
+def test_get_and_add_load_work_on_a_rifle_with_no_loads_yet():
+    """Regression: GET /rifles/{name} and POST /rifles/{name}/loads both
+    used to route through _resolve(), which defaults a missing load_query
+    to get_active_load() -- raising ValueError for any rifle with zero
+    loads. That 404'd GET on a freshly created rifle and, worse, made it
+    impossible to POST a rifle's first load via the API at all, since
+    that endpoint also went through _resolve() before ever creating the
+    load. Neither endpoint touches a load; only the rifle needs to
+    resolve."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from fastapi.testclient import TestClient
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+
+    client = TestClient(api_module.app)
+
+    r = client.post("/rifles", json={
+        "name": "Loadless Rifle", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
+    })
+    assert r.status_code == 200
+
+    r = client.get("/rifles/Loadless Rifle")
+    assert r.status_code == 200
+    assert r.json()["loads"] == []
+
+    r = client.post("/rifles/Loadless Rifle/loads", json={
+        "name": "First Load", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+        "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+    })
+    assert r.status_code == 200
+    assert r.json()["name"] == "First Load"
+
+    r = client.get("/rifles/Loadless Rifle")
+    assert r.status_code == 200
+    assert [load["name"] for load in r.json()["loads"]] == ["First Load"]
+
+    r = client.get("/rifles/No Such Rifle")
+    assert r.status_code == 404
+
+    r = client.post("/rifles/No Such Rifle/loads", json={
+        "name": "X", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+        "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+    })
+    assert r.status_code == 404
+
+
+def test_status_reports_null_active_load_for_rifle_with_no_loads():
+    """Regression: GET /status required both an active rifle AND an
+    active load, 404ing whenever the active rifle had zero loads. That's
+    a normal state (e.g. a rifle profile set up by voice before its
+    first load exists) -- the web UI's post-setup refresh hit this 404
+    and silently failed to show the newly created rifle at all."""
+    from pathlib import Path
+
+    import ballistica.api as api_module
+    from fastapi.testclient import TestClient
+
+    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
+    if profiles_path.exists():
+        profiles_path.unlink()
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+
+    client = TestClient(api_module.app)
+
+    r = client.post("/rifles", json={
+        "name": "Statusless Rifle", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
+    })
+    assert r.status_code == 200
+
+    r = client.get("/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["rifle"]["name"] == "Statusless Rifle"
+    assert body["active_load"] is None
+
+    r = client.post("/rifles/Statusless Rifle/loads", json={
+        "name": "L1", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+        "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+    })
+    assert r.status_code == 200
+
+    r = client.get("/status")
+    assert r.status_code == 200
+    assert r.json()["active_load"]["name"] == "L1"
+
+    api_module.store.rifles.clear()
+    api_module.store.active_rifle_name = None
+    r = client.get("/status")
+    assert r.status_code == 404
+
+
 def test_voice_query_conversation_state_and_error_handling():
     """/voice/query is the seam a future STT->this->TTS loop calls. It
     deliberately keeps conversation state across calls (switching load,
@@ -569,8 +741,9 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     default) and that a new rifle becomes the active one once saved.
     Also covers the full field walkthrough: caliber was volunteered up
     front, so it should be skipped automatically without being asked
-    again, while the other ten optional fields (barrel length, twist,
-    scope info, etc.) each get asked and are passed with "skip"."""
+    again, while the other eleven optional fields (barrel length, twist,
+    scope info, suppressor, etc.) each get asked and are passed with
+    "skip"."""
     import ballistica.cli as cli_module
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
@@ -599,7 +772,7 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     assert "caliber" not in after_required.lower()
     assert "sound right" not in after_required.lower()
 
-    for _ in range(9):
+    for _ in range(10):
         reply = cli.handle("skip")
         assert "sound right" not in reply.lower()
     summary = cli.handle("skip")

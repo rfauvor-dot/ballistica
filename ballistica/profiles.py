@@ -95,6 +95,12 @@ class Rifle:
     focal_plane: str = ""  # "FFP", "SFP", or "" if unknown/not applicable -- magnified scopes only
     reticle_type: str = ""  # magnified scope: e.g. "MOA Christmas tree". Red dot: the dot/circle pattern, e.g. "65 MOA circle + 2 MOA dot"
     dot_size_moa: float | None = None  # red dot only -- the dot's apparent size in MOA
+    # Tied to the rifle, not any one load (Addendum 36): the same can stays
+    # on the host through both supersonic and subsonic ammo. suppressor_type
+    # is deliberately open text, not a brand enum -- plenty of real cans are
+    # homemade/custom builds with no commercial brand name to pick from.
+    has_suppressor: bool = False
+    suppressor_type: str = ""
     loads: dict[str, Load] = field(default_factory=dict)
     active_load_name: str | None = None
 

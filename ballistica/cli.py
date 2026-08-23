@@ -97,7 +97,7 @@ _LOAD_EXTRA_PROMPTS = {
 # crosshair pattern. _rifle_extra_fields() picks the right set once
 # optic_type is known (see _RIFLE_REQUIRED above).
 _RIFLE_EXTRA_FIELDS_COMMON = ["caliber", "barrel_length_in", "twist_rate", "click_value_mrad",
-                              "reticle_unit", "scope_make", "scope_model"]
+                              "reticle_unit", "scope_make", "scope_model", "has_suppressor"]
 _RIFLE_EXTRA_FIELDS_SCOPE = ["magnification", "objective_lens_mm", "focal_plane", "reticle_type"]
 _RIFLE_EXTRA_FIELDS_RED_DOT = ["dot_size_moa", "reticle_type"]
 _RIFLE_EXTRA_PROMPTS = {
@@ -108,6 +108,8 @@ _RIFLE_EXTRA_PROMPTS = {
     "reticle_unit": "Is the reticle MRAD or MOA?",
     "scope_make": "What's the make?",
     "scope_model": "What's the model?",
+    "has_suppressor": "Does this rifle run a suppressor?",
+    "suppressor_type": "What type or brand -- or just describe it if there isn't one?",
     "magnification": "What magnification range?",
     "objective_lens_mm": "Objective lens size, in millimeters?",
     "focal_plane": "First or second focal plane?",
@@ -116,10 +118,16 @@ _RIFLE_EXTRA_PROMPTS = {
 }
 
 
-def _rifle_extra_fields(optic_type: str) -> list[str]:
-    if optic_type == "red_dot":
-        return _RIFLE_EXTRA_FIELDS_COMMON + _RIFLE_EXTRA_FIELDS_RED_DOT
-    return _RIFLE_EXTRA_FIELDS_COMMON + _RIFLE_EXTRA_FIELDS_SCOPE
+def _rifle_extra_fields(optic_type: str, has_suppressor: bool = False) -> list[str]:
+    # suppressor_type is only asked when has_suppressor is actually true --
+    # tied to the rifle, not any one load (Addendum 36), and inserted right
+    # after has_suppressor so the two questions stay adjacent in the
+    # conversation rather than getting split apart by the optic questions.
+    fields = list(_RIFLE_EXTRA_FIELDS_COMMON)
+    if has_suppressor:
+        fields.append("suppressor_type")
+    fields += _RIFLE_EXTRA_FIELDS_RED_DOT if optic_type == "red_dot" else _RIFLE_EXTRA_FIELDS_SCOPE
+    return fields
 
 _SKIP_RE = re.compile(r"^(skip|none|n/?a|not sure|don.t know|no|nothing|pass)\b")
 
@@ -509,7 +517,13 @@ class BallisticaCLI:
             self.store.save()
         except (KeyError, ValueError) as exc:
             return str(exc)
-        parts = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in updates.items())
+        def _describe(k: str, v) -> str:
+            # "has suppressor True" reads wrong spoken back verbatim --
+            # same reasoning as _extras_summary()'s handling of this field.
+            if k == "has_suppressor":
+                return "suppressed" if v else "no suppressor"
+            return f"{k.replace('_', ' ')} {v}"
+        parts = ", ".join(_describe(k, v) for k, v in updates.items())
         return f"Updated -- {parts}."
 
     def _request_delete_active_rifle(self) -> str:
@@ -552,7 +566,8 @@ class BallisticaCLI:
             if self._setup.draft.get(field) in (None, ""):
                 return field
         extras = (_LOAD_EXTRA_FIELDS if self._setup.kind == "load"
-                  else _rifle_extra_fields(self._setup.draft.get("optic_type", "")))
+                  else _rifle_extra_fields(self._setup.draft.get("optic_type", ""),
+                                            self._setup.draft.get("has_suppressor", False)))
         for field in extras:
             if field in self._setup.skipped:
                 continue
@@ -568,8 +583,19 @@ class BallisticaCLI:
     def _extras_summary(self) -> str:
         d = self._setup.draft
         extra_fields = (_LOAD_EXTRA_FIELDS if self._setup.kind == "load"
-                        else _rifle_extra_fields(d.get("optic_type", "")))
-        parts = [str(d[f]) for f in extra_fields if d.get(f) not in (None, "")]
+                        else _rifle_extra_fields(d.get("optic_type", ""), d.get("has_suppressor", False)))
+        parts = []
+        for f in extra_fields:
+            v = d.get(f)
+            if f == "has_suppressor":
+                # "True"/"False" spoken back verbatim reads wrong -- and a
+                # plain "no suppressor" isn't worth calling out, same as
+                # any other unset/empty field here.
+                if v:
+                    parts.append("suppressed")
+                continue
+            if v not in (None, ""):
+                parts.append(str(v))
         return f" Also got: {', '.join(parts)}." if parts else ""
 
     def _setup_summary(self) -> str:

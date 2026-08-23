@@ -161,6 +161,10 @@ class RifleIn(BaseModel):
                                               "feature exists")
     reticle_type: str = ""
     dot_size_moa: float | None = Field(None, description="Red dot only -- the dot's apparent size in MOA")
+    has_suppressor: bool = False
+    suppressor_type: str = Field("", description="Open text -- a real brand if there is one, or a "
+                                                   "generic/custom description if not. Tied to the "
+                                                   "rifle, not any one load.")
     loads: list[LoadIn] = []
 
 
@@ -180,6 +184,8 @@ class RifleUpdate(BaseModel):
     focal_plane: str = ""
     reticle_type: str = ""
     dot_size_moa: float | None = None
+    has_suppressor: bool = False
+    suppressor_type: str = ""
 
 
 class RifleSummary(BaseModel):
@@ -204,6 +210,8 @@ class RifleDetail(BaseModel):
     focal_plane: str
     reticle_type: str
     dot_size_moa: float | None
+    has_suppressor: bool
+    suppressor_type: str
     active_load_name: str | None
     loads: list[LoadOut]
 
@@ -318,7 +326,8 @@ def _rifle_to_detail(rifle: Rifle) -> RifleDetail:
         optic_type=rifle.optic_type, scope_make=rifle.scope_make, scope_model=rifle.scope_model,
         magnification=rifle.magnification, objective_lens_mm=rifle.objective_lens_mm,
         focal_plane=rifle.focal_plane, reticle_type=rifle.reticle_type,
-        dot_size_moa=rifle.dot_size_moa, active_load_name=rifle.active_load_name,
+        dot_size_moa=rifle.dot_size_moa, has_suppressor=rifle.has_suppressor,
+        suppressor_type=rifle.suppressor_type, active_load_name=rifle.active_load_name,
         loads=[_load_to_out(load) for load in rifle.loads.values()],
     )
 
@@ -373,7 +382,8 @@ def create_rifle(payload: RifleIn):
             scope_make=payload.scope_make, scope_model=payload.scope_model,
             magnification=payload.magnification, objective_lens_mm=payload.objective_lens_mm,
             focal_plane=payload.focal_plane, reticle_type=payload.reticle_type,
-            dot_size_moa=payload.dot_size_moa,
+            dot_size_moa=payload.dot_size_moa, has_suppressor=payload.has_suppressor,
+            suppressor_type=payload.suppressor_type,
         )
         for i, load_in in enumerate(payload.loads):
             rifle.add_load(Load(**load_in.model_dump()), make_active=(i == 0))
@@ -386,7 +396,10 @@ def create_rifle(payload: RifleIn):
 
 @app.get("/rifles/{rifle_name}", response_model=RifleDetail)
 def get_rifle(rifle_name: str):
-    rifle, _ = _resolve(rifle_name, None)
+    try:
+        rifle = store.find_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
     return _rifle_to_detail(rifle)
 
 
@@ -426,7 +439,10 @@ def set_active_rifle(rifle_name: str):
 
 @app.post("/rifles/{rifle_name}/loads", response_model=LoadOut)
 def add_load(rifle_name: str, payload: LoadIn):
-    rifle, _ = _resolve(rifle_name, None)
+    try:
+        rifle = store.find_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
     try:
         load = Load(**payload.model_dump())
     except ValueError as exc:
@@ -460,12 +476,17 @@ def update_velocity(rifle_name: str, load_name: str, payload: VelocityUpdate):
 
 @app.get("/status")
 def status():
+    """A rifle with zero loads is a normal, expected state (e.g. the
+    profile is being built out before load development) -- so only the
+    active rifle is required here, not an active load."""
     try:
         rifle = store.get_active_rifle()
-        load = rifle.get_active_load()
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=_msg(exc))
-    return {"rifle": _rifle_to_detail(rifle), "active_load": _load_to_out(load)}
+    active_load = None
+    if rifle.active_load_name is not None and rifle.active_load_name in rifle.loads:
+        active_load = _load_to_out(rifle.get_active_load())
+    return {"rifle": _rifle_to_detail(rifle), "active_load": active_load}
 
 
 @app.post("/voice/query", response_model=VoiceQueryOut)
