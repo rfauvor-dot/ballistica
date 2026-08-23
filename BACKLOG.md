@@ -7,6 +7,47 @@ scoped, don't let it just accumulate here indefinitely.
 
 ---
 
+## Selectable voice persona (male/female)
+
+**Raised:** Rick, 2026-08-23.
+
+**What:** Let a user pick a male or female voice persona (onboarding, changeable
+later in settings) instead of the current single hardcoded female voice
+("shimmer"). Resolves a Marketing question about whether the current voice
+risks mismatching some users in either direction, without guessing at one
+persona for everyone. App name/branding unaffected — "Ballistica" stays;
+this is voice/persona only.
+
+**Scoping done 2026-08-23 (Build lens, verified against real code, not
+assumed):**
+- Backend is already most of the way there: `POST /voice/speak` in
+  `api.py` already accepts an arbitrary `voice` string per request — it's
+  only ever called with the hardcoded default ("shimmer") today. Adding a
+  second voice is a parameter choice, not new plumbing.
+- OpenAI's `tts-1` (already in use) offers 9 stock voices; two are
+  characterized as male — Echo (warmer/younger) and Onyx
+  (deeper/authoritative). Same model/endpoint as today, so no latency or
+  reliability difference to worry about.
+- Grepped every scripted spoken phrase (greetings, acks, signoffs, help
+  text) for gendered self-reference — none found. This is genuinely
+  voice-only; no personality-script variant is needed for a male persona.
+- Fits the multi-tenancy design cleanly: a `voice_id` column on the
+  planned `users` table (default `shimmer`, so existing usage doesn't
+  silently change), not a rework of that design.
+
+**Status:** Backlog, parallel/low-priority alongside the ballistic-data-
+seed item, both behind multi-tenancy. Not urgent, not blocking.
+
+**Still open / Rick's call, not decided here:** the actual male voice ID
+(Echo vs. Onyx) — same by-ear process used to pick shimmer originally, not
+something to pick without Rick listening to real samples first.
+
+**Owning lenses when scoped:** Build (the `voice_id` column + onboarding/
+settings UI once the user model exists), Marketing (the "choose your range
+partner" onboarding framing already has visual direction set).
+
+---
+
 ## Spreadsheet / CSV data import
 
 **Raised:** Rick, 2026-08-23.
