@@ -38,9 +38,12 @@ assumed):**
 **Status:** Backlog, parallel/low-priority alongside the ballistic-data-
 seed item, both behind multi-tenancy. Not urgent, not blocking.
 
-**Still open / Rick's call, not decided here:** the actual male voice ID
-(Echo vs. Onyx) — same by-ear process used to pick shimmer originally, not
-something to pick without Rick listening to real samples first.
+**Male voice decided:** Onyx (deep/authoritative), picked 2026-08-23 by
+Rick against real samples generated through the live production TTS
+endpoint — both Echo and Onyx, each speaking both a live-fire terse line
+and a warm setup-greeting line. Rick judged on the live-fire sample
+specifically, matching the app's own mode-aware tone priority. Nothing
+implemented yet — this is still backlog, sequenced behind multi-tenancy.
 
 **Owning lenses when scoped:** Build (the `voice_id` column + onboarding/
 settings UI once the user model exists), Marketing (the "choose your range
