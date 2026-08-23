@@ -424,6 +424,9 @@ serves the two specific guarantees this project has already said matter
 most, without extra engineering to bridge the gap. This closes the last
 open item from §6.6.
 
+**CONFIRMED by Rick, 2026-08-23. Final — implementation is authorized to
+begin.**
+
 ### 7.3 In-memory vs. DB-persisted conversation state — reconciled, not reversed
 
 ChatGPT pushed back on §6.1's move to DB-persisted state, specifically
@@ -524,5 +527,5 @@ engineering, not a tenant-isolation question, lower priority than §7.4).
 Both independent reviews are now incorporated. Every item either of them
 flagged is closed, decided, or explicitly tracked as required
 implementation/test work — nothing is being carried forward as vague
-"someone should think about this later." Implementation can start once
-Rick confirms the Supabase Auth call in §7.2.
+"someone should think about this later." **CONFIRMED by Rick, 2026-08-23
+— implementation begins now.**
