@@ -1026,14 +1026,20 @@ enableVoiceBtn.addEventListener('click', async () => {
   voiceEnabled = true;
   sessionWakeCount = 0;
   enableVoiceBtn.textContent = 'Disable voice';
-  // Acquired once per session, here, rather than once per command inside
-  // recordCommand() -- see the Addendum 30 comment above it. If this is
-  // denied/unavailable, wake-word listening (a separate API) still
-  // starts below; recordCommand() will surface the real error on first
-  // use if it's still failing by then.
-  try { await ensureMicStream(); } catch (e) {}
+  // Root-caused live: wake-word listening must start immediately and
+  // unconditionally -- awaiting ensureMicStream() here first (the
+  // original Addendum 30 fix) meant that whenever getUserMedia() was
+  // slow to resolve or hung on a permission prompt, wake-word listening
+  // never started at all, and voice mode looked completely dead ("hit
+  // enable voice, nothing happens") with no error surfaced anywhere.
+  // Fire-and-forget instead: mic acquisition happens in the background,
+  // and recordCommand() calls ensureMicStream() again on first actual
+  // use regardless, so a still-pending/failed acquisition here just
+  // gets retried then, same safety net as before -- just no longer
+  // blocking the one thing that must never be blocked.
   acquireWakeLock();
   startWakeListening();
+  ensureMicStream().catch(() => {});
 });
 
 loadRifles();
