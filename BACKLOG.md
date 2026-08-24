@@ -49,6 +49,20 @@ implemented yet — this is still backlog, sequenced behind multi-tenancy.
 settings UI once the user model exists), Marketing (the "choose your range
 partner" onboarding framing already has visual direction set).
 
+**App icon, added 2026-08-23:** Rick also wants the app icon updated to
+match the male/female visual direction. One practical constraint flagged
+before treating this as settled: a realistic photo (the man-and-woman
+range-partner shot) generally doesn't read well as a small app icon —
+favicons and home-screen icons render at 16-48px, where photographic
+detail turns to mush and the shape has to be recognizable at a glance.
+The photo works well for onboarding/landing-page use exactly as
+originally framed; the icon itself likely wants a simpler, high-contrast
+derivative (a mark, a silhouette, a cropped/stylized detail) rather than
+the full photo shrunk down. Still backlog, still behind multi-tenancy —
+noted so the actual icon work starts from the right brief rather than
+producing something that looks fine at full size and unreadable at icon
+size.
+
 ---
 
 ## Spreadsheet / CSV data import
