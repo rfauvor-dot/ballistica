@@ -690,6 +690,25 @@ function setVoiceState(text, hot) {
 // (an audio route re-negotiation) on Bluetooth earbuds.
 let sharedAudioEl = null;
 
+// Root-caused live: mobile browsers (notably iOS Safari) block .play()
+// calls that don't originate from a direct, synchronous user gesture --
+// and the wake-word ack/reply fires from an async SpeechRecognition
+// callback, not a tap, so playback was getting silently blocked. The
+// old code (`sharedAudioEl.play().catch(resolve)`) treated that
+// rejection exactly the same as a normal "finished playing" event, so
+// the app believed every reply played fine while nothing was ever
+// audible -- wake-word listening worked (mic permission was fine,
+// "listening for Ballistica" showed correctly), but zero response was
+// ever heard, with no error surfaced anywhere. Playing (even a silent
+// clip) inside the real tap that enables voice unlocks the element for
+// every later programmatic play() call this session on browsers that
+// require that pattern.
+function unlockAudioPlayback() {
+  if (!sharedAudioEl) sharedAudioEl = new Audio();
+  sharedAudioEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+  sharedAudioEl.play().catch(() => {});
+}
+
 async function playAudioBlob(blob) {
   const url = URL.createObjectURL(blob);
   if (!sharedAudioEl) sharedAudioEl = new Audio();
@@ -697,7 +716,13 @@ async function playAudioBlob(blob) {
   await new Promise((resolve) => {
     sharedAudioEl.onended = resolve;
     sharedAudioEl.onerror = resolve;
-    sharedAudioEl.play().catch(resolve);
+    sharedAudioEl.play().catch((e) => {
+      // No longer silently swallowed -- a real failure here should be
+      // visible for future debugging, even though unlockAudioPlayback()
+      // above is what should prevent it from happening at all now.
+      console.error('TTS playback blocked or failed:', e);
+      resolve();
+    });
   });
   URL.revokeObjectURL(url);
 }
@@ -1037,6 +1062,7 @@ enableVoiceBtn.addEventListener('click', async () => {
   // use regardless, so a still-pending/failed acquisition here just
   // gets retried then, same safety net as before -- just no longer
   // blocking the one thing that must never be blocked.
+  unlockAudioPlayback();
   acquireWakeLock();
   startWakeListening();
   ensureMicStream().catch(() => {});
