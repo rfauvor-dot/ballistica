@@ -15,6 +15,7 @@ from pathlib import Path
 import random
 import re
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -182,6 +183,23 @@ def _is_real_value(value) -> bool:
 # frontend does.
 _MAX_FAILED_ATTEMPTS = 3
 
+# Root-caused live: a modal session left open (abandoned mid-interview, a
+# forgotten test call against the shared production instance, an app
+# closed without saying "cancel") sits there indefinitely -- unlike
+# _MAX_FAILED_ATTEMPTS above, which only fires on repeated failed turns
+# *within* an active back-and-forth, an abandoned session with zero
+# further turns never increments that counter at all. It just waits,
+# silently, until some completely unrelated later utterance arrives and
+# gets swallowed as if it were an answer to a session the shooter has
+# long since forgotten about -- confirmed live: "add a new rifle" (heard
+# correctly, verbatim, by STT) was answered as a shot-velocity reading
+# inside a stale calibration session instead of starting a new rifle
+# setup, because that old session was still technically "active". Any
+# session (setup, calibration, or a pending delete confirmation) idle
+# longer than this is treated as abandoned and cleared before the
+# current utterance is processed, rather than silently absorbing it.
+_SESSION_STALE_SECONDS = 300
+
 
 class _SetupSession:
     """In-progress voice interview for a new load or rifle. Lives only in
@@ -194,6 +212,7 @@ class _SetupSession:
         self.skipped: set = set()
         self.confirming = False
         self.failed_attempts = 0
+        self.last_activity = time.monotonic()
 
 
 class _CalibrationSession:
@@ -210,6 +229,7 @@ class _CalibrationSession:
         self.shots: list[float] = []
         self.confirming = False
         self.failed_attempts = 0
+        self.last_activity = time.monotonic()
 
 
 def bootstrap_default_profile(store: ProfileStore) -> None:
@@ -263,6 +283,7 @@ class BallisticaCLI:
         self._setup: _SetupSession | None = None
         self._calibration: _CalibrationSession | None = None
         self._pending_delete: str | None = None
+        self._pending_delete_at: float = 0.0
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -277,11 +298,28 @@ class BallisticaCLI:
         )
         return solver, rifle, load
 
+    def _expire_stale_sessions(self) -> None:
+        """Clears any modal session that's been sitting untouched longer
+        than _SESSION_STALE_SECONDS -- see that constant's comment for
+        why this exists (a real, confirmed-live bug: an abandoned
+        session silently absorbing a later, completely unrelated
+        utterance instead of the shooter ever finding out it was still
+        open)."""
+        now = time.monotonic()
+        if self._setup is not None and now - self._setup.last_activity > _SESSION_STALE_SECONDS:
+            self._setup = None
+        if self._calibration is not None and now - self._calibration.last_activity > _SESSION_STALE_SECONDS:
+            self._calibration = None
+        if self._pending_delete is not None and now - self._pending_delete_at > _SESSION_STALE_SECONDS:
+            self._pending_delete = None
+
     def handle(self, text: str) -> str:
         t = text.strip()
         if not t:
             return ""
         low = t.lower()
+
+        self._expire_stale_sessions()
 
         # A guided load/rifle setup interview is modal: once it's running,
         # every utterance is directed at it (a field value, a correction,
@@ -289,17 +327,20 @@ class BallisticaCLI:
         # "quit"/"exit", which cancel the interview here rather than the
         # whole session.
         if self._setup is not None:
+            self._setup.last_activity = time.monotonic()
             return self._handle_setup_turn(t)
 
         # Same modal pattern as setup, above: while a calibration is
         # running, every utterance is a shot reading, a control phrase
         # ("average", "discard that", "end calibration"), or a way out.
         if self._calibration is not None:
+            self._calibration.last_activity = time.monotonic()
             return self._handle_calibration_turn(t)
 
         # A destructive action -- one confirmation gate, no separate
         # session class needed for a single yes/no.
         if self._pending_delete is not None:
+            self._pending_delete_at = time.monotonic()
             return self._handle_delete_confirm(t)
 
         if low in ("help", "?"):
@@ -532,6 +573,7 @@ class BallisticaCLI:
         except ValueError as exc:
             return str(exc)
         self._pending_delete = rifle.name
+        self._pending_delete_at = time.monotonic()
         return f"Delete the {rifle.name}, and all its loads? This can't be undone."
 
     def _handle_delete_confirm(self, text: str) -> str:

@@ -1232,3 +1232,53 @@ def test_calibration_gives_up_after_repeated_unparseable_shots(tmp_path):
     assert cli._calibration is None
 
     assert "yards" in cli.handle("drop at 300 yards").lower()
+
+
+def test_abandoned_calibration_session_expires_instead_of_swallowing_later_command(tmp_path):
+    """Root-caused live: an abandoned modal session (never explicitly
+    cancelled, no further turns for a long time -- e.g. a forgotten test
+    call, or the shooter walking away mid-interview) used to sit open
+    indefinitely and silently absorb the next, completely unrelated
+    utterance as if it were an answer to a session nobody remembers is
+    still there. Confirmed live: "add a new rifle" -- heard correctly,
+    verbatim, by STT -- got answered as a failed shot-velocity reading
+    inside a stale calibration session instead of starting a new rifle
+    setup. _MAX_FAILED_ATTEMPTS doesn't catch this case at all, since it
+    only counts consecutive failures *within* an active back-and-forth --
+    an abandoned session with zero further turns never increments it."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+    import ballistica.cli as cli_module
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("start calibration")
+    assert cli._calibration is not None
+
+    # Simulate the session having sat untouched well past the staleness
+    # threshold, rather than actually sleeping in the test.
+    cli._calibration.last_activity -= cli_module._SESSION_STALE_SECONDS + 1
+
+    reply = cli.handle("add a new rifle")
+    assert cli._calibration is None
+    assert cli._setup is not None
+    assert cli._setup.kind == "rifle"
+    assert "call this rifle" in reply.lower()
+
+
+def test_recent_calibration_session_does_not_expire_mid_conversation(tmp_path):
+    """The staleness check must not punish a real, actively-in-progress
+    conversation just because it's taking a while -- only genuinely
+    abandoned sessions (no turns at all for the full threshold) should
+    ever be cleared."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("start calibration")
+    cli.handle("2780")
+    assert cli._calibration is not None
+    assert len(cli._calibration.shots) == 1
