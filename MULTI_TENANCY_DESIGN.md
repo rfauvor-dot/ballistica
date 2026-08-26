@@ -591,3 +591,77 @@ project to test it against — auth-critical code that's never been
 exercised against a live system is exactly the kind of thing that
 should be tested before being trusted, not assumed correct because it
 reads correctly.
+
+---
+
+## 9. Implementation progress, continued (2026-08-24, autonomous session)
+
+### 9.1 SupabaseProfileStore — built
+
+`ballistica/supabase_store.py`: a thin `ProfileStore` subclass. Rifle/
+Load and all of ProfileStore's fuzzy-matching/validation/CRUD logic are
+reused completely unchanged (already correct, already tested) --
+`load()`/`save()` are the only two methods overridden, talking to
+Supabase's REST API (PostgREST) via `httpx` (already a dependency, no
+new SDK added) instead of the flat JSON file. Every request uses the
+authenticated user's own access token, never a service-role key --
+that's what makes RLS the real enforcement boundary, not just this
+Python code's own filtering.
+
+`active_rifle_name` (no `rifles` table column for this) is stored in
+`conversation_state.state_json` instead, read-modify-write per save --
+that table already exists for per-user session preference/state, and
+"which rifle is currently selected" fits it directly rather than
+needing a schema change.
+
+### 9.2 Real blocker found and fixed: missing table grants
+
+Testing `SupabaseProfileStore` against the real project immediately hit
+`403 permission denied for table rifles` (Postgres 42501). Real gap:
+001's RLS policies restrict *which rows* a role can see, but Postgres
+separately requires the base table-level GRANT before `authenticated`
+can touch a table at all -- 001 never granted this. Fix prepared:
+`db/002_grant_authenticated_access.sql`. Same category of blocker as
+Supabase project creation and the Render disk -- needs SQL Editor
+access, can't be run via the REST API with the credentials available
+here. **Waiting on Rick to run this one-time SQL file.**
+
+### 9.3 Adversarial tenant-isolation suite — written, per §7.4
+
+`tests/test_tenant_isolation.py`: real tests against the real project
+(no mocking), using two genuine throwaway Supabase accounts
+(dt-auth-smoketest@mailinator.com / dt-tenant-test-b@mailinator.com,
+pre-provisioned so tests sign in rather than repeating the email-
+confirmation round-trip every run). Covers §7.4's required scenarios:
+list/search tenant-scoping, by-ID lookup, update, delete, a forged-
+ownership insert attempt (User B trying to write a row claiming User
+A's user_id), a cross-table check (loads inherit the same isolation as
+their parent rifle), and the unauthenticated-request baseline.
+
+Ran it against the real project to confirm the harness itself works:
+5 of 7 tests currently error at setup (the same 403/missing-grant issue
+as #9.2 -- expected, not a surprise). 2 tests currently "pass", but
+that's not yet meaningful proof -- with the grant missing, *any*
+request fails regardless of RLS, so those two passes are coincidental
+right now, not evidence RLS specifically is what's rejecting them. All
+7 need re-running once #9.2's grant lands before this can be called
+verified.
+
+### 9.4 What's next once the grant lands
+
+1. Re-run `tests/test_tenant_isolation.py` -- expect all 7 to pass for
+   the right reason this time; investigate anything that doesn't.
+2. Wire authentication into api.py as new, parallel, auth-gated
+   endpoints -- deliberately NOT replacing the existing single-tenant
+   endpoints Rick's live app depends on today, so this can be built and
+   proven correct without any risk to what's currently working in
+   production. Cutting production over to the multi-tenant path is a
+   real deployment decision for Rick to make explicitly once it's
+   proven, not something to fold into this autonomous pass.
+3. Voice conversation state (setup/calibration) moving into
+   `conversation_state`, per §6.1/§7.3's DB-persisted decision --
+   not started yet this pass.
+4. A migration path for Rick's own existing single-user data stays
+   deferred -- that needs Rick to actually have a real account first,
+   which is exactly the "real-account decision" category to loop him
+   in on rather than create unilaterally.
