@@ -995,6 +995,11 @@ async function handleWakeWord() {
     await loadRifles();
   } catch (e) {}
 
+  // Release the raw mic stream now that this conversation (single- or
+  // multi-turn) is over, so SpeechRecognition goes back to being the
+  // only thing holding the microphone during idle wake-word listening --
+  // see the enable-button handler above for why this matters.
+  releaseMicStream();
   voiceState = 'idle';
   if (voiceEnabled) startWakeListening();
 }
@@ -1051,21 +1056,24 @@ enableVoiceBtn.addEventListener('click', async () => {
   voiceEnabled = true;
   sessionWakeCount = 0;
   enableVoiceBtn.textContent = 'Disable voice';
-  // Root-caused live: wake-word listening must start immediately and
-  // unconditionally -- awaiting ensureMicStream() here first (the
-  // original Addendum 30 fix) meant that whenever getUserMedia() was
-  // slow to resolve or hung on a permission prompt, wake-word listening
-  // never started at all, and voice mode looked completely dead ("hit
-  // enable voice, nothing happens") with no error surfaced anywhere.
-  // Fire-and-forget instead: mic acquisition happens in the background,
-  // and recordCommand() calls ensureMicStream() again on first actual
-  // use regardless, so a still-pending/failed acquisition here just
-  // gets retried then, same safety net as before -- just no longer
-  // blocking the one thing that must never be blocked.
+  // Root-caused live (three rounds on this exact code path -- see the
+  // git history for the two earlier fixes this one supersedes):
+  // acquiring the raw mic stream (getUserMedia) here, at enable time,
+  // meant it stayed open for the ENTIRE session, including all the idle
+  // time just sitting listening for the wake word -- running
+  // concurrently with SpeechRecognition's own separate, independent mic
+  // access the whole time. Two APIs both holding the microphone at once
+  // is exactly what caused the confirmed live symptom: the mic icon
+  // cycling between active/idle repeatedly with an audible click each
+  // switch, constantly, even before the wake word was ever spoken. The
+  // raw stream is no longer touched here at all -- it's acquired lazily
+  // by recordCommand() (see handleWakeWord()) only once the wake word
+  // actually fires, and released again once that conversation ends, so
+  // SpeechRecognition has sole, uncontested access to the mic for the
+  // entire idle-listening period, which is nearly all of a session.
   unlockAudioPlayback();
   acquireWakeLock();
   startWakeListening();
-  ensureMicStream().catch(() => {});
 });
 
 loadRifles();
