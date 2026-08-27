@@ -614,19 +614,22 @@ that table already exists for per-user session preference/state, and
 "which rifle is currently selected" fits it directly rather than
 needing a schema change.
 
-### 9.2 Real blocker found and fixed: missing table grants
+### 9.2 Real blocker found, fixed, and CONFIRMED CLOSED (2026-08-24)
 
 Testing `SupabaseProfileStore` against the real project immediately hit
 `403 permission denied for table rifles` (Postgres 42501). Real gap:
 001's RLS policies restrict *which rows* a role can see, but Postgres
 separately requires the base table-level GRANT before `authenticated`
-can touch a table at all -- 001 never granted this. Fix prepared:
-`db/002_grant_authenticated_access.sql`. Same category of blocker as
-Supabase project creation and the Render disk -- needs SQL Editor
-access, can't be run via the REST API with the credentials available
-here. **Waiting on Rick to run this one-time SQL file.**
+can touch a table at all -- 001 never granted this. Fix prepared as
+`db/002_grant_authenticated_access.sql`, sent to Rick as a download
+(same pattern as the original schema file), run by him in the SQL
+Editor against the correct project -- confirmed via screenshot
+("Success. No rows returned") after first catching that the project
+selector was pointed at an unrelated project ("pearl-mike-pilot") and
+having him switch it before running. **Grant applied, confirmed live
+by re-running the tests below.**
 
-### 9.3 Adversarial tenant-isolation suite — written, per §7.4
+### 9.3 Adversarial tenant-isolation suite — WRITTEN AND PASSING, per §7.4
 
 `tests/test_tenant_isolation.py`: real tests against the real project
 (no mocking), using two genuine throwaway Supabase accounts
@@ -638,19 +641,32 @@ ownership insert attempt (User B trying to write a row claiming User
 A's user_id), a cross-table check (loads inherit the same isolation as
 their parent rifle), and the unauthenticated-request baseline.
 
-Ran it against the real project to confirm the harness itself works:
-5 of 7 tests currently error at setup (the same 403/missing-grant issue
-as #9.2 -- expected, not a surprise). 2 tests currently "pass", but
-that's not yet meaningful proof -- with the grant missing, *any*
-request fails regardless of RLS, so those two passes are coincidental
-right now, not evidence RLS specifically is what's rejecting them. All
-7 need re-running once #9.2's grant lands before this can be called
-verified.
+**All 7 pass against the live project, for the right reason** -- not
+just "the request errored," but the follow-up checks in each test
+confirm User A's data was genuinely untouched after User B's attempt.
+One test bug caught and fixed along the way: the update/delete tests
+initially asserted status in (200, 403, 404), but PostgREST correctly
+returns 204 for a write that matched zero rows -- exactly what RLS
+hiding another user's row produces. That's a good sign (RLS worked),
+just an assertion that didn't yet account for it; fixed and re-verified.
 
-### 9.4 What's next once the grant lands
+A second real bug found via this same live pass, unrelated to RLS:
+`SupabaseProfileStore._rest()` crashed with a duplicate-keyword
+`TypeError` whenever a caller also passed `headers=` (every insert/
+upsert in `save()` does, to set `Prefer`) -- it was hardcoding
+`headers=self._headers()` instead of merging. Fixed to merge caller-
+supplied headers on top of the base auth headers. Caught by actually
+running `SupabaseProfileStore`'s full save/load/delete cycle live
+(not just the raw-PostgREST isolation tests, which don't exercise this
+class at all) -- full round trip now confirmed working: create a
+rifle+load, save, reload in a fresh instance, active rifle/load
+resolved correctly, delete, confirm empty state.
 
-1. Re-run `tests/test_tenant_isolation.py` -- expect all 7 to pass for
-   the right reason this time; investigate anything that doesn't.
+### 9.4 What's next
+
+1. ~~Re-run `tests/test_tenant_isolation.py`~~ -- done, 7/7 passing for
+   real. ~~Verify `SupabaseProfileStore` itself~~ -- done, full round
+   trip confirmed live.
 2. Wire authentication into api.py as new, parallel, auth-gated
    endpoints -- deliberately NOT replacing the existing single-tenant
    endpoints Rick's live app depends on today, so this can be built and

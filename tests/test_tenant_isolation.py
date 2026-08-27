@@ -129,9 +129,11 @@ def test_user_b_cannot_update_user_a_rifle_by_guessed_id(user_a, user_b, rifle_o
         params={"id": f"eq.{rifle_owned_by_a['id']}"},
         json={"name": "Hijacked By B"},
     )
-    # Whether this is a 403/404 or a 200-with-zero-rows-affected, the
-    # real assertion is the one that follows: A's data must be unchanged.
-    assert resp.status_code in (200, 403, 404)
+    # Confirmed live: PostgREST returns 204 (not 200/403/404) for a
+    # write that correctly matched zero rows -- exactly what RLS hiding
+    # another user's row produces. Whichever of these it is, the real
+    # assertion is the one that follows: A's data must be unchanged.
+    assert resp.status_code in (200, 204, 403, 404)
 
     _, token_a = user_a
     check = httpx.get(
@@ -147,7 +149,8 @@ def test_user_b_cannot_delete_user_a_rifle_by_guessed_id(user_a, user_b, rifle_o
         f"{_SUPABASE_URL}/rest/v1/rifles", headers=_headers(token_b),
         params={"id": f"eq.{rifle_owned_by_a['id']}"},
     )
-    assert resp.status_code in (200, 403, 404)
+    # Same 204-for-zero-rows-matched behavior as the update test above.
+    assert resp.status_code in (200, 204, 403, 404)
 
     _, token_a = user_a
     check = httpx.get(

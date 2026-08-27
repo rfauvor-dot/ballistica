@@ -65,9 +65,17 @@ class SupabaseProfileStore(ProfileStore):
             "Content-Type": "application/json",
         }
 
-    def _rest(self, method: str, table: str, **kwargs) -> httpx.Response:
+    def _rest(self, method: str, table: str, headers: dict | None = None, **kwargs) -> httpx.Response:
+        """headers, if given, are merged on top of the base auth headers
+        (e.g. to add Prefer: return=representation) rather than
+        replacing them -- a caller passing headers used to collide with
+        this method's own headers=self._headers(), a real bug caught
+        live: any call site overriding Prefer (every insert/upsert in
+        save()) crashed with a duplicate-keyword TypeError before ever
+        reaching the network."""
         url = f"{_SUPABASE_URL}/rest/v1/{table}"
-        resp = httpx.request(method, url, headers=self._headers(), timeout=15, **kwargs)
+        merged_headers = {**self._headers(), **(headers or {})}
+        resp = httpx.request(method, url, headers=merged_headers, timeout=15, **kwargs)
         resp.raise_for_status()
         return resp
 
@@ -124,7 +132,7 @@ class SupabaseProfileStore(ProfileStore):
         ]
         inserted_rifles = self._rest(
             "POST", "rifles", json=rifle_payload,
-            headers={**self._headers(), "Prefer": "return=representation"},
+            headers={"Prefer": "return=representation"},
         ).json()
         rifle_id_by_name = {row["name"]: row["id"] for row in inserted_rifles}
 
@@ -140,7 +148,7 @@ class SupabaseProfileStore(ProfileStore):
         if load_payload:
             inserted_loads = self._rest(
                 "POST", "loads", json=load_payload,
-                headers={**self._headers(), "Prefer": "return=representation"},
+                headers={"Prefer": "return=representation"},
             ).json()
             for row in inserted_loads:
                 load_id_by_rifle_and_name[(row["rifle_id"], row["name"])] = row["id"]
@@ -175,5 +183,5 @@ class SupabaseProfileStore(ProfileStore):
         self._rest(
             "POST", "conversation_state",
             json={"user_id": self.user_id, "state_json": state},
-            headers={**self._headers(), "Prefer": "resolution=merge-duplicates"},
+            headers={"Prefer": "resolution=merge-duplicates"},
         )
