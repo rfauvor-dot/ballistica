@@ -667,13 +667,25 @@ resolved correctly, delete, confirm empty state.
 1. ~~Re-run `tests/test_tenant_isolation.py`~~ -- done, 7/7 passing for
    real. ~~Verify `SupabaseProfileStore` itself~~ -- done, full round
    trip confirmed live.
-2. Wire authentication into api.py as new, parallel, auth-gated
-   endpoints -- deliberately NOT replacing the existing single-tenant
-   endpoints Rick's live app depends on today, so this can be built and
-   proven correct without any risk to what's currently working in
-   production. Cutting production over to the multi-tenant path is a
-   real deployment decision for Rick to make explicitly once it's
-   proven, not something to fold into this autonomous pass.
+2. ~~Wire authentication into api.py as new, parallel, auth-gated
+   endpoints~~ -- **done.** `/v2/rifles` (list, create), `/v2/rifles/
+   {name}` (get, delete), each gated by a `_get_user_store` dependency
+   that verifies the bearer token and returns a request-scoped
+   `SupabaseProfileStore`. Deliberately NOT replacing the existing
+   single-tenant endpoints Rick's live app depends on today -- built
+   and proven in isolation, zero risk to what's currently working in
+   production. Verified live, both manually (curl against a real local
+   server, real tokens) and as 4 new permanent tests in
+   `test_tenant_isolation.py` (11 total now) -- confirmed isolation
+   holds not just at the raw-PostgREST/RLS level but through
+   Ballistica's own API logic end to end: User B gets an empty list, a
+   404 by exact name (not even needing to guess an ID), and a rejected
+   delete, while User A's rifle is proven to survive every attempt.
+   Also covers the app-layer fail-closed baseline: no auth header, and
+   a well-formed-but-forged token, both rejected before reaching any
+   data. Cutting production over to this path is still a real
+   deployment decision for Rick to make explicitly once he's ready --
+   not something to fold into this autonomous pass.
 3. Voice conversation state (setup/calibration) moving into
    `conversation_state`, per §6.1/§7.3's DB-persisted decision --
    not started yet this pass.

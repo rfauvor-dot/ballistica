@@ -25,8 +25,9 @@ from dotenv import load_dotenv
 # OpenAI import/client construction, not after.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+import jwt
 import openai
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +39,8 @@ from .cli import BallisticaCLI, bootstrap_default_profile
 from .openai_client import get_openai_client
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import report_for_point, report_table
+from .supabase_auth import verify_token
+from .supabase_store import SupabaseProfileStore
 from .trajectory import TrajectorySolver, WindCondition
 from .zero import find_minimum_spread_zero
 
@@ -602,3 +605,79 @@ def calc_angle(req: AngleRequest):
         solver, load.zero_distance_yd, req.line_of_sight_distance_yd, rifle.click_value_mrad,
     )
     return AngleResultOut(**result.__dict__, corrected_holdover_clicks=holdover)
+
+
+# ------------------------------------------------------------ multi-tenant
+# New, parallel, auth-gated endpoints (MULTI_TENANCY_DESIGN.md). Deliberately
+# NOT replacing the single-tenant endpoints above, which Rick's live app
+# depends on today -- this exists to build and prove the multi-tenant path
+# in isolation, with zero risk to what's currently working in production.
+# Cutting production over to this path is a real deployment decision for
+# Rick to make explicitly once it's proven, not something to fold in here.
+
+def _get_user_store(authorization: str = Header(...)) -> SupabaseProfileStore:
+    """FastAPI dependency: verifies the bearer token and returns a
+    per-request store scoped to that user's own access token -- every
+    /v2 endpoint's data access goes through this, so isolation is
+    enforced by Postgres RLS (see supabase_store.py's docstring), not
+    just by this function filtering correctly."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
+    token = authorization[len("Bearer "):]
+    try:
+        user_id = verify_token(token)
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+    return SupabaseProfileStore(user_id, token)
+
+
+@app.get("/v2/rifles", response_model=list[RifleSummary])
+def v2_list_rifles(user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    return [
+        RifleSummary(name=r.name, active_load_name=r.active_load_name, load_count=len(r.loads))
+        for r in user_store.rifles.values()
+    ]
+
+
+@app.post("/v2/rifles", response_model=RifleDetail)
+def v2_create_rifle(payload: RifleIn, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    if payload.name in user_store.rifles:
+        raise HTTPException(status_code=409, detail=f"Rifle '{payload.name}' already exists")
+    try:
+        rifle = Rifle(
+            name=payload.name, scope_height_in=payload.scope_height_in,
+            caliber=payload.caliber, barrel_length_in=payload.barrel_length_in,
+            twist_rate=payload.twist_rate, click_value_mrad=payload.click_value_mrad,
+            reticle_unit=payload.reticle_unit, optic_type=payload.optic_type,
+            scope_make=payload.scope_make, scope_model=payload.scope_model,
+            magnification=payload.magnification, objective_lens_mm=payload.objective_lens_mm,
+            focal_plane=payload.focal_plane, reticle_type=payload.reticle_type,
+            dot_size_moa=payload.dot_size_moa, has_suppressor=payload.has_suppressor,
+            suppressor_type=payload.suppressor_type,
+        )
+        for i, load_in in enumerate(payload.loads):
+            rifle.add_load(Load(**load_in.model_dump()), make_active=(i == 0))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=_msg(exc))
+    user_store.add_rifle(rifle)
+    user_store.save()
+    return _rifle_to_detail(rifle)
+
+
+@app.get("/v2/rifles/{rifle_name}", response_model=RifleDetail)
+def v2_get_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    try:
+        rifle = user_store.find_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    return _rifle_to_detail(rifle)
+
+
+@app.delete("/v2/rifles/{rifle_name}")
+def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    try:
+        rifle = user_store.delete_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    user_store.save()
+    return {"deleted": rifle.name}

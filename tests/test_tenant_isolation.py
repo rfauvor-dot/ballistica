@@ -224,3 +224,77 @@ def test_no_token_at_all_cannot_read_any_rifles():
         assert resp.json() == []
     else:
         assert resp.status_code in (401, 403)
+
+
+# ------------------------------------------------- through Ballistica's API
+# Everything above talks to raw PostgREST directly -- proves RLS itself is
+# correct, but not that Ballistica's own /v2 endpoints (api.py) actually
+# use it correctly end to end. §7.4 explicitly requires both: "through the
+# API and voice-mediated access" are separate surfaces, not covered just
+# because the other is. These use FastAPI's TestClient against the real
+# app object, with real Supabase tokens -- the app logic is in-process,
+# but every data call it makes still goes out over the network to the
+# real project, so this is a genuine end-to-end check, not a mock.
+
+@pytest.fixture
+def api_client():
+    from fastapi.testclient import TestClient
+    import ballistica.api as api_module
+    return TestClient(api_module.app)
+
+
+@pytest.fixture
+def rifle_owned_by_a_via_api(user_a, api_client):
+    _, token_a = user_a
+    resp = api_client.post(
+        "/v2/rifles", headers={"Authorization": f"Bearer {token_a}"},
+        json={"name": "API Isolation Test Rifle", "scope_height_in": 2.0, "loads": []},
+    )
+    assert resp.status_code == 200
+    yield resp.json()
+    api_client.delete(
+        "/v2/rifles/API Isolation Test Rifle", headers={"Authorization": f"Bearer {token_a}"},
+    )
+
+
+def test_user_b_cannot_list_user_a_rifles_through_the_api(user_b, rifle_owned_by_a_via_api, api_client):
+    _, token_b = user_b
+    resp = api_client.get("/v2/rifles", headers={"Authorization": f"Bearer {token_b}"})
+    assert resp.status_code == 200
+    assert "API Isolation Test Rifle" not in [r["name"] for r in resp.json()]
+
+
+def test_user_b_cannot_fetch_user_a_rifle_by_name_through_the_api(user_b, rifle_owned_by_a_via_api, api_client):
+    """User B knows the exact rifle name (not even a guessed ID) and
+    still can't reach it -- Ballistica's own find_rifle() only ever
+    searches the per-request store, which only ever contains the
+    authenticated user's own rows."""
+    _, token_b = user_b
+    resp = api_client.get(
+        "/v2/rifles/API Isolation Test Rifle", headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert resp.status_code == 404
+
+
+def test_user_b_cannot_delete_user_a_rifle_through_the_api(user_a, user_b, rifle_owned_by_a_via_api, api_client):
+    _, token_b = user_b
+    resp = api_client.delete(
+        "/v2/rifles/API Isolation Test Rifle", headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert resp.status_code == 404
+
+    _, token_a = user_a
+    check = api_client.get("/v2/rifles", headers={"Authorization": f"Bearer {token_a}"})
+    assert "API Isolation Test Rifle" in [r["name"] for r in check.json()]
+
+
+def test_v2_endpoints_reject_missing_or_forged_auth(api_client):
+    """Fail-closed baseline for the app layer itself, not just RLS: no
+    header, and a well-formed-but-fake token, must both be rejected."""
+    no_auth = api_client.get("/v2/rifles")
+    assert no_auth.status_code in (401, 422)  # 422: FastAPI's own required-header validation
+
+    import jwt as pyjwt
+    forged = pyjwt.encode({"sub": "attacker", "aud": "authenticated"}, "not-the-real-secret", algorithm="HS256")
+    rejected = api_client.get("/v2/rifles", headers={"Authorization": f"Bearer {forged}"})
+    assert rejected.status_code == 401
