@@ -202,9 +202,14 @@ _SESSION_STALE_SECONDS = 300
 
 
 class _SetupSession:
-    """In-progress voice interview for a new load or rifle. Lives only in
-    memory for the duration of the conversation -- nothing's written to
-    the store until the shooter confirms."""
+    """In-progress voice interview for a new load or rifle -- nothing's
+    written to the store until the shooter confirms. Lives purely in
+    memory for the single-tenant CLI/REPL; the multi-tenant /v2 voice
+    endpoint (api.py) instead round-trips this through
+    to_dict()/from_dict() into conversation_state.state_json on every
+    turn, so it survives across the stateless-per-request API model
+    (and any restart in between) instead of needing a kept-alive
+    per-user object in server memory."""
 
     def __init__(self, kind: str) -> None:
         self.kind = kind  # "load" or "rifle"
@@ -212,7 +217,24 @@ class _SetupSession:
         self.skipped: set = set()
         self.confirming = False
         self.failed_attempts = 0
-        self.last_activity = time.monotonic()
+        self.last_activity = time.time()
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind, "draft": self.draft, "skipped": sorted(self.skipped),
+            "confirming": self.confirming, "failed_attempts": self.failed_attempts,
+            "last_activity": self.last_activity,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "_SetupSession":
+        session = cls(data["kind"])
+        session.draft = data["draft"]
+        session.skipped = set(data["skipped"])
+        session.confirming = data["confirming"]
+        session.failed_attempts = data["failed_attempts"]
+        session.last_activity = data["last_activity"]
+        return session
 
 
 class _CalibrationSession:
@@ -221,7 +243,8 @@ class _CalibrationSession:
     written back to the load's muzzle_velocity_fps until the shooter ends
     the session and confirms -- matches _SetupSession's don't-save-until-
     confirmed pattern, for the same reason (a misheard number here is a
-    silent, hard-to-notice data corruption, not just an annoyance)."""
+    silent, hard-to-notice data corruption, not just an annoyance). Same
+    to_dict()/from_dict() round-trip purpose as _SetupSession above."""
 
     def __init__(self, rifle_name: str, load_name: str) -> None:
         self.rifle_name = rifle_name
@@ -229,7 +252,23 @@ class _CalibrationSession:
         self.shots: list[float] = []
         self.confirming = False
         self.failed_attempts = 0
-        self.last_activity = time.monotonic()
+        self.last_activity = time.time()
+
+    def to_dict(self) -> dict:
+        return {
+            "rifle_name": self.rifle_name, "load_name": self.load_name, "shots": self.shots,
+            "confirming": self.confirming, "failed_attempts": self.failed_attempts,
+            "last_activity": self.last_activity,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "_CalibrationSession":
+        session = cls(data["rifle_name"], data["load_name"])
+        session.shots = data["shots"]
+        session.confirming = data["confirming"]
+        session.failed_attempts = data["failed_attempts"]
+        session.last_activity = data["last_activity"]
+        return session
 
 
 def bootstrap_default_profile(store: ProfileStore) -> None:
@@ -305,7 +344,7 @@ class BallisticaCLI:
         session silently absorbing a later, completely unrelated
         utterance instead of the shooter ever finding out it was still
         open)."""
-        now = time.monotonic()
+        now = time.time()
         if self._setup is not None and now - self._setup.last_activity > _SESSION_STALE_SECONDS:
             self._setup = None
         if self._calibration is not None and now - self._calibration.last_activity > _SESSION_STALE_SECONDS:
@@ -327,20 +366,20 @@ class BallisticaCLI:
         # "quit"/"exit", which cancel the interview here rather than the
         # whole session.
         if self._setup is not None:
-            self._setup.last_activity = time.monotonic()
+            self._setup.last_activity = time.time()
             return self._handle_setup_turn(t)
 
         # Same modal pattern as setup, above: while a calibration is
         # running, every utterance is a shot reading, a control phrase
         # ("average", "discard that", "end calibration"), or a way out.
         if self._calibration is not None:
-            self._calibration.last_activity = time.monotonic()
+            self._calibration.last_activity = time.time()
             return self._handle_calibration_turn(t)
 
         # A destructive action -- one confirmation gate, no separate
         # session class needed for a single yes/no.
         if self._pending_delete is not None:
-            self._pending_delete_at = time.monotonic()
+            self._pending_delete_at = time.time()
             return self._handle_delete_confirm(t)
 
         if low in ("help", "?"):
@@ -573,7 +612,7 @@ class BallisticaCLI:
         except ValueError as exc:
             return str(exc)
         self._pending_delete = rifle.name
-        self._pending_delete_at = time.monotonic()
+        self._pending_delete_at = time.time()
         return f"Delete the {rifle.name}, and all its loads? This can't be undone."
 
     def _handle_delete_confirm(self, text: str) -> str:

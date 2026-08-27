@@ -37,26 +37,68 @@ _JWKS_URL = f"{_SUPABASE_URL}/auth/v1/.well-known/jwks.json" if _SUPABASE_URL el
 _jwks_client = jwt.PyJWKClient(_JWKS_URL) if _JWKS_URL else None
 
 
+# Root-caused live: the intermittent 401s chasing this whole file
+# weren't a JWKS/algorithm problem at all (that retry-with-a-fresh-
+# client fix above was solving a real but different, much rarer issue).
+# Direct reproduction caught the actual exception: ImmatureSignatureError
+# ("the token is not yet valid (iat)") -- ordinary clock skew between
+# this machine and Supabase's server, PyJWT rejecting a token whose
+# issued-at claim looks a few seconds in the future by local system
+# time, with zero tolerance by default. leeway is the standard,
+# widely-used mitigation for exactly this -- real-world clocks are
+# never perfectly synchronized -- not a security weakening at this
+# scale (a few seconds of tolerance doesn't meaningfully help forge a
+# token; the signature check itself is untouched).
+_CLOCK_SKEW_LEEWAY_SECONDS = 10
+
+
+def _verify_via_jwks(token: str, client: jwt.PyJWKClient) -> str:
+    signing_key = client.get_signing_key_from_jwt(token)
+    return jwt.decode(
+        token, signing_key.key, algorithms=["ES256", "RS256"], audience="authenticated",
+        leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
+    )["sub"]
+
+
 def verify_token(token: str) -> str:
     """Returns the authenticated user's id (Supabase auth.users.id, the
     JWT's `sub` claim). Raises jwt.InvalidTokenError/PyJWKClientError on
     anything invalid, expired, malformed, or unverifiable -- callers
     must treat a verification failure as "reject the request", never as
-    "no user, proceed anyway" (every path fails closed, not open)."""
+    "no user, proceed anyway" (every path fails closed, not open).
+
+    Root-caused an intermittent live failure: PyJWKClient's own
+    get_signing_key() already refetches once on a kid it doesn't
+    recognize (Supabase can have multiple simultaneously-valid signing
+    keys in rotation -- Active/Standby/Previously-used per their own
+    docs), but a completely fresh client -- no reliance on ANY internal
+    cache state -- is a stronger fallback than trusting that one
+    internal retry always covers it. Previously this fell through to
+    the legacy HS256 secret on ANY JWKS failure, which produced a
+    misleading "alg not allowed" error for what was actually a
+    transient JWKS lookup issue on a real ES256 token (this project
+    doesn't use the legacy scheme at all -- confirmed live) -- masking
+    the real cause instead of surfacing or resolving it."""
     if _jwks_client is None:
         raise RuntimeError("SUPABASE_URL is not configured -- cannot verify tokens")
     try:
-        signing_key = _jwks_client.get_signing_key_from_jwt(token)
-        return jwt.decode(
-            token, signing_key.key, algorithms=["ES256", "RS256"],
-            audience="authenticated",
-        )["sub"]
-    except (jwt.PyJWKClientError, jwt.InvalidTokenError):
-        if not _JWT_SECRET:
-            raise
-        return jwt.decode(
-            token, _JWT_SECRET, algorithms=["HS256"], audience="authenticated",
-        )["sub"]
+        return _verify_via_jwks(token, _jwks_client)
+    except jwt.PyJWKClientError:
+        # A fully independent client, not the cached module-level one --
+        # rules out any stale in-memory state before concluding this
+        # genuinely isn't a JWKS-verifiable token.
+        try:
+            return _verify_via_jwks(token, jwt.PyJWKClient(_JWKS_URL))
+        except jwt.PyJWKClientError:
+            pass
+    except jwt.InvalidTokenError:
+        raise
+    if not _JWT_SECRET:
+        raise jwt.InvalidTokenError("No matching JWKS signing key found, and no legacy secret configured")
+    return jwt.decode(
+        token, _JWT_SECRET, algorithms=["HS256"], audience="authenticated",
+        leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
+    )["sub"]
 
 
 def get_current_user_id(authorization: str = Header(...)) -> str:

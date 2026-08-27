@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE, pressure_at_altitude_inhg
-from .cli import BallisticaCLI, bootstrap_default_profile
+from .cli import BallisticaCLI, _CalibrationSession, _SetupSession, bootstrap_default_profile
 from .openai_client import get_openai_client
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import report_for_point, report_table
@@ -681,3 +681,57 @@ def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(
         raise HTTPException(status_code=404, detail=_msg(exc))
     user_store.save()
     return {"deleted": rifle.name}
+
+
+def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
+    """Reconstructs a BallisticaCLI's in-progress voice-conversation
+    state (setup/calibration/pending_delete) from what the previous
+    request persisted -- the API is stateless per-request, so this
+    stands in for the single-tenant CLI's long-lived in-memory object."""
+    cli._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
+    cli._calibration = (
+        _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
+    )
+    pending_delete = state.get("pending_delete")
+    cli._pending_delete = pending_delete["rifle_name"] if pending_delete else None
+    cli._pending_delete_at = pending_delete["at"] if pending_delete else 0.0
+
+
+def _dehydrate_cli(cli: BallisticaCLI) -> dict:
+    """The inverse of _hydrate_cli -- what to persist back after
+    handle() runs, whatever it left the session state as (unchanged,
+    advanced a turn, or cleared entirely on completion/cancellation)."""
+    return {
+        "setup": cli._setup.to_dict() if cli._setup else None,
+        "calibration": cli._calibration.to_dict() if cli._calibration else None,
+        "pending_delete": (
+            {"rifle_name": cli._pending_delete, "at": cli._pending_delete_at}
+            if cli._pending_delete else None
+        ),
+    }
+
+
+@app.post("/v2/voice/query", response_model=VoiceQueryOut)
+def v2_voice_query(payload: VoiceQueryIn, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    """Per-user counterpart to /voice/query. The single shared voice_cli
+    object that endpoint uses can't be reused here -- it would leak one
+    user's in-progress setup/calibration session into every other
+    user's request. Instead: a fresh BallisticaCLI per request,
+    hydrated from this user's own persisted conversation_state before
+    handle() runs and dehydrated back after, so the conversation
+    survives across requests (and restarts) the same way it does for
+    the single-tenant path, without ever holding two users' state in
+    the same Python object."""
+    cli = BallisticaCLI(user_store)
+    _hydrate_cli(cli, user_store.get_conversation_state())
+
+    try:
+        reply = cli.handle(payload.text)
+    except SystemExit:
+        reply = "Ending session."
+    except (KeyError, ValueError) as exc:
+        reply = _msg(exc)
+
+    user_store.set_conversation_state(**_dehydrate_cli(cli))
+    awaiting_response = cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+    return VoiceQueryOut(reply=reply or "Didn't catch that.", awaiting_response=awaiting_response)

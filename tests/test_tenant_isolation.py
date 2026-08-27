@@ -298,3 +298,77 @@ def test_v2_endpoints_reject_missing_or_forged_auth(api_client):
     forged = pyjwt.encode({"sub": "attacker", "aud": "authenticated"}, "not-the-real-secret", algorithm="HS256")
     rejected = api_client.get("/v2/rifles", headers={"Authorization": f"Bearer {forged}"})
     assert rejected.status_code == 401
+
+
+# --------------------------------------- voice conversation state persistence
+# Not an isolation test -- a correctness test for the DB-persisted
+# conversation state design decision (MULTI_TENANCY_DESIGN.md #6.1/#7.3).
+# /v2/voice/query is stateless per-request (a fresh BallisticaCLI every
+# call, no cached object between requests), so a multi-turn voice
+# conversation only works at all if setup/calibration state genuinely
+# round-trips through conversation_state.state_json. Lives here because it
+# needs the same live-account/api_client fixtures already built for the
+# isolation suite, not because it's adversarial.
+
+def test_setup_conversation_survives_across_separate_requests(user_a, api_client):
+    """Two independent HTTP requests, no shared Python object between
+    them (api_client.post() constructs a fresh BallisticaCLI + store
+    each call) -- if the second request still recognizes the session
+    the first one started, that's only possible because the state
+    genuinely round-tripped through Supabase, not in-process memory."""
+    _, token_a = user_a
+    headers = {"Authorization": f"Bearer {token_a}"}
+
+    start = api_client.post("/v2/voice/query", headers=headers, json={"text": "new rifle"})
+    assert start.status_code == 200
+    assert "call this rifle" in start.json()["reply"].lower()
+    assert start.json()["awaiting_response"] is True
+
+    # A real LLM extraction call, not just "is a session open" -- proves
+    # the draft dict's actual contents survive the round trip, not just
+    # the session's bare existence.
+    answer = api_client.post(
+        "/v2/voice/query", headers=headers,
+        json={"text": "call it the Persistence Test Rifle"},
+    )
+    assert answer.status_code == 200
+    assert "scope height" in answer.json()["reply"].lower()
+    assert answer.json()["awaiting_response"] is True
+
+    cancel = api_client.post("/v2/voice/query", headers=headers, json={"text": "cancel"})
+    assert "scrapped" in cancel.json()["reply"].lower()
+    assert cancel.json()["awaiting_response"] is False
+
+    # Confirms the cancelled draft was never actually saved.
+    rifles = api_client.get("/v2/rifles", headers=headers)
+    assert "Persistence Test Rifle" not in [r["name"] for r in rifles.json()]
+
+
+def test_user_b_voice_command_not_swallowed_by_user_a_open_session(user_a, user_b, api_client):
+    """The adversarial half of the persistence test above: User A has a
+    genuinely in-progress setup session; User B's completely unrelated
+    command must be processed as a fresh command for User B, never
+    routed into User A's session -- proving conversation state is
+    isolated per-user, not just persisted per-request."""
+    _, token_a = user_a
+    _, token_b = user_b
+
+    start = api_client.post(
+        "/v2/voice/query", headers={"Authorization": f"Bearer {token_a}"},
+        json={"text": "new rifle"},
+    )
+    assert start.json()["awaiting_response"] is True
+    try:
+        b_reply = api_client.post(
+            "/v2/voice/query", headers={"Authorization": f"Bearer {token_b}"},
+            json={"text": "status"},
+        )
+        # A genuine top-level response for B (whatever B's own state is),
+        # never anything resembling A's rifle-setup interview.
+        assert "call this rifle" not in b_reply.json()["reply"].lower()
+        assert "what do you want" not in b_reply.json()["reply"].lower()
+    finally:
+        api_client.post(
+            "/v2/voice/query", headers={"Authorization": f"Bearer {token_a}"},
+            json={"text": "cancel"},
+        )

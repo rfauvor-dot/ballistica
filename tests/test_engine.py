@@ -1234,6 +1234,46 @@ def test_calibration_gives_up_after_repeated_unparseable_shots(tmp_path):
     assert "yards" in cli.handle("drop at 300 yards").lower()
 
 
+def test_setup_session_dict_round_trip_preserves_all_state():
+    """The multi-tenant /v2/voice/query endpoint hydrates a fresh
+    BallisticaCLI's _setup from this dict every request and dehydrates
+    it back after -- any field that doesn't survive the round trip
+    would silently reset part of an in-progress setup interview on the
+    very next turn."""
+    from ballistica.cli import _SetupSession
+
+    original = _SetupSession("rifle")
+    original.draft = {"name": "Test AR", "scope_height_in": 2.5}
+    original.skipped = {"barrel_length_in", "twist_rate"}
+    original.confirming = True
+    original.failed_attempts = 2
+
+    restored = _SetupSession.from_dict(original.to_dict())
+    assert restored.kind == "rifle"
+    assert restored.draft == {"name": "Test AR", "scope_height_in": 2.5}
+    assert restored.skipped == {"barrel_length_in", "twist_rate"}
+    assert restored.confirming is True
+    assert restored.failed_attempts == 2
+    assert restored.last_activity == original.last_activity
+
+
+def test_calibration_session_dict_round_trip_preserves_all_state():
+    from ballistica.cli import _CalibrationSession
+
+    original = _CalibrationSession("Test AR", "23.5gr H335")
+    original.shots = [2750.0, 2761.0, 2758.0]
+    original.confirming = True
+    original.failed_attempts = 1
+
+    restored = _CalibrationSession.from_dict(original.to_dict())
+    assert restored.rifle_name == "Test AR"
+    assert restored.load_name == "23.5gr H335"
+    assert restored.shots == [2750.0, 2761.0, 2758.0]
+    assert restored.confirming is True
+    assert restored.failed_attempts == 1
+    assert restored.last_activity == original.last_activity
+
+
 def test_abandoned_calibration_session_expires_instead_of_swallowing_later_command(tmp_path):
     """Root-caused live: an abandoned modal session (never explicitly
     cancelled, no further turns for a long time -- e.g. a forgotten test

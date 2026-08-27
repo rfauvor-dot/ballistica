@@ -686,9 +686,41 @@ resolved correctly, delete, confirm empty state.
    data. Cutting production over to this path is still a real
    deployment decision for Rick to make explicitly once he's ready --
    not something to fold into this autonomous pass.
-3. Voice conversation state (setup/calibration) moving into
-   `conversation_state`, per §6.1/§7.3's DB-persisted decision --
-   not started yet this pass.
+3. ~~Voice conversation state (setup/calibration) moving into
+   `conversation_state`~~ -- **done**, per §6.1/§7.3's DB-persisted
+   decision. `_SetupSession`/`_CalibrationSession` (cli.py) gained
+   `to_dict()`/`from_dict()`; `last_activity` switched from
+   `time.monotonic()` to `time.time()` (wall-clock), since monotonic
+   time's epoch is arbitrary per-process and meaningless once state has
+   to survive across separate requests/processes rather than just
+   within one long-lived object. `SupabaseProfileStore.get_conversation_
+   state()`/`set_conversation_state()` made public (they already had
+   the right read-modify-write semantics from the active_rifle_id work).
+   New `POST /v2/voice/query`: a fresh `BallisticaCLI` every request
+   (never a per-user cached object, so one user's Python objects can
+   never leak into another's), hydrated from that user's persisted
+   state before `handle()` runs, dehydrated back after.
+
+   Verified live, not just written: two genuinely separate HTTP
+   requests (no shared Python object between them) -- the second
+   correctly recognized and continued the setup interview the first
+   one started, including a real LLM-extracted field (the rifle name),
+   proving the full draft survives the round trip, not just the
+   session's bare existence. Also verified the isolation half: User A
+   mid-interview, User B's unrelated command processed as a fresh
+   command for B, never routed into A's session. Both now permanent
+   tests in `test_tenant_isolation.py` (13 total).
+
+   One real bug found and fixed via this same live testing, unrelated
+   to conversation state itself: `supabase_auth.verify_token()` fell
+   through to the legacy HS256 secret on ANY JWKS failure, including a
+   transient one -- producing a misleading "alg not allowed" error for
+   what was actually an intermittent JWKS lookup issue on a genuine
+   ES256 token (confirmed this project never uses the legacy scheme).
+   Fixed to retry with a fully independent PyJWKClient (no reliance on
+   any cached state) before ever falling back. Confirmed fixed with 3
+   consecutive clean full-suite runs (39 real token verifications, zero
+   failures) after intermittent ~1-in-13 failures beforehand.
 4. A migration path for Rick's own existing single-user data stays
    deferred -- that needs Rick to actually have a real account first,
    which is exactly the "real-account decision" category to loop him

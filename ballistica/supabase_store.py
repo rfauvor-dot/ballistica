@@ -105,7 +105,7 @@ class SupabaseProfileStore(ProfileStore):
             )
             self.rifles[rifle_obj.name] = rifle_obj
 
-        state = self._get_conversation_state()
+        state = self.get_conversation_state()
         active_rifle_id = state.get("active_rifle_id")
         self.active_rifle_name = None
         if active_rifle_id:
@@ -123,7 +123,7 @@ class SupabaseProfileStore(ProfileStore):
         self._rest("DELETE", "rifles", params={"user_id": f"eq.{self.user_id}"})
 
         if not self.rifles:
-            self._set_conversation_state(active_rifle_id=None)
+            self.set_conversation_state(active_rifle_id=None)
             return
 
         rifle_payload = [
@@ -165,20 +165,27 @@ class SupabaseProfileStore(ProfileStore):
                 )
 
         active_rifle_id = rifle_id_by_name.get(self.active_rifle_name) if self.active_rifle_name else None
-        self._set_conversation_state(active_rifle_id=active_rifle_id)
+        self.set_conversation_state(active_rifle_id=active_rifle_id)
 
-    def _get_conversation_state(self) -> dict:
+    def get_conversation_state(self) -> dict:
+        """Public: also used directly by api.py's /v2/voice/query to
+        hydrate the per-user setup/calibration/pending_delete state on
+        each request (cli.py's _SetupSession/_CalibrationSession
+        to_dict()/from_dict() round-trip through the same "setup"/
+        "calibration"/"pending_delete" keys this dict holds alongside
+        "active_rifle_id")."""
         rows = self._rest(
             "GET", "conversation_state",
             params={"user_id": f"eq.{self.user_id}", "select": "state_json"},
         ).json()
         return rows[0]["state_json"] if rows else {}
 
-    def _set_conversation_state(self, **updates) -> None:
+    def set_conversation_state(self, **updates) -> None:
         # Read-modify-write rather than a blind overwrite -- state_json
-        # will also hold voice conversation state (setup/calibration) in
-        # a later phase, and this must not clobber that.
-        state = self._get_conversation_state()
+        # holds both active_rifle_id (this class's own concern) and
+        # voice conversation state (api.py's concern) side by side, and
+        # a caller updating one must never clobber the other.
+        state = self.get_conversation_state()
         state.update({k: v for k, v in updates.items()})
         self._rest(
             "POST", "conversation_state",
