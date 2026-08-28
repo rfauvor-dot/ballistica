@@ -36,26 +36,34 @@ you dial them in"). Not a wall of legal text; a real, minimal safety net.
 
 ## Security / Multi-Tenancy Foundation
 
-**Status:** Single shared `ProfileStore` instance for the whole server
-(verified: `store = ProfileStore()` at module scope in `api.py`, one global,
-no per-user isolation). No auth of any kind (verified: grepped `api.py` for
-auth/session/login patterns -- the only match was the unrelated
-`OPENAI_API_KEY` server secret comment).
+**Status (updated 2026-08-28):** Resolved for the live app. Supabase-backed
+per-user storage (`SupabaseProfileStore`), Postgres RLS as the real
+isolation boundary, JWT-auth-gated `/v2/*` endpoints, and a full adversarial
+tenant-isolation test suite (§7.4, 68/68 passing) were built, tested, and
+verified live. The live voice and web UI have now been cut over to this
+path (see [MULTI_TENANCY_DESIGN.md](MULTI_TENANCY_DESIGN.md) §10) -- signed-
+in, per-user, RLS-isolated storage is the active path a real second user
+would get. The original single-tenant `store`/`voice_cli` globals and their
+endpoints remain in `api.py`, deliberately left running and untouched as a
+dormant fallback, not yet removed.
 
-**Why it matters:** This is fine today because there's exactly one user
-(Rick). It stops being fine the moment there's a second real user, and it
-gets materially more expensive to retrofit auth + per-user data isolation +
-audit logging after the fact than to design for it now, especially since the
-stated future goal (aggregate anonymized cross-user shooting data) requires
+**Why it mattered:** This was fine while there was exactly one user (Rick).
+It stops being fine the moment there's a second real user, and retrofitting
+auth + per-user isolation + audit logging after the fact is materially more
+expensive than designing for it up front -- especially since the stated
+future goal (aggregate anonymized cross-user shooting data) requires
 knowing which data came from which user in the first place.
 
-**Next step:** No urgent action while single-user. Before any second real
-user (paid or not) gets access, this needs a real design pass -- not
-necessarily full auth infrastructure, but at minimum a plan for what
-"per-user data" means in this architecture.
+**Remaining before this is fully closed out:** (1) Rick creating his real
+account through the new login flow and confirming it works for him live --
+his decision, not something to do unilaterally; (2) a decision on migrating
+Rick's existing single-tenant data into his new account; (3) eventually
+retiring the dormant single-tenant path once the new one is confirmed
+solid, rather than carrying both indefinitely.
 
-**Owning lens:** Build to scope technical approach; Finance to cost it when
-it's time; Marketing to confirm it doesn't block the aggregate-data roadmap.
+**Owning lens:** Build scoped and shipped the technical approach; Chief of
+Staff to track the account-creation/migration decision with Rick; Finance/
+Marketing already confirmed this doesn't block the aggregate-data roadmap.
 
 ---
 

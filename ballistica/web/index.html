@@ -114,14 +114,18 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError {
+  #calcError, #rifleError, #loadError, #authError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
-  #rifleOk, #loadOk {
+  #rifleOk, #loadOk, #authOk {
     display: none; margin-top: 10px; padding: 8px 12px; border-radius: 8px;
     background: var(--ok-bg); color: #2a6b2a; font-weight: 600; font-size: 14px;
   }
+  #authPanel { max-width: 420px; margin: 24px auto; }
+  #authPanel .field { width: 100%; margin-bottom: 10px; }
+  #authPanel input { width: 100%; }
+  #authPanel button { width: 100%; margin-top: 6px; }
 
   #result { display: none; margin-top: 20px; }
   .result-card { border: 2px solid var(--text); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; }
@@ -145,6 +149,27 @@
 </head>
 <body>
   <h1>BALLISTICA</h1>
+
+  <div id="authPanel" style="display:none">
+    <div class="field w-full">
+      <label for="authEmail">Email</label>
+      <input id="authEmail" type="email" autocomplete="username" placeholder="you@example.com">
+    </div>
+    <div class="field w-full">
+      <label for="authPassword">Password</label>
+      <input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 6 characters">
+    </div>
+    <button id="signInBtn" class="primary big">Sign in</button>
+    <button id="signUpBtn" class="big">Create account</button>
+    <div id="authOk"></div>
+    <div id="authError"></div>
+  </div>
+
+  <div id="appContent" style="display:none">
+  <div class="rifle-actions" style="margin-bottom:14px">
+    <span id="authEmailLabel" style="flex:1; align-self:center; color:var(--muted); font-size:14px;"></span>
+    <button id="signOutBtn">Sign out</button>
+  </div>
 
   <div class="voice-panel">
     <div class="state-line" id="voiceState">Voice: off</div>
@@ -290,8 +315,122 @@
     </div>
     <div class="meta" id="velMeta"></div>
   </div>
+  </div> <!-- #appContent -->
 
 <script>
+// ---------------------------------------------------------------- auth
+// Cutover to the multi-tenant foundation: every data-touching endpoint
+// now requires a signed-in Supabase user (see MULTI_TENANCY_DESIGN.md).
+// The old single-tenant endpoints (/rifles, /voice/query, etc.) are
+// deliberately left running server-side, untouched -- this only changes
+// which path the web UI itself calls, not what the backend offers.
+const SUPABASE_URL = "__SUPABASE_URL__";
+const SUPABASE_ANON_KEY = "__SUPABASE_ANON_KEY__";
+const SESSION_KEY = 'ballistica_session';
+
+function getSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function setSession(session) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch (e) {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+}
+
+async function supabaseAuthCall(path, body) {
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/auth/v1${path}`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error('Network error -- check the connection and try again.');
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error_description || data.msg || data.error || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
+function sessionFromAuthResponse(data, fallbackEmail) {
+  return {
+    access_token: data.access_token, refresh_token: data.refresh_token,
+    expires_at: data.expires_at, email: (data.user && data.user.email) || fallbackEmail,
+  };
+}
+
+async function signUp(email, password) {
+  const data = await supabaseAuthCall('/signup', { email, password });
+  if (!data.access_token) return { needsConfirmation: true };
+  setSession(sessionFromAuthResponse(data, email));
+  return { needsConfirmation: false };
+}
+
+async function signIn(email, password) {
+  const data = await supabaseAuthCall('/token?grant_type=password', { email, password });
+  setSession(sessionFromAuthResponse(data, email));
+}
+
+async function refreshSession(session) {
+  const data = await supabaseAuthCall('/token?grant_type=refresh_token', { refresh_token: session.refresh_token });
+  const updated = sessionFromAuthResponse(data, session.email);
+  setSession(updated);
+  return updated;
+}
+
+// A voice session at the range can run long -- Supabase access tokens
+// last about an hour, and letting one silently go stale mid-session
+// would look exactly like the app just stopped responding, the same
+// class of confusing failure earlier addenda in this project were
+// about. Refreshed proactively (a minute of headroom) rather than
+// waiting for a request to actually fail on an expired token first.
+async function getValidAccessToken() {
+  let session = getSession();
+  if (!session) return null;
+  const expiresInMs = (session.expires_at * 1000) - Date.now();
+  if (expiresInMs < 60000) {
+    try {
+      session = await refreshSession(session);
+    } catch (e) {
+      clearSession();
+      return null;
+    }
+  }
+  return session.access_token;
+}
+
+function showAuthPanel() {
+  document.getElementById('authPanel').style.display = 'block';
+  document.getElementById('appContent').style.display = 'none';
+}
+function showAppContent() {
+  const session = getSession();
+  document.getElementById('authEmailLabel').textContent = session ? session.email : '';
+  document.getElementById('authPanel').style.display = 'none';
+  document.getElementById('appContent').style.display = 'block';
+}
+
+// Called once at page load, and after a sign-in/sign-up succeeds.
+// Returns whether the app content is actually showing (a signed-in,
+// currently-valid session) -- callers that need auth before doing
+// anything else (loadRifles, voice enable) check this first.
+async function requireAuth() {
+  const token = await getValidAccessToken();
+  if (!token) {
+    showAuthPanel();
+    return false;
+  }
+  showAppContent();
+  return true;
+}
+
 const loadSelect = document.getElementById('loadSelect');
 const rangeInput = document.getElementById('rangeInput');
 const solveBtn = document.getElementById('solveBtn');
@@ -315,15 +454,26 @@ function hide(el) { el.style.display = 'none'; }
 function setStatus(msg) { statusEl.textContent = msg; }
 
 async function api(path, options) {
+  const token = await getValidAccessToken();
+  if (!token) {
+    showAuthPanel();
+    throw new Error('Signed out -- please sign in again.');
+  }
+  const opts = Object.assign({}, options);
+  opts.headers = Object.assign({}, opts.headers, { Authorization: `Bearer ${token}` });
   let res;
   try {
-    res = await fetch(path, options);
+    res = await fetch(`/v2${path}`, opts);
   } catch (e) {
     throw new Error('Network error -- check the connection and try again.');
   }
   let body;
   try { body = await res.json(); } catch (e) { body = null; }
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+      showAuthPanel();
+    }
     const detail = body && body.detail ? body.detail : `HTTP ${res.status}`;
     throw new Error(detail);
   }
@@ -936,8 +1086,15 @@ async function runConversationTurn() {
       return false;
     }
 
-    const queryRes = await fetch('/voice/query', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const token = await getValidAccessToken();
+    if (!token) {
+      showAuthPanel();
+      setVoiceState('Voice: signed out');
+      return false;
+    }
+    const queryRes = await fetch('/v2/voice/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ text: heardText }),
     });
     const queryData = await queryRes.json();
@@ -1076,7 +1233,66 @@ enableVoiceBtn.addEventListener('click', async () => {
   startWakeListening();
 });
 
-loadRifles();
+const authEmailInput = document.getElementById('authEmail');
+const authPasswordInput = document.getElementById('authPassword');
+const authOkEl = document.getElementById('authOk');
+const authErrorEl = document.getElementById('authError');
+const signInBtn = document.getElementById('signInBtn');
+const signUpBtn = document.getElementById('signUpBtn');
+const signOutBtn = document.getElementById('signOutBtn');
+
+signInBtn.addEventListener('click', async () => {
+  hide(authOkEl); hide(authErrorEl);
+  const email = authEmailInput.value.trim();
+  const password = authPasswordInput.value;
+  if (!email || !password) { flash(authErrorEl, 'Enter both email and password.'); return; }
+  signInBtn.disabled = true;
+  try {
+    await signIn(email, password);
+    await init();
+  } catch (e) {
+    flash(authErrorEl, e.message);
+  } finally {
+    signInBtn.disabled = false;
+  }
+});
+
+signUpBtn.addEventListener('click', async () => {
+  hide(authOkEl); hide(authErrorEl);
+  const email = authEmailInput.value.trim();
+  const password = authPasswordInput.value;
+  if (!email || !password) { flash(authErrorEl, 'Enter both email and password.'); return; }
+  if (password.length < 6) { flash(authErrorEl, 'Password must be at least 6 characters.'); return; }
+  signUpBtn.disabled = true;
+  try {
+    const result = await signUp(email, password);
+    if (result.needsConfirmation) {
+      flash(authOkEl, 'Account created -- check your email to confirm, then sign in.');
+    } else {
+      await init();
+    }
+  } catch (e) {
+    flash(authErrorEl, e.message);
+  } finally {
+    signUpBtn.disabled = false;
+  }
+});
+
+signOutBtn.addEventListener('click', () => {
+  clearSession();
+  showAuthPanel();
+});
+
+// Single entry point for "we have (or just got) a valid session -- go
+// load the app's actual data." Called at page load and again right
+// after a successful sign-in/sign-up so both paths converge here
+// instead of duplicating the loadRifles() kickoff.
+async function init() {
+  const authed = await requireAuth();
+  if (!authed) return;
+  await loadRifles();
+}
+init();
 </script>
 </body>
 </html>

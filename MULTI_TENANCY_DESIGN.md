@@ -725,3 +725,76 @@ resolved correctly, delete, confirm empty state.
    deferred -- that needs Rick to actually have a real account first,
    which is exactly the "real-account decision" category to loop him
    in on rather than create unilaterally.
+
+## 10. Cutting the live app over to the `/v2` path
+
+Per Rick's explicit 9-point cutover instruction (2026-08-28): everything
+above was built, tested, and verified live sitting *alongside* the
+original single-tenant app with zero impact -- a parallel path nobody
+was actually using yet. This section is that path becoming the one the
+real voice and web UI use, while the old single-tenant endpoints and the
+shared global `store`/`voice_cli` objects in `api.py` stay fully intact,
+untouched, and dormant, exactly as instructed -- a cutover of which path
+is *active*, not a deletion of the old one.
+
+**Endpoint surface completed.** The prior pass only covered what its own
+tests exercised (`/v2/rifles` list/create, `/v2/rifles/{name}` get/
+delete, `/v2/voice/query`); the actual web UI also needs update-rifle,
+add-load, status, and drop-at-range. Four endpoints added, each modeled
+directly on its single-tenant counterpart but parameterized on the
+per-request `user_store` instead of the global `store`: `PUT /v2/rifles/
+{rifle_name}`, `POST /v2/rifles/{rifle_name}/loads`, `GET /v2/status`,
+`POST /v2/calc/drop-at-range`. (`/calc/angle`, `/calc/drop-table`, `/calc/
+mpbr-zero` are not called by `index.html` at all -- only by other
+tooling -- so no `/v2` versions were needed for this cutover.)
+
+**Login/signup added to the web UI.** `index.html` gained an `#authPanel`
+(email/password sign-in and create-account) that gates the entire
+existing app, now wrapped in `#appContent`. Session handling is direct
+`fetch()` calls to Supabase's own `/auth/v1/signup` and `/auth/v1/token`
+REST endpoints (matching the codebase's existing minimalist style --
+no new SDK dependency), with the resulting `{access_token, refresh_token,
+expires_at}` persisted in `localStorage` and proactively refreshed
+(a minute of headroom) before it's used, rather than waiting for a
+request to fail on an expired token first -- a voice session at the
+range can run long, and Supabase tokens last about an hour.
+
+The public `SUPABASE_URL`/`SUPABASE_ANON_KEY` needed client-side to talk
+to Supabase Auth directly are injected server-side into `index.html` at
+request time (`web_ui()` in `api.py` now reads the file and does a
+placeholder string replacement) rather than hardcoded into the committed
+file -- the anon key is meant to be public/client-side by Supabase's own
+design (RLS is the real security boundary, not secrecy of this key), but
+it still has to come from env vars, not committed source.
+
+**Data call sites switched in one place.** Every existing UI data call
+already went through one shared `api()` helper in `index.html` -- so the
+cutover for those was a single change: `api()` now prepends `/v2`,
+resolves a valid (refreshing if needed) access token first, and attaches
+it as `Authorization: Bearer`. A 401 clears the stored session and drops
+back to the login screen rather than silently retrying. All 8 existing
+call sites (`/rifles` list/create/get/update/delete, `/rifles/*/loads`,
+`/status`, `/calc/drop-at-range`) map exactly onto the 9 registered `/v2`
+routes with no per-call-site changes needed. The one call site that
+bypasses `api()` -- the voice conversation turn's `/voice/query` fetch --
+was updated directly to `/v2/voice/query` with the same auth attached.
+`/voice/speak` and `/voice/transcribe` were deliberately left unchanged:
+stateless OpenAI STT/TTS proxy calls with no per-user data involved, not
+part of "the old single-tenant data layer" this cutover is about.
+
+**Verified live locally**, signed in as the existing throwaway
+`dt-auth-smoketest@mailinator.com` test account, end to end through the
+actual browser UI (not just direct API calls): sign in, session survives
+a page reload, create a rifle, add a load, get a ballistic solution,
+sign out drops back to the login screen and clears the stored session,
+signing back in restores the same data. Every one of those UI actions
+was confirmed hitting `/v2/*` (not the old paths) via live network-
+request inspection. `/v2/voice/query` was confirmed separately with a
+direct authenticated request using the session's own token, correctly
+resolving the just-created rifle/load and returning a real ballistic
+solution. Test rifle cleaned up afterward.
+
+**Old single-tenant path confirmed still intact**: `python -c` route
+dump after all changes shows every original endpoint (`/rifles`,
+`/voice/query`, `/status`, `/calc/*`) still registered, unmodified,
+alongside the `/v2/*` set -- nothing removed, nothing rewritten.

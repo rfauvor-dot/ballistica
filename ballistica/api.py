@@ -16,6 +16,7 @@ Interactive docs at http://127.0.0.1:8000/docs once it's running.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -81,7 +82,16 @@ app.mount("/icons", StaticFiles(directory=_WEB_DIR / "icons"), name="icons")
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def web_ui():
-    return _WEB_INDEX.read_text(encoding="utf-8")
+    # index.html is read (not served as a static file) specifically so
+    # the public Supabase config can be injected per-request -- the
+    # anon key is meant to be public/client-side by design (RLS is the
+    # real security boundary, not keeping this secret), but it still
+    # has to come from server-side env vars rather than being
+    # hardcoded into the committed HTML.
+    html = _WEB_INDEX.read_text(encoding="utf-8")
+    html = html.replace("__SUPABASE_URL__", os.environ.get("SUPABASE_URL", ""))
+    html = html.replace("__SUPABASE_ANON_KEY__", os.environ.get("SUPABASE_ANON_KEY", ""))
+    return html
 
 
 @app.get("/manifest.json", include_in_schema=False)
@@ -735,3 +745,72 @@ def v2_voice_query(payload: VoiceQueryIn, user_store: SupabaseProfileStore = Dep
     user_store.set_conversation_state(**_dehydrate_cli(cli))
     awaiting_response = cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
     return VoiceQueryOut(reply=reply or "Didn't catch that.", awaiting_response=awaiting_response)
+
+
+# The remaining endpoints the live web UI actually calls (Addendum: live
+# app cutover) -- update rifle, add load, status, and the one /calc/*
+# route index.html uses (drop-at-range; table/mpbr/angle aren't called
+# by the frontend, only by other tooling, so no /v2 versions needed yet).
+
+@app.put("/v2/rifles/{rifle_name}", response_model=RifleDetail)
+def v2_update_rifle(
+    rifle_name: str, payload: RifleUpdate, user_store: SupabaseProfileStore = Depends(_get_user_store),
+):
+    try:
+        rifle = user_store.update_rifle_fields(rifle_name, **payload.model_dump())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    user_store.save()
+    return _rifle_to_detail(rifle)
+
+
+@app.post("/v2/rifles/{rifle_name}/loads", response_model=LoadOut)
+def v2_add_load(
+    rifle_name: str, payload: LoadIn, user_store: SupabaseProfileStore = Depends(_get_user_store),
+):
+    try:
+        rifle = user_store.find_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    try:
+        load = Load(**payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=_msg(exc))
+    rifle.add_load(load)
+    user_store.save()
+    return _load_to_out(load)
+
+
+@app.get("/v2/status")
+def v2_status(user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    try:
+        rifle = user_store.get_active_rifle()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    active_load = None
+    if rifle.active_load_name is not None and rifle.active_load_name in rifle.loads:
+        active_load = _load_to_out(rifle.get_active_load())
+    return {"rifle": _rifle_to_detail(rifle), "active_load": active_load}
+
+
+def _v2_resolve(user_store: SupabaseProfileStore, rifle_query: str | None, load_query: str | None) -> tuple[Rifle, Load]:
+    try:
+        rifle = user_store.find_rifle(rifle_query) if rifle_query else user_store.get_active_rifle()
+        load = rifle.find_load(load_query) if load_query else rifle.get_active_load()
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    return rifle, load
+
+
+@app.post("/v2/calc/drop-at-range", response_model=RangeReportOut)
+def v2_calc_drop_at_range(
+    req: DropAtRangeRequest, user_store: SupabaseProfileStore = Depends(_get_user_store),
+):
+    rifle, load = _v2_resolve(user_store, req.rifle, req.load)
+    solver = TrajectorySolver(
+        muzzle_velocity_fps=load.muzzle_velocity_fps, bc=load.bc, drag_model=load.drag_model,
+        scope_height_in=rifle.scope_height_in,
+        atmosphere=req.atmosphere.to_conditions(), wind=req.wind.to_condition(),
+    )
+    point = solver.at_range(load.zero_distance_yd, req.range_yd)
+    return RangeReportOut(**report_for_point(point, rifle.click_value_mrad).__dict__)
