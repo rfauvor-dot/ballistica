@@ -10,16 +10,21 @@
 -- request. This holds even if application-level filtering is buggy or
 -- missing entirely — the two-layer isolation the design calls for.
 --
--- Deletion/anonymization (§6.2, closed decision): rifles, loads,
--- conversation_state, and profiles all CASCADE on account deletion --
--- they're personally-identifying data that must be gone without
--- exception. events.user_id instead uses ON DELETE SET NULL: the row
--- (the ballistic facts already folded into the aggregate pool) is kept,
--- only the identifying link is severed, atomically, as part of the same
--- database-level delete Supabase performs on auth.admin.deleteUser() --
--- no application code has to coordinate this by hand. (Supabase's own
--- documented pattern for this exact situation: ON DELETE SET NULL
--- instead of CASCADE where the referencing row should outlive the user.)
+-- Deletion (§6.2): rifles, loads, conversation_state, and profiles all
+-- CASCADE on account deletion -- they're personally-identifying data
+-- that must be gone without exception.
+--
+-- SUPERSEDED 2026-08-28 (db/005_anonymize_events_at_ingestion.sql):
+-- the `events` table below originally had a `user_id` column using
+-- ON DELETE SET NULL, anonymizing a contribution only when the
+-- contributing account was later deleted. Rick's final decision changed
+-- this to anonymization AT INGESTION instead -- no user_id column at
+-- all, not nullable-then-nulled-later. Migration 005 drops and
+-- recreates this table with the corrected shape; nothing below this
+-- comment reflects the live schema for `events` anymore -- see 005 for
+-- the current definition and full reasoning. Left as-is here rather
+-- than edited in place, matching every other already-applied migration
+-- in this directory being a historical record, not a living document.
 
 -- ------------------------------------------------------------- profiles
 -- Ballistica-specific per-user settings that aren't auth data itself
@@ -137,6 +142,13 @@ create policy "conversation_state_all_own" on public.conversation_state
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------- events
+-- SUPERSEDED 2026-08-28 -- see db/005_anonymize_events_at_ingestion.sql.
+-- The table below (with a nullable user_id) is NOT the live schema
+-- anymore; 005 drops and recreates it without a user_id column at all.
+-- Kept here unedited as a historical record of what actually ran on
+-- 2026-08-23; do not apply the CREATE TABLE below to a fresh project --
+-- run 005 in its place instead.
+--
 -- The aggregate-data seam (§3, §7.6) — deliberately dumb per ChatGPT's
 -- review: records what's needed, does not build the aggregation system
 -- itself. schema_version and aggregated_at added per ChatGPT's specific
