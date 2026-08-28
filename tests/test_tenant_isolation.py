@@ -22,55 +22,20 @@ interfere with each other.
 """
 from __future__ import annotations
 
-import os
-
 import httpx
 import pytest
-from dotenv import load_dotenv
 
-load_dotenv()
+from conftest import SUPABASE_ANON_KEY as _SUPABASE_ANON_KEY
+from conftest import SUPABASE_URL as _SUPABASE_URL
+from conftest import auth_headers as _headers
+from conftest import requires_supabase
 
-_SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-_SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-
-pytestmark = pytest.mark.skipif(
-    not _SUPABASE_URL or not _SUPABASE_ANON_KEY,
-    reason="SUPABASE_URL/SUPABASE_ANON_KEY not configured -- tenant isolation "
-           "tests require the real Supabase project.",
-)
-
-_USER_A = {"email": "dt-auth-smoketest@mailinator.com", "password": "Sm0keTest!Passw0rd"}
-_USER_B = {"email": "dt-tenant-test-b@mailinator.com", "password": "Sm0keTest!Passw0rd2"}
-
-
-def _sign_in(creds: dict) -> tuple[str, str]:
-    """Returns (user_id, access_token)."""
-    resp = httpx.post(
-        f"{_SUPABASE_URL}/auth/v1/token", params={"grant_type": "password"},
-        headers={"apikey": _SUPABASE_ANON_KEY, "Content-Type": "application/json"},
-        json=creds, timeout=20,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["user"]["id"], data["access_token"]
-
-
-def _headers(token: str) -> dict:
-    return {
-        "apikey": _SUPABASE_ANON_KEY,
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
-
-@pytest.fixture
-def user_a():
-    return _sign_in(_USER_A)
-
-
-@pytest.fixture
-def user_b():
-    return _sign_in(_USER_B)
+# user_a, user_b, api_client fixtures come from conftest.py (auto-discovered
+# by pytest, no import needed) -- this file used to define its own copies;
+# moved there 2026-08-28 so test_engine.py's few HTTP/API-layer-specific
+# tests (not just this file's adversarial ones) can share the same
+# real-account sign-in machinery instead of duplicating it.
+pytestmark = requires_supabase
 
 
 @pytest.fixture
@@ -207,6 +172,95 @@ def test_user_b_cannot_read_loads_belonging_to_user_a_rifle(user_a, user_b, rifl
         )
 
 
+def test_user_b_cannot_insert_load_referencing_user_a_rifle_id(user_a, user_b, rifle_owned_by_a):
+    """The sneakier cross-reference variant (post-cutover hardening,
+    2026-08-28): User B is legitimately authenticated as themselves and
+    only ever claims THEIR OWN user_id on the row -- the old policy's
+    `with check (auth.uid() = user_id)` happily allowed that -- but
+    rifle_id points at a rifle that's actually User A's. Confirmed live
+    before the db/003 migration: this insert succeeded (201). Ballistica's
+    own app code never constructs a request shaped like this (no /v2
+    endpoint accepts a raw rifle_id from the client at all -- only rifle
+    NAMES, resolved against the caller's own already-scoped rifles), so
+    this is specifically a raw-PostgREST-level check: a client that skips
+    Ballistica's API entirely and talks to Supabase directly, with
+    nothing more than their own valid token, must still be blocked by
+    the schema itself, not just by app code that happens not to do this."""
+    user_id_a = rifle_owned_by_a["user_id"]
+    user_id_b, token_b = user_b
+    resp = httpx.post(
+        f"{_SUPABASE_URL}/rest/v1/loads",
+        headers={**_headers(token_b), "Prefer": "return=representation"},
+        json={
+            "rifle_id": rifle_owned_by_a["id"], "user_id": user_id_b,
+            "name": "Cross-Ref Attack Load", "bullet_weight_gr": 168, "bc": 0.5,
+            "drag_model": "G1", "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+        },
+    )
+    assert resp.status_code not in (200, 201), (
+        f"User B inserted a load referencing User A's rifle_id -- status {resp.status_code}, "
+        f"body {resp.text}"
+    )
+    # Nothing should have landed under either user's own rifle either way,
+    # but confirm A's rifle really still has zero loads attached.
+    _, token_a = user_a
+    check = httpx.get(
+        f"{_SUPABASE_URL}/rest/v1/loads", headers=_headers(token_a),
+        params={"rifle_id": f"eq.{rifle_owned_by_a['id']}", "select": "*"},
+    )
+    assert check.json() == []
+
+
+def test_user_b_cannot_point_own_rifle_active_load_at_user_a_load(user_a, user_b, rifle_owned_by_a):
+    """The other direction of the same class of gap: User B updates a
+    rifle THEY genuinely own (passes the top-level ownership check
+    cleanly) but sets active_load_id to a load id that belongs to User
+    A. Confirmed live before db/003: this PATCH succeeded (200) and the
+    rifle's active_load_id really did end up set to A's load's real id."""
+    user_id_a, token_a = user_a
+    user_id_b, token_b = user_b
+
+    load_resp = httpx.post(
+        f"{_SUPABASE_URL}/rest/v1/loads",
+        headers={**_headers(token_a), "Prefer": "return=representation"},
+        json={
+            "rifle_id": rifle_owned_by_a["id"], "user_id": user_id_a,
+            "name": "A Real Load For Cross-Ref Test", "bullet_weight_gr": 175, "bc": 0.5,
+            "drag_model": "G1", "muzzle_velocity_fps": 2600, "zero_distance_yd": 100,
+        },
+    )
+    load_resp.raise_for_status()
+    load_a = load_resp.json()[0]
+
+    rifle_b_resp = httpx.post(
+        f"{_SUPABASE_URL}/rest/v1/rifles",
+        headers={**_headers(token_b), "Prefer": "return=representation"},
+        json={"name": "B's Own Rifle For Cross-Ref Test", "scope_height_in": 2.0, "user_id": user_id_b},
+    )
+    rifle_b_resp.raise_for_status()
+    rifle_b = rifle_b_resp.json()[0]
+
+    try:
+        resp = httpx.patch(
+            f"{_SUPABASE_URL}/rest/v1/rifles",
+            headers={**_headers(token_b), "Prefer": "return=representation"},
+            params={"id": f"eq.{rifle_b['id']}"},
+            json={"active_load_id": load_a["id"]},
+        )
+        # A 200 with the row's active_load_id genuinely set to A's load id
+        # is the actual vulnerability; anything else (204/403/404, or a
+        # 200 where the update was rejected/no-opped) is fine.
+        if resp.status_code == 200 and resp.text:
+            body = resp.json()
+            if body:
+                assert body[0].get("active_load_id") != load_a["id"], (
+                    f"User B's rifle active_load_id was set to User A's real load id: {body[0]}"
+                )
+    finally:
+        httpx.delete(f"{_SUPABASE_URL}/rest/v1/rifles", headers=_headers(token_b), params={"id": f"eq.{rifle_b['id']}"})
+        httpx.delete(f"{_SUPABASE_URL}/rest/v1/loads", headers=_headers(token_a), params={"id": f"eq.{load_a['id']}"})
+
+
 # --------------------------------------------------- unauthenticated access
 
 def test_no_token_at_all_cannot_read_any_rifles():
@@ -237,13 +291,6 @@ def test_no_token_at_all_cannot_read_any_rifles():
 # real project, so this is a genuine end-to-end check, not a mock.
 
 @pytest.fixture
-def api_client():
-    from fastapi.testclient import TestClient
-    import ballistica.api as api_module
-    return TestClient(api_module.app)
-
-
-@pytest.fixture
 def rifle_owned_by_a_via_api(user_a, api_client):
     _, token_a = user_a
     resp = api_client.post(
@@ -255,6 +302,123 @@ def rifle_owned_by_a_via_api(user_a, api_client):
     api_client.delete(
         "/v2/rifles/API Isolation Test Rifle", headers={"Authorization": f"Bearer {token_a}"},
     )
+
+
+# ---------------------------------------- /v2 API-layer regression tests
+# Not adversarial -- these moved here from test_engine.py 2026-08-28 when
+# the old, unauthenticated single-tenant endpoints they used to test
+# against were removed (security hardening pass). What they guard is
+# specifically the HTTP/Pydantic-schema layer (RifleUpdate actually
+# carrying has_suppressor through a PUT, GET/POST not routing through a
+# resolver that wrongly requires an active load, /v2/status returning
+# null rather than 404 for a loadless rifle) -- not BallisticaCLI's
+# conversation engine, which the bulk of test_engine.py already covers
+# with no network dependency at all. These need a real account + the
+# live app because that's genuinely what they're testing.
+
+def test_api_persists_suppressor_fields_on_the_rifle(user_a, api_client):
+    """Addendum 36: suppressor tracking round-trips through the REST API
+    (create, then PUT to edit) same as any other rifle field, as a
+    plain open-text field rather than a constrained brand enum."""
+    _, token_a = user_a
+    headers = {"Authorization": f"Bearer {token_a}"}
+    try:
+        r = api_client.post("/v2/rifles", headers=headers, json={
+            "name": "Suppressed 45 API Test", "scope_height_in": 2.0, "click_value_mrad": 0.1,
+            "has_suppressor": True, "suppressor_type": "unclear -- inherited, no markings", "loads": [],
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["has_suppressor"] is True
+        assert body["suppressor_type"] == "unclear -- inherited, no markings"
+
+        r = api_client.get("/v2/rifles/Suppressed 45 API Test", headers=headers)
+        assert r.json()["has_suppressor"] is True
+
+        r = api_client.put("/v2/rifles/Suppressed 45 API Test", headers=headers, json={
+            "scope_height_in": 2.0, "click_value_mrad": 0.1, "has_suppressor": False, "suppressor_type": "",
+        })
+        assert r.status_code == 200
+        assert r.json()["has_suppressor"] is False
+    finally:
+        api_client.delete("/v2/rifles/Suppressed 45 API Test", headers=headers)
+
+
+def test_get_and_add_load_work_on_a_rifle_with_no_loads_yet(user_a, api_client):
+    """Regression: GET /v2/rifles/{name} and POST /v2/rifles/{name}/loads
+    both used to be able to route through a resolver that defaults a
+    missing load_query to get_active_load() -- raising for any rifle
+    with zero loads. That 404'd GET on a freshly created rifle and,
+    worse, made it impossible to POST a rifle's first load via the API
+    at all. Neither endpoint touches a load; only the rifle needs to
+    resolve, so v2_get_rifle/v2_add_load call find_rifle() directly."""
+    _, token_a = user_a
+    headers = {"Authorization": f"Bearer {token_a}"}
+    try:
+        r = api_client.post("/v2/rifles", headers=headers, json={
+            "name": "Loadless Rifle API Test", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
+        })
+        assert r.status_code == 200
+
+        r = api_client.get("/v2/rifles/Loadless Rifle API Test", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["loads"] == []
+
+        r = api_client.post("/v2/rifles/Loadless Rifle API Test/loads", headers=headers, json={
+            "name": "First Load", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+            "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+        })
+        assert r.status_code == 200
+        assert r.json()["name"] == "First Load"
+
+        r = api_client.get("/v2/rifles/Loadless Rifle API Test", headers=headers)
+        assert r.status_code == 200
+        assert [load["name"] for load in r.json()["loads"]] == ["First Load"]
+
+        r = api_client.get("/v2/rifles/No Such Rifle API Test", headers=headers)
+        assert r.status_code == 404
+
+        r = api_client.post("/v2/rifles/No Such Rifle API Test/loads", headers=headers, json={
+            "name": "X", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+            "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+        })
+        assert r.status_code == 404
+    finally:
+        api_client.delete("/v2/rifles/Loadless Rifle API Test", headers=headers)
+
+
+def test_status_reports_null_active_load_for_rifle_with_no_loads(user_a, api_client):
+    """Regression: GET /v2/status used to require both an active rifle
+    AND an active load, 404ing whenever the active rifle had zero
+    loads. That's a normal state (e.g. a rifle profile set up by voice
+    before its first load exists) -- the web UI's post-setup refresh
+    hit this 404 and silently failed to show the newly created rifle at
+    all."""
+    _, token_a = user_a
+    headers = {"Authorization": f"Bearer {token_a}"}
+    try:
+        r = api_client.post("/v2/rifles", headers=headers, json={
+            "name": "Statusless Rifle API Test", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
+        })
+        assert r.status_code == 200
+
+        r = api_client.get("/v2/status", headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["rifle"]["name"] == "Statusless Rifle API Test"
+        assert body["active_load"] is None
+
+        r = api_client.post("/v2/rifles/Statusless Rifle API Test/loads", headers=headers, json={
+            "name": "L1", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+            "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
+        })
+        assert r.status_code == 200
+
+        r = api_client.get("/v2/status", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["active_load"]["name"] == "L1"
+    finally:
+        api_client.delete("/v2/rifles/Statusless Rifle API Test", headers=headers)
 
 
 def test_user_b_cannot_list_user_a_rifles_through_the_api(user_b, rifle_owned_by_a_via_api, api_client):

@@ -61,12 +61,21 @@ box answers with a generic IIS-style 404 instead of a connection
 error, which is a confusing failure mode if you hit it fresh. Port
 8010 is free; check `netstat -ano` before picking another one.
 
+Every data-touching endpoint is under `/v2` and requires a Supabase Auth
+bearer token (`Authorization: Bearer <access_token>`) -- see
+MULTI_TENANCY_DESIGN.md for the full auth/isolation model. There used to
+be a second, unauthenticated single-tenant surface at these same paths
+without the `/v2` prefix; removed 2026-08-28 (security hardening -- see
+RISK_REGISTER.md) once the multi-tenant path was confirmed stable. The
+standalone CLI (`python -m ballistica.cli`) is unaffected either way.
+
 Endpoints:
-- `GET /rifles`, `POST /rifles`, `GET /rifles/{name}` -- profile CRUD (fuzzy name match)
-- `POST /rifles/{name}/active`, `POST /rifles/{name}/loads/{load}/active` -- switch active rifle/load
-- `POST /rifles/{name}/loads` -- add a load; `PATCH .../loads/{load}/velocity` -- update just the velocity
-- `GET /status` -- current active rifle/load
-- `POST /calc/drop-at-range`, `/calc/drop-table`, `/calc/mpbr-zero`, `/calc/angle` -- the four engine calculations, each taking optional `rifle`/`load` (default: active) and optional `atmosphere`/`wind` (default: standard atmosphere, no wind)
+- `GET /v2/rifles`, `POST /v2/rifles`, `GET /v2/rifles/{name}`, `PUT /v2/rifles/{name}`, `DELETE /v2/rifles/{name}` -- profile CRUD (fuzzy name match)
+- `POST /v2/rifles/{name}/loads` -- add a load
+- `GET /v2/status` -- current active rifle/load
+- `POST /v2/calc/drop-at-range` -- taking optional `rifle`/`load` (default: active) and optional `atmosphere`/`wind` (default: standard atmosphere, no wind)
+- `POST /v2/voice/query` -- transcribed text in, spoken-back text out; the full command set (table, mpbr-zero, angle-solving, setup/calibration, etc.) is available here via natural language even though those don't have their own dedicated `/v2/calc/*` REST routes
+- `POST /voice/speak`, `POST /voice/transcribe` -- stateless OpenAI TTS/STT proxies, no auth required (no per-user data involved)
 
 ## Accuracy: how this was validated, and what's still approximate
 

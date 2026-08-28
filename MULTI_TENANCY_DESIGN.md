@@ -243,11 +243,32 @@ applied to the aggregate-data seam — it should have been applied to this
 too. Low additional cost (one more small table, no new infra) for a real
 reliability gain.
 
-### 6.2 Account-deletion data policy — DECIDED, CLOSED (2026-08-23)
+### 6.2 Account-deletion data policy — DECIDED, CLOSED (2026-08-23; anonymization mechanism updated 2026-08-28)
 
 **Rick's decision, final, no further input needed on this question:**
 anonymize, don't delete the ballistic data. Matches the Option B
 recommendation above, confirmed rather than left open.
+
+**Updated 2026-08-28 — anonymization moved to ingestion, not deletion.**
+The original mechanism below (nullable `events.user_id`, severed on
+account deletion) was superseded after this session's security/privacy
+hardening review surfaced a real conflict: Rick's separately-stated
+intent was that a contribution should have **no traceable link back to
+the user at all, even internally, from the moment it enters the pool** —
+not just hidden from other users, and not only severed later at deletion
+time. Flagged rather than resolved unilaterally at the time (see
+RISK_REGISTER.md's "Aggregate Data Anonymization" entry); Rick's
+follow-up decision closes it: **anonymize at ingestion.** `events` has no
+`user_id` column at all anymore (db/005_anonymize_events_at_ingestion.sql
+drops and recreates it without one) — not nullable-then-nulled-later,
+absent from the moment a row is written. The account-deletion
+implication below ("strip the identifying reference... atomically")
+is now moot for `events` specifically, for the strongest possible
+reason: there is nothing to strip, because nothing was ever attached.
+Everything else about this section's reasoning (why anonymize rather
+than delete the underlying ballistic facts at all) is unchanged and
+still the closed decision -- only *when* the link is severed changed,
+from "at deletion" to "never established."
 
 **The policy, in Rick's own framing:** everything personally identifying
 about the departed user is deleted without exception — name, contact
@@ -269,14 +290,15 @@ longer belongs to any one person."*
 - Cascading delete on account deletion targets three things: the user
   record, auth credentials, and any direct-identifier fields on
   historical records/profiles.
-- **Anonymization happens in the same deletion transaction as the
-  identity delete** — strip the identifying reference from `events` rows
-  atomically, not flagged for a later cleanup pass. A deletion that
-  removes the identity but leaves anonymization pending is not
-  acceptable; the two must be one operation.
-- No change to the events-table seam's shape (§3) — this only governs
-  what cascading delete does to rows that reference a deleted user, not
-  the schema itself.
+- ~~Anonymization happens in the same deletion transaction as the
+  identity delete~~ — **superseded 2026-08-28**: `events` rows are
+  anonymous from the moment they're written (no `user_id` column at
+  all), so there is no identifying reference on them for account
+  deletion to strip in the first place. This bullet described the
+  original at-deletion mechanism; see the updated note above.
+- ~~No change to the events-table seam's shape (§3)~~ — **superseded**:
+  the shape did change (db/005) -- `user_id` removed entirely, not
+  merely nulled on delete.
 
 This closes the first of the two items §6.6 flagged as needing Rick's
 decision. Clerk vs. Supabase Auth (§6.5) remains open, pending ChatGPT's
@@ -798,3 +820,239 @@ solution. Test rifle cleaned up afterward.
 dump after all changes shows every original endpoint (`/rifles`,
 `/voice/query`, `/status`, `/calc/*`) still registered, unmodified,
 alongside the `/v2/*` set -- nothing removed, nothing rewritten.
+
+## 11. Post-review security hardening (2026-08-28)
+
+Two independent external reviews (Grok, ChatGPT) ran against the app
+after §10's cutover and the ballistic-data-seed backlog work. Four items
+came back, all actioned in this pass:
+
+**Removed the dormant single-tenant path.** §10 deliberately kept it
+alive as a rollback safety net during the cutover; both reviews flagged
+that leaving a second, unauthenticated data surface live in production is
+exposed risk once the new path is confirmed stable, not an actual safety
+net anymore. Recommended removal (option a) over further isolation
+(option b) -- no concrete reason surfaced to keep it, and the cutover was
+already independently verified live in production. Removed from
+`api.py` entirely: the shared `store`/`voice_cli` globals, every
+unauthenticated endpoint (`/rifles`, `/status`, `/voice/query`, and
+`/calc/drop-table`/`/calc/mpbr-zero`/`/calc/angle`, which had no `/v2`
+equivalent and weren't called by the web UI anyway -- their capability
+stays reachable through `/v2/voice/query`'s natural-language routing),
+and the now-dead Pydantic schemas/helpers only those endpoints used. The
+standalone single-tenant CLI (`python -m ballistica.cli`) is untouched --
+this only removed the HTTP surface. `/v2/*` is now the app's only
+data-touching surface.
+
+Four `test_engine.py` tests that exercised the old HTTP endpoints were
+migrated rather than deleted, split by what they actually guard: three
+that specifically pin API/Pydantic-layer behavior (suppressor fields
+round-tripping through a PUT, GET/POST not wrongly requiring an active
+load, `/status` returning null instead of 404 for a loadless rifle) moved
+to `test_tenant_isolation.py` against the real `/v2` endpoints with a real
+account (that's genuinely what they test); four that pin
+BallisticaCLI's own conversational engine behavior (state persisting
+across calls, "repeat", `awaiting_response`, natural range phrasing) were
+rewritten to call `BallisticaCLI.handle()` directly, dropping the
+HTTP/network dependency entirely -- matching the dominant pattern already
+used by the rest of that file. A new `tests/conftest.py` holds the
+shared real-account sign-in fixtures both files now use, deduplicated
+from what used to be defined only in `test_tenant_isolation.py`.
+
+**Closed a cross-reference ownership gap in RLS.** The existing adversarial
+suite (§7.4) proved User B can't read/write User A's rifle or load
+*directly* -- this pass tested the sneakier variant Rick specifically
+asked about: can B reference one of A's real ids on a *related* record?
+Confirmed live, empirically, against the real project: B could insert a
+`loads` row with their own `user_id` (passing the old policy's check) but
+`rifle_id` pointing at A's real rifle; and B could `PATCH` their own
+rifle's `active_load_id` to point at A's real load. Root cause: the
+`loads_all_own`/`rifles_all_own` RLS policies only ever checked
+`user_id = auth.uid()` on the row being written, never that a related id
+the row references also belongs to that same user. Ballistica's own `/v2`
+endpoints never exposed a path to trigger either case -- no endpoint
+accepts a raw rifle_id/load_id from the client, only names, resolved
+against the caller's own already-scoped in-memory rifles -- so this was
+reachable only by a client that skips the app and calls Supabase's REST
+API directly with their own valid token. Real gap, not exploitable through
+the actual product, per the two-layer-isolation principle in #7.2 (RLS
+should hold even if application code has a bug, or in this case is
+bypassed entirely). Fix: `db/003_close_cross_reference_ownership_gap.sql`
+tightens both policies to also require the referenced row exist and be
+owned by the same user (and, for `active_load_id`, that it actually
+belongs to that specific rifle -- a data-integrity tightening that came
+free with the same fix). Two new adversarial tests in
+`test_tenant_isolation.py` reproduce both attacks and currently fail
+(proving the gap); they'll pass once the migration is applied. **Needs
+Rick to run it in Supabase's SQL Editor** -- same as 001/002, no
+service-role/DDL access from an agent session.
+
+**Added rate limiting.** `slowapi`, per-IP (see `_rate_limit_key` in
+api.py for why IP comes from `X-Forwarded-For` rather than the raw
+connection address -- Render proxies every request, so the raw address
+would be Render's own proxy, not the real caller), in-memory (Render runs
+this as a single instance, no Redis/shared store needed at this scale). A
+blanket default of 100/minute applies to every route via
+`SlowAPIMiddleware`; the three endpoints that proxy a paid, per-call
+third-party API -- `/voice/speak` and `/voice/transcribe` (OpenAI), and
+`/v2/voice/query` (can fall through to a real Claude call via `intent.py`)
+-- get a tighter 20/minute of their own, since those are the actual
+cost-abuse and runaway-client-loop exposure, not the cheap CRUD
+endpoints. Confirmed live against a local server: 20 requests to a
+20/minute-limited route succeeded, the next 5 came back 429. Numbers are
+a starting point, not a measured ceiling -- flagged for Rick to sanity-
+check, especially since a real multi-turn setup/calibration conversation
+can legitimately fire several requests a minute on its own. The full test
+suite shares one `app` object and (through Starlette's TestClient) one
+synthetic IP across every test in a run, which would otherwise trip these
+limits partway through for reasons unrelated to what any given test is
+checking -- `tests/conftest.py` disables the limiter for the duration of
+the test session (autouse fixture) rather than trying to tune limits
+around test traffic; production behavior is unaffected.
+
+**Aggregate-data anonymization: verified, not fixed -- flagged as a
+decision point.** No aggregate-data pipeline exists in the app yet
+(confirmed: nothing anywhere writes to or reads the `events` table from
+§3), so there's no live data-handling risk today. But the *schema as
+designed* -- `events.user_id` stays set, tied to the live account, until
+the account is deleted (§6.2's closed decision: anonymize atomically on
+deletion, not before) -- doesn't match what Rick described wanting in
+this hardening instruction: no traceable link back to the user at all,
+even internally, from the moment data enters the pool. These are two of
+Rick's own decisions from two different points in time that don't agree
+with each other. Per his explicit instruction for this exact situation,
+not resolved unilaterally -- logged as a decision point in
+`RISK_REGISTER.md`'s new "Aggregate Data Anonymization" entry instead.
+Whichever way Rick decides has a real, different consequence for what
+account deletion needs to cover: if the link stays live until deletion,
+the already-designed atomic anonymize-on-delete is the right mechanism;
+if it's anonymized at ingestion instead, there's nothing left to delete
+for that data at all.
+
+**Decided the same day** -- see §6.2's updated note and §12 below:
+anonymize at ingestion. Not left open long.
+
+## 12. Liability waiver acceptance + aggregate-anonymization decision (2026-08-28)
+
+Same day as §11's hardening pass, two more items: an attorney-approved
+liability waiver needed wiring into account creation, and the aggregate-
+data anonymization question §11 flagged got Rick's decision.
+
+**Waiver acceptance flow.** New [ballistica/waiver.py](ballistica/waiver.py)
+holds the canonical waiver text (sourced verbatim from
+`Ballistica_Liability_Waiver_DRAFT.docx`, attorney-approved contingent on
+exactly this acceptance mechanism) as the single source of truth for both
+display and hashing -- `GET /waiver` (public, no auth -- has to be
+readable before an account exists) serves it as structured JSON;
+`index.html` renders it directly rather than keeping a separate copy that
+could drift. A new `#waiverPanel` screen sits between the existing auth
+form and actual account creation: clicking "Create account" no longer
+calls Supabase's signup API directly -- it validates email/password,
+then shows this screen. The full text renders in a scrollable panel, a
+checkbox (unchecked by default, the exact attorney-specified
+acknowledgment text) gates a "Create my account" button that stays
+disabled until checked, and only THEN does the real signup call fire,
+carrying the accepted waiver's version/hash/timestamp along with it.
+
+Acceptance is captured two ways, deliberately redundant:
+1. **Immediately, in the Supabase signup call's own `data` field** --
+   lands in `auth.users.raw_user_meta_data` atomically with account
+   creation, regardless of whether email confirmation is required (no
+   session exists yet in that case, so nothing authenticated could be
+   written anyway). This is the capture that never depends on the user
+   coming back.
+2. **In a new append-only table**, `waiver_acceptances`
+   (`db/004_waiver_acceptance.sql`) -- RLS defines INSERT and SELECT of
+   a user's own row only, deliberately no UPDATE or DELETE policy at
+   all, so once written a row can never be altered or removed through
+   the API by anyone, including the user it belongs to. Written via a
+   new `POST /v2/waiver/accept` the instant a session exists -- right
+   after signup if Supabase returns one immediately, or on the first
+   sign-in afterward if email confirmation was required (staged
+   client-side in `localStorage` in the meantime, mirrored in once a
+   real token is available, and left in place for retry if that mirror
+   write fails for any reason rather than being silently dropped).
+
+Verified live, end to end, against the real Supabase project: full
+waiver text renders correctly (headings, paragraphs, and the bulleted
+list under Section 3, matching the source .docx's structure exactly);
+the accept button is genuinely disabled until the checkbox is checked
+and does nothing if clicked while disabled; signup with email
+confirmation required correctly staged the acceptance in localStorage
+and returned the "check your email" flow; **the confirmation email's own
+JWT was decoded directly and shown to already contain
+`waiver_accepted: true`, the exact version, sha256, and timestamp** --
+proving the metadata capture happens atomically at signup, independent
+of confirmation timing, not just claimed to. The `waiver_acceptances`
+table mirror-write was confirmed to fail gracefully (the table doesn't
+exist in production yet, pending migration) without breaking sign-in --
+the pending localStorage entry correctly stayed in place for retry
+rather than being dropped.
+
+**Aggregate anonymization: decided.** §11 flagged a real conflict
+between Rick's original §6.2 decision (anonymize `events.user_id` at
+account deletion) and what he described wanting when this was revisited
+(no traceable link at all, from ingestion). Rick's follow-up: anonymize
+at ingestion. `db/005_anonymize_events_at_ingestion.sql` drops and
+recreates `events` without a `user_id` column at all -- not nullable-
+then-nulled-later, structurally absent. Safe as a clean drop/recreate
+rather than a careful `ALTER`: confirmed (again) that no application
+code anywhere reads or writes this table yet, and Rick confirmed the
+live table is empty -- no migration or backfill risk. §6.2 above is
+updated in place to reflect this as the current mechanism, with the
+original 2026-08-23 reasoning left visible rather than erased.
+
+**Three migrations now pending, none applied yet** (Rick needs to run
+each in the Supabase SQL Editor -- no service-role/DDL access from an
+agent session, same constraint as every prior migration):
+`db/003_close_cross_reference_ownership_gap.sql` (§11),
+`db/004_waiver_acceptance.sql`, and
+`db/005_anonymize_events_at_ingestion.sql` (both this section).
+
+## 13. In-app audio walkthrough (2026-08-28)
+
+Four narrated sections (Getting Started; Rifle and Equipment Setup;
+Checking a Load and Velocity; Long Range Shooting and Spotting), sourced
+verbatim from `Ballistica_Audio_Walkthrough_Script.docx` into
+[ballistica/walkthrough.py](ballistica/walkthrough.py) (same
+canonical-source-of-truth pattern as `waiver.py`), narrated in the
+Shimmer voice via `scripts/generate_walkthrough_audio.py` -- **pre-
+generated once, not live TTS per playback**: this content is identical
+for every user and never changes on its own, so regenerating it on
+every play would just be a paid API call for the same output every
+time, unlike an actual ballistic solution. The four MP3s live in
+`ballistica/web/audio/`, served statically via a new `/audio` mount,
+and are committed to the repo the same way `ballistica/web/icons/`
+already is (no git-lfs in this project).
+
+**First-login auto-play**: `GET /v2/walkthrough-status` /
+`POST /v2/walkthrough/mark-first-played` track a new
+`profiles.first_walkthrough_played_at` column
+(`db/006_walkthrough_progress.sql`) -- nullable, no row required to
+exist ahead of time (the status endpoint upserts one on first read,
+touching only `user_id` so an existing timestamp is never clobbered).
+The mark-first-played PATCH only matches a row where the column is
+still null, which is what makes it safe against a double-fire (a fast
+refresh, a retry) without needing a distributed lock -- whichever
+request's write lands first wins, the second matches zero rows and
+no-ops. The frontend marks an account as having heard it the instant
+auto-play is triggered, not after playback finishes, so a closed tab or
+a browser-blocked autoplay can't leave the account eligible to
+auto-play again on the next login.
+
+**Menu access**: a permanent "Help / Walkthrough" `<details>` panel
+(matching the existing rifle-picker's collapsible pattern) lists all
+four sections by title, each with a native `<audio controls>` element
+(`preload="none"` -- nothing fetched until actually played) -- standard
+browser play/pause/seek controls, no custom playback UI, no
+conversational/listening behavior at all, matching the one-way
+recorded-narration requirement exactly.
+
+Verified live against a real account: full menu renders with the
+correct four titles and `/audio/*.mp3` paths; a fetched file matches
+its generated byte size exactly and actually plays (confirmed
+`currentTime` advancing during real playback, not just that the
+`<audio>` tag exists); the walkthrough-status/mark-first-played calls
+were confirmed to fail gracefully (500, since `db/006` isn't applied
+yet) without breaking sign-in or the rest of the app -- same pattern as
+every other pending-migration endpoint added this session.

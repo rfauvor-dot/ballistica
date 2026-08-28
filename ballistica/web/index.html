@@ -114,7 +114,7 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError, #authError {
+  #calcError, #rifleError, #loadError, #authError, #waiverError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
@@ -126,6 +126,14 @@
   #authPanel .field { width: 100%; margin-bottom: 10px; }
   #authPanel input { width: 100%; }
   #authPanel button { width: 100%; margin-top: 6px; }
+  #waiverPanel { max-width: 560px; margin: 24px auto; }
+  #waiverPanel button { width: 100%; margin-top: 6px; }
+  #waiverPanel #waiverAcceptBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+  #waiverScroll h3 { font-size: 15px; margin: 14px 0 4px; }
+  #waiverScroll h3:first-child { margin-top: 0; }
+  #waiverScroll p { margin: 6px 0; }
+  #waiverScroll ul { margin: 6px 0; padding-left: 22px; }
+  #waiverScroll li { margin: 4px 0; }
 
   #result { display: none; margin-top: 20px; }
   .result-card { border: 2px solid var(--text); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; }
@@ -165,11 +173,28 @@
     <div id="authError"></div>
   </div>
 
+  <div id="waiverPanel" style="display:none">
+    <h2 id="waiverTitle" style="font-size:18px; margin-bottom:4px;"></h2>
+    <div id="waiverScroll" style="max-height:50vh; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:14px; margin:10px 0; font-size:14px; line-height:1.5;"></div>
+    <label id="waiverCheckLabel" style="display:flex; gap:10px; align-items:flex-start; margin:14px 0; font-size:14px; line-height:1.4; cursor:pointer;">
+      <input type="checkbox" id="waiverCheckbox" style="margin-top:3px; flex-shrink:0;">
+      <span id="waiverAckText"></span>
+    </label>
+    <button id="waiverAcceptBtn" class="primary big" disabled>Create my account</button>
+    <button id="waiverBackBtn" class="big">Back</button>
+    <div id="waiverError"></div>
+  </div>
+
   <div id="appContent" style="display:none">
   <div class="rifle-actions" style="margin-bottom:14px">
     <span id="authEmailLabel" style="flex:1; align-self:center; color:var(--muted); font-size:14px;"></span>
     <button id="signOutBtn">Sign out</button>
   </div>
+
+  <details id="walkthroughMenu" style="margin-bottom:14px">
+    <summary>Help / Walkthrough</summary>
+    <div class="panel-body" id="walkthroughList"></div>
+  </details>
 
   <div class="voice-panel">
     <div class="state-line" id="voiceState">Voice: off</div>
@@ -366,16 +391,77 @@ function sessionFromAuthResponse(data, fallbackEmail) {
   };
 }
 
-async function signUp(email, password) {
-  const data = await supabaseAuthCall('/signup', { email, password });
-  if (!data.access_token) return { needsConfirmation: true };
+// Belt-and-suspenders capture of waiver acceptance (see api.py's
+// /v2/waiver/accept docstring for the full reasoning): `data` on a
+// Supabase signup call lands in auth.users.raw_user_meta_data
+// immediately, regardless of whether email confirmation is required --
+// unlike the structured waiver_acceptances table (db/004), which needs
+// an authenticated session that doesn't exist yet for a confirmation-
+// required signup. This is the capture that never depends on the user
+// coming back; PENDING_WAIVER_KEY below (staged in localStorage, mirrored
+// into the real table on first authenticated session) is the other half.
+async function signUp(email, password, waiverInfo) {
+  const data = await supabaseAuthCall('/signup', {
+    email, password,
+    data: {
+      waiver_accepted: true, waiver_version: waiverInfo.waiver_version,
+      waiver_sha256: waiverInfo.waiver_sha256, waiver_accepted_at: waiverInfo.accepted_at,
+    },
+  });
+  if (!data.access_token) {
+    // No session yet (email confirmation required) -- stage the
+    // acceptance so it still lands in the structured, queryable table
+    // once this account actually gets a session, whenever that is.
+    try { localStorage.setItem(PENDING_WAIVER_KEY, JSON.stringify(waiverInfo)); } catch (e) {}
+    return { needsConfirmation: true };
+  }
   setSession(sessionFromAuthResponse(data, email));
+  await recordWaiverAcceptance(waiverInfo, data.access_token);
   return { needsConfirmation: false };
 }
 
 async function signIn(email, password) {
   const data = await supabaseAuthCall('/token?grant_type=password', { email, password });
   setSession(sessionFromAuthResponse(data, email));
+}
+
+const PENDING_WAIVER_KEY = 'ballistica_pending_waiver_acceptance';
+
+// Writes the append-only, structured acceptance row (db/004) -- called
+// right after signup if a session came back immediately, or on the
+// first sign-in after a confirmation-required signup, whichever comes
+// first. Failure here isn't treated as fatal to signing the user in --
+// the raw_user_meta_data capture from signUp() above already covers
+// the "proof this was accepted" requirement even if this mirror write
+// never lands (e.g. a transient network error) -- but it does mean a
+// real failure here isn't silently pretended-successful either.
+async function recordWaiverAcceptance(waiverInfo, accessToken) {
+  try {
+    const res = await fetch('/v2/waiver/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(waiverInfo),
+    });
+    if (res.ok) {
+      try { localStorage.removeItem(PENDING_WAIVER_KEY); } catch (e) {}
+    }
+  } catch (e) {
+    // Network error -- leave PENDING_WAIVER_KEY in place, retried next
+    // time recordPendingWaiverAcceptanceIfAny() runs (next sign-in/load).
+  }
+}
+
+// Called once a valid session exists (requireAuth() below) -- mirrors a
+// staged confirmation-required signup's waiver acceptance into the real
+// table now that there's finally a token to authenticate the write with.
+async function recordPendingWaiverAcceptanceIfAny(accessToken) {
+  let pending;
+  try {
+    const raw = localStorage.getItem(PENDING_WAIVER_KEY);
+    if (!raw) return;
+    pending = JSON.parse(raw);
+  } catch (e) { return; }
+  await recordWaiverAcceptance(pending, accessToken);
 }
 
 async function refreshSession(session) {
@@ -408,12 +494,14 @@ async function getValidAccessToken() {
 
 function showAuthPanel() {
   document.getElementById('authPanel').style.display = 'block';
+  document.getElementById('waiverPanel').style.display = 'none';
   document.getElementById('appContent').style.display = 'none';
 }
 function showAppContent() {
   const session = getSession();
   document.getElementById('authEmailLabel').textContent = session ? session.email : '';
   document.getElementById('authPanel').style.display = 'none';
+  document.getElementById('waiverPanel').style.display = 'none';
   document.getElementById('appContent').style.display = 'block';
 }
 
@@ -427,6 +515,7 @@ async function requireAuth() {
     showAuthPanel();
     return false;
   }
+  await recordPendingWaiverAcceptanceIfAny(token);
   showAppContent();
   return true;
 }
@@ -1257,31 +1346,167 @@ signInBtn.addEventListener('click', async () => {
   }
 });
 
+// -------------------------------------------------------------- waiver
+// Standalone acceptance step, deliberately not folded into the auth
+// form itself: "Create account" validates the email/password fields
+// and switches to this screen, but the actual signUp() call (and the
+// account it creates) doesn't happen until the box here is checked and
+// this screen's own "Create my account" button is clicked. Kept
+// entirely separate from any general Terms of Service flow -- this app
+// has none today, and even if it did later, this screen/step wouldn't
+// be merged into it, per the waiver's own Section 10 requirement.
+let pendingSignupEmail = null;
+let pendingSignupPassword = null;
+let currentWaiver = null; // {version, sha256} of whatever's currently rendered
+
+const waiverEl = {
+  panel: document.getElementById('waiverPanel'),
+  title: document.getElementById('waiverTitle'),
+  scroll: document.getElementById('waiverScroll'),
+  ackText: document.getElementById('waiverAckText'),
+  checkbox: document.getElementById('waiverCheckbox'),
+  acceptBtn: document.getElementById('waiverAcceptBtn'),
+  backBtn: document.getElementById('waiverBackBtn'),
+  error: document.getElementById('waiverError'),
+};
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function showWaiverPanel() {
+  hide(authOkEl); hide(authErrorEl); hide(waiverEl.error);
+  waiverEl.checkbox.checked = false;
+  waiverEl.acceptBtn.disabled = true;
+  document.getElementById('authPanel').style.display = 'none';
+  waiverEl.panel.style.display = 'block';
+  waiverEl.title.textContent = 'Loading...';
+  waiverEl.scroll.innerHTML = '';
+  waiverEl.ackText.textContent = '';
+  try {
+    const res = await fetch('/waiver');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const w = await res.json();
+    currentWaiver = { waiver_version: w.version, waiver_sha256: w.sha256 };
+    waiverEl.title.textContent = w.title;
+    waiverEl.scroll.innerHTML = w.sections.map((s) => {
+      let html = `<h3>${escapeHtml(s.heading)}</h3>`;
+      html += s.paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('');
+      if (s.bullets.length) {
+        html += `<ul>${s.bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`;
+      }
+      return html;
+    }).join('');
+    waiverEl.ackText.textContent = w.acknowledgment_text;
+  } catch (e) {
+    flash(waiverEl.error, 'Could not load the waiver text -- ' + e.message);
+  }
+}
+
+waiverEl.checkbox.addEventListener('change', () => {
+  waiverEl.acceptBtn.disabled = !waiverEl.checkbox.checked;
+});
+
+waiverEl.backBtn.addEventListener('click', () => {
+  waiverEl.panel.style.display = 'none';
+  document.getElementById('authPanel').style.display = 'block';
+});
+
+waiverEl.acceptBtn.addEventListener('click', async () => {
+  if (!waiverEl.checkbox.checked || !currentWaiver) return;
+  hide(waiverEl.error);
+  waiverEl.acceptBtn.disabled = true;
+  try {
+    const waiverInfo = { ...currentWaiver, accepted_at: new Date().toISOString() };
+    const result = await signUp(pendingSignupEmail, pendingSignupPassword, waiverInfo);
+    if (result.needsConfirmation) {
+      waiverEl.panel.style.display = 'none';
+      document.getElementById('authPanel').style.display = 'block';
+      flash(authOkEl, 'Account created -- check your email to confirm, then sign in.');
+    } else {
+      await init();
+    }
+  } catch (e) {
+    flash(waiverEl.error, e.message);
+    waiverEl.acceptBtn.disabled = false;
+  }
+});
+
 signUpBtn.addEventListener('click', async () => {
   hide(authOkEl); hide(authErrorEl);
   const email = authEmailInput.value.trim();
   const password = authPasswordInput.value;
   if (!email || !password) { flash(authErrorEl, 'Enter both email and password.'); return; }
   if (password.length < 6) { flash(authErrorEl, 'Password must be at least 6 characters.'); return; }
-  signUpBtn.disabled = true;
-  try {
-    const result = await signUp(email, password);
-    if (result.needsConfirmation) {
-      flash(authOkEl, 'Account created -- check your email to confirm, then sign in.');
-    } else {
-      await init();
-    }
-  } catch (e) {
-    flash(authErrorEl, e.message);
-  } finally {
-    signUpBtn.disabled = false;
-  }
+  pendingSignupEmail = email;
+  pendingSignupPassword = password;
+  await showWaiverPanel();
 });
 
 signOutBtn.addEventListener('click', () => {
   clearSession();
   showAuthPanel();
 });
+
+// ---------------------------------------------------------- walkthrough
+// Static pre-generated narration (ballistica/web/audio/, same Shimmer
+// voice as live solutions) -- not live TTS per playback, this content
+// never changes per user. Metadata mirrors ballistica/walkthrough.py;
+// kept as a small hardcoded list here rather than fetched, unlike the
+// waiver's text -- there's no hashing/versioning concern for this, just
+// four fixed (key, title) pairs.
+const WALKTHROUGH_SECTIONS = [
+  { key: 'walkthrough-1-getting-started', title: 'Getting Started' },
+  { key: 'walkthrough-2-rifle-setup', title: 'Rifle and Equipment Setup' },
+  { key: 'walkthrough-3-load-and-velocity', title: 'Checking a Load and Velocity' },
+  { key: 'walkthrough-4-long-range-and-spotting', title: 'Long Range Shooting and Spotting' },
+];
+
+function renderWalkthroughMenu() {
+  const list = document.getElementById('walkthroughList');
+  list.innerHTML = WALKTHROUGH_SECTIONS.map((s) => `
+    <div style="margin-bottom:14px;">
+      <div style="font-weight:600; margin-bottom:4px;">${escapeHtml(s.title)}</div>
+      <audio controls preload="none" style="width:100%;" src="/audio/${s.key}.mp3"></audio>
+    </div>
+  `).join('');
+}
+
+// Fires at most once ever per account -- checked against the server
+// (GET /v2/walkthrough-status), not just localStorage, so it's reliable
+// across devices/browsers and survives a cleared cache. Deliberately
+// marks the account as having heard it the moment playback is kicked
+// off, not after playback finishes -- otherwise closing the tab mid-
+// playback (or a blocked-autoplay browser rejecting .play()) would
+// leave it eligible to fire again on the very next login, which is
+// exactly the double-fire/repeat behavior this isn't supposed to have.
+async function maybeAutoPlayFirstWalkthrough(accessToken) {
+  try {
+    const res = await fetch('/v2/walkthrough-status', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return;
+    const status = await res.json();
+    if (status.first_walkthrough_played_at) return; // already heard it -- never again
+
+    // Fire-and-forget: don't let a slow/failed mark-first-played call
+    // delay showing the app, and don't let it block playback either.
+    fetch('/v2/walkthrough/mark-first-played', {
+      method: 'POST', headers: { Authorization: `Bearer ${accessToken}` },
+    }).catch(() => {});
+
+    const first = WALKTHROUGH_SECTIONS[0];
+    const audio = new Audio(`/audio/${first.key}.mp3`);
+    audio.play().catch(() => {
+      // Autoplay blocked (no direct user gesture in this call chain) --
+      // already marked heard above, so it won't retry on the next
+      // login; the section is still reachable anytime from the menu.
+    });
+  } catch (e) {
+    // Network error -- not fatal to signing in; worst case this
+    // account's first-login walkthrough just doesn't auto-play once.
+  }
+}
 
 // Single entry point for "we have (or just got) a valid session -- go
 // load the app's actual data." Called at page load and again right
@@ -1290,6 +1515,9 @@ signOutBtn.addEventListener('click', () => {
 async function init() {
   const authed = await requireAuth();
   if (!authed) return;
+  renderWalkthroughMenu();
+  const token = await getValidAccessToken();
+  if (token) await maybeAutoPlayFirstWalkthrough(token);
   await loadRifles();
 }
 init();

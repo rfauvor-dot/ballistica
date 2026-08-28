@@ -13,39 +13,88 @@ the forcing function for the risks that don't have a specific incident yet.
 
 ---
 
-## Legal / Liability
+## Legal / Liability -- RESOLVED (2026-08-28)
 
-**Status:** No disclaimer, terms of service, or "verify independently" language
-exists anywhere in the app or repo (verified: grepped the full codebase for
-disclaimer/liability/ToS language, zero matches).
+**Status:** Closed for account creation. Attorney-approved liability
+waiver (`Ballistica_Liability_Waiver_DRAFT.docx`, 11 sections covering
+reference-only data, assumption of risk, release/waiver, indemnification,
+no warranty, and eligibility) is now wired into a standalone acceptance
+screen shown during account creation -- full text displayed (not just
+linked), unchecked-by-default checkbox with the attorney-specified
+acknowledgment text, account creation blocked client-side until checked,
+kept deliberately separate from any general Terms of Service step.
+Acceptance is recorded two ways: immediately in the Supabase signup
+call's own `user_metadata` (captured atomically at signup regardless of
+email-confirmation timing) and, once the account has a real session, in
+an append-only `waiver_acceptances` table (`db/004_waiver_acceptance.sql`
+-- no UPDATE/DELETE policy for anyone, including the row's own owner)
+recording the exact version/hash of the text shown, so a later revision
+to the waiver doesn't retroactively muddy what an earlier user actually
+agreed to. Verified live end-to-end against the real Supabase project,
+including the confirmation-required-signup path (metadata capture
+confirmed by decoding the real confirmation JWT).
 
-**Why it matters:** Ballistica outputs are used for live-fire ballistic
-corrections. A wrong dial direction, a unit mixup (MRAD vs MOA), or a
-misheard voice correction has real physical consequences, not just a bad UX
-moment. Right now there's nothing in the product telling a user this is a
-calculation aid, not a substitute for their own verification.
+**Why it mattered:** Ballistica outputs are used for live-fire ballistic
+corrections and handloading, both inherently dangerous activities. A wrong
+dial direction, a unit mixup, a misheard voice correction, or bad
+community-sourced load data has real physical consequences. This closes
+the account-creation gate; it does not cover in-app reminders during
+actual use (see next step).
 
-**Next step:** Add a lightweight, non-intrusive disclaimer -- e.g. a one-time
-notice on first use, and/or a short spoken caveat the first time voice mode
-is enabled in a session ("solutions are a starting point -- verify before
-you dial them in"). Not a wall of legal text; a real, minimal safety net.
+**Next step, not yet done:** The original "Next step" here (a lightweight
+in-session reminder -- e.g. a spoken caveat the first time voice mode is
+enabled, "solutions are a starting point -- verify before you dial them
+in") is still worth doing and is now smaller in scope, since the
+one-time, load-bearing legal acceptance is handled by the waiver screen --
+this remaining piece is a UX reinforcement, not a liability gap.
 
-**Owning lens:** Chief of Staff to scope with Rick; Build to implement.
+**Owning lens:** Attorney approved the waiver content; Build implemented
+and verified the acceptance flow; Chief of Staff to scope the smaller
+in-session reminder next step with Rick whenever it's prioritized.
 
 ---
 
 ## Security / Multi-Tenancy Foundation
 
-**Status (updated 2026-08-28):** Resolved for the live app. Supabase-backed
-per-user storage (`SupabaseProfileStore`), Postgres RLS as the real
+**Status (updated 2026-08-28, post-review hardening pass):** Resolved for
+the live app, and the dormant single-tenant fallback is gone. Supabase-
+backed per-user storage (`SupabaseProfileStore`), Postgres RLS as the real
 isolation boundary, JWT-auth-gated `/v2/*` endpoints, and a full adversarial
-tenant-isolation test suite (§7.4, 68/68 passing) were built, tested, and
-verified live. The live voice and web UI have now been cut over to this
-path (see [MULTI_TENANCY_DESIGN.md](MULTI_TENANCY_DESIGN.md) §10) -- signed-
-in, per-user, RLS-isolated storage is the active path a real second user
-would get. The original single-tenant `store`/`voice_cli` globals and their
-endpoints remain in `api.py`, deliberately left running and untouched as a
-dormant fallback, not yet removed.
+tenant-isolation test suite were built, tested, and verified live; the live
+voice and web UI were cut over to this path (§10). Following two
+independent external reviews (Grok, ChatGPT) flagging the old unauthenticated
+single-tenant surface as exposed risk rather than a real safety net now
+that the cutover was confirmed stable, it was removed outright (not just
+disabled) -- the shared `store`/`voice_cli` globals and every unauthenticated
+endpoint (`/rifles`, `/status`, `/voice/query`, `/calc/drop-table`,
+`/calc/mpbr-zero`, `/calc/angle`) are gone from `api.py`. `/v2/*` is now the
+app's only data surface; the standalone single-tenant CLI (`python -m
+ballistica.cli`) is untouched. Full test suite green after the removal
+(68 passed) with the affected tests migrated to exercise either the `/v2`
+API directly (real account, live network) or `BallisticaCLI` directly
+(no HTTP dependency at all) depending on which layer they actually guard.
+
+Same review pass also found and closed a real cross-reference ownership
+gap: RLS on `loads`/`rifles` checked `user_id` on the row itself but never
+verified a *related* id the row references (`loads.rifle_id`,
+`rifles.active_load_id`) actually belongs to that same user -- confirmed
+live against the real project (a legitimately-authenticated user could
+insert a load referencing another user's real rifle_id, or point their own
+rifle's active_load_id at another user's real load). Ballistica's own `/v2`
+endpoints never exposed a path to do this (no raw id is ever accepted from
+a client, only names), so this was reachable only by a client that skips
+the app and talks to Supabase's REST API directly with their own valid
+token -- real, but not exploitable through the actual product. Fix is
+written (`db/003_close_cross_reference_ownership_gap.sql`) with two
+adversarial tests that currently fail (proving the gap) and will pass once
+applied -- **needs Rick to run it in the Supabase SQL Editor** (same as
+migrations 001/002; no service-role/DDL access from this session).
+
+Rate limiting also added (per-IP, `slowapi`, 100/minute default, 20/minute
+on the three endpoints that proxy paid third-party APIs -- `/voice/speak`,
+`/voice/transcribe`, `/v2/voice/query`) -- see this session's report for
+the exact reasoning and a flagged caveat about trusting Render's
+`X-Forwarded-For` header for the client IP.
 
 **Why it mattered:** This was fine while there was exactly one user (Rick).
 It stops being fine the moment there's a second real user, and retrofitting
@@ -54,16 +103,59 @@ expensive than designing for it up front -- especially since the stated
 future goal (aggregate anonymized cross-user shooting data) requires
 knowing which data came from which user in the first place.
 
-**Remaining before this is fully closed out:** (1) Rick creating his real
-account through the new login flow and confirming it works for him live --
-his decision, not something to do unilaterally; (2) a decision on migrating
-Rick's existing single-tenant data into his new account; (3) eventually
-retiring the dormant single-tenant path once the new one is confirmed
-solid, rather than carrying both indefinitely.
+**Remaining before this is fully closed out:** (1) run `db/003_...sql`,
+`db/004_waiver_acceptance.sql`, `db/005_anonymize_events_at_ingestion.sql`,
+and `db/006_walkthrough_progress.sql` in Supabase's SQL Editor (four
+pending migrations as of 2026-08-28, none applied yet -- concrete,
+mechanical, not a judgment call for any of them); (2) Rick creating his
+real account through the login flow --
+which now includes accepting the liability waiver, see the **Legal /
+Liability** entry above -- and confirming it works for him live; (3) a
+decision on migrating Rick's existing single-tenant data into his new
+account.
 
 **Owning lens:** Build scoped and shipped the technical approach; Chief of
-Staff to track the account-creation/migration decision with Rick; Finance/
-Marketing already confirmed this doesn't block the aggregate-data roadmap.
+Staff to track the account-creation/migration decision and the pending
+Supabase migration with Rick; Finance/Marketing already confirmed this
+doesn't block the aggregate-data roadmap.
+
+---
+
+## Aggregate Data Anonymization -- RESOLVED (2026-08-28)
+
+**Status:** Closed. Flagged as a decision point on 2026-08-28 (this
+entry originally read "decision needed, not yet resolved" -- see git
+history for that version if useful); Rick's follow-up instruction the
+same day made the call: **anonymize at ingestion**, not at account
+deletion. Built to that spec immediately after the decision, since no
+aggregate pipeline exists in production yet and the `events` table was
+confirmed empty -- no migration/backfill risk, nothing to get wrong by
+moving fast on it.
+
+**What changed:** `events.user_id` is gone from the schema entirely
+(`db/005_anonymize_events_at_ingestion.sql` drops and recreates the
+table without that column, superseding the original nullable-then-
+nulled-on-delete design from `db/001`/§6.2 of MULTI_TENANCY_DESIGN.md).
+A contribution carries no user identifier at any point in its life --
+not a link that gets severed later, an link that's never established.
+Practical consequence Rick called out explicitly: if a user later
+deletes their account, there is nothing further to do for their past
+aggregate contributions, because those contributions were never tied to
+them internally in the first place. Account deletion still needs to
+remove personal/individual records (rifles, loads, conversation_state,
+profile) exactly as before -- this only ever concerned the shared pool.
+
+**Confirmed in writing, per Rick's explicit ask:** aggregate
+contributions cannot be traced back to a specific user by any internal
+process, including by Rick or DT with full database access -- the
+`events` table has no column, in this schema, that could be joined back
+to `auth.users` or any other per-user table. (The one thing this schema
+change cannot itself guarantee: a future contribution endpoint must
+still avoid putting identifying data *inside* `payload` -- carried
+forward as an explicit requirement in db/005's own comments, same as
+the original design already called out.)
+
+**Owning lens:** Rick decided; Build implemented and verified same-day.
 
 ---
 

@@ -9,3 +9,4 @@ certifi
 httpx2
 python-multipart
 PyJWT[crypto]
+slowapi

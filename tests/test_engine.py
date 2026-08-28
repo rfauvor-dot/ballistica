@@ -258,270 +258,109 @@ def test_rifle_supports_zero_or_multiple_loads_and_suppressor_tracking(tmp_path)
     assert final.suppressor_type == "custom build, ATF Form 1"
 
 
-def test_api_persists_suppressor_fields_on_the_rifle(tmp_path):
-    """Addendum 36: suppressor tracking round-trips through the REST API
-    (create, then PUT to edit) same as any other rifle field, as a
-    plain open-text field rather than a constrained brand enum."""
-    from pathlib import Path
+def test_voice_query_conversation_state_and_error_handling(tmp_path):
+    """BallisticaCLI.handle() deliberately keeps conversation state
+    across calls (switching load, setting conditions) unlike the
+    stateless /v2/calc/* endpoints -- pins that continuity, plus that
+    "quit" and a nonsense utterance both come back as spoken-safe text
+    instead of ever raising, and that the "set conditions" reply
+    doesn't leak a raw Python object repr into what's meant to be read
+    aloud by TTS (regression: it used to). Exercises the CLI directly
+    (not through HTTP) -- this is engine/conversation-state behavior,
+    not an API-layer concern, so it doesn't need a live server or
+    network access to verify (previously went through the old single-
+    tenant /voice/query endpoint, removed 2026-08-28's security
+    hardening pass; the underlying handle() logic this covers is
+    identical either way)."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
-    import ballistica.api as api_module
-    from fastapi.testclient import TestClient
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
 
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
+    reply = cli.handle("switch to 21.0gr")
+    assert "21.0gr" in reply
 
-    client = TestClient(api_module.app)
+    baseline = cli.handle("what's my drop at 500 yards")
 
-    r = client.post("/rifles", json={
-        "name": "Suppressed 45", "scope_height_in": 2.0, "click_value_mrad": 0.1,
-        "has_suppressor": True, "suppressor_type": "unclear -- inherited, no markings", "loads": [],
-    })
-    assert r.status_code == 200
-    body = r.json()
-    assert body["has_suppressor"] is True
-    assert body["suppressor_type"] == "unclear -- inherited, no markings"
-
-    r = client.get("/rifles/Suppressed 45")
-    assert r.json()["has_suppressor"] is True
-
-    r = client.put("/rifles/Suppressed 45", json={
-        "scope_height_in": 2.0, "click_value_mrad": 0.1, "has_suppressor": False, "suppressor_type": "",
-    })
-    assert r.status_code == 200
-    assert r.json()["has_suppressor"] is False
-
-
-def test_get_and_add_load_work_on_a_rifle_with_no_loads_yet():
-    """Regression: GET /rifles/{name} and POST /rifles/{name}/loads both
-    used to route through _resolve(), which defaults a missing load_query
-    to get_active_load() -- raising ValueError for any rifle with zero
-    loads. That 404'd GET on a freshly created rifle and, worse, made it
-    impossible to POST a rifle's first load via the API at all, since
-    that endpoint also went through _resolve() before ever creating the
-    load. Neither endpoint touches a load; only the rifle needs to
-    resolve."""
-    from pathlib import Path
-
-    import ballistica.api as api_module
-    from fastapi.testclient import TestClient
-
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-
-    client = TestClient(api_module.app)
-
-    r = client.post("/rifles", json={
-        "name": "Loadless Rifle", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
-    })
-    assert r.status_code == 200
-
-    r = client.get("/rifles/Loadless Rifle")
-    assert r.status_code == 200
-    assert r.json()["loads"] == []
-
-    r = client.post("/rifles/Loadless Rifle/loads", json={
-        "name": "First Load", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
-        "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
-    })
-    assert r.status_code == 200
-    assert r.json()["name"] == "First Load"
-
-    r = client.get("/rifles/Loadless Rifle")
-    assert r.status_code == 200
-    assert [load["name"] for load in r.json()["loads"]] == ["First Load"]
-
-    r = client.get("/rifles/No Such Rifle")
-    assert r.status_code == 404
-
-    r = client.post("/rifles/No Such Rifle/loads", json={
-        "name": "X", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
-        "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
-    })
-    assert r.status_code == 404
-
-
-def test_status_reports_null_active_load_for_rifle_with_no_loads():
-    """Regression: GET /status required both an active rifle AND an
-    active load, 404ing whenever the active rifle had zero loads. That's
-    a normal state (e.g. a rifle profile set up by voice before its
-    first load exists) -- the web UI's post-setup refresh hit this 404
-    and silently failed to show the newly created rifle at all."""
-    from pathlib import Path
-
-    import ballistica.api as api_module
-    from fastapi.testclient import TestClient
-
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-
-    client = TestClient(api_module.app)
-
-    r = client.post("/rifles", json={
-        "name": "Statusless Rifle", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
-    })
-    assert r.status_code == 200
-
-    r = client.get("/status")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["rifle"]["name"] == "Statusless Rifle"
-    assert body["active_load"] is None
-
-    r = client.post("/rifles/Statusless Rifle/loads", json={
-        "name": "L1", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
-        "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
-    })
-    assert r.status_code == 200
-
-    r = client.get("/status")
-    assert r.status_code == 200
-    assert r.json()["active_load"]["name"] == "L1"
-
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-    r = client.get("/status")
-    assert r.status_code == 404
-
-
-def test_voice_query_conversation_state_and_error_handling():
-    """/voice/query is the seam a future STT->this->TTS loop calls. It
-    deliberately keeps conversation state across calls (switching load,
-    setting conditions) unlike the stateless /calc/* endpoints -- pins
-    that continuity, plus that "quit" and a nonsense utterance both
-    come back as spoken-safe text instead of ever 500ing, and that the
-    "set conditions" reply doesn't leak a raw Python object repr into
-    what's meant to be read aloud by TTS (regression: it used to)."""
-    from pathlib import Path
-
-    import ballistica.api as api_module
-    from ballistica.cli import bootstrap_default_profile
-    from ballistica.trajectory import WindCondition
-    from fastapi.testclient import TestClient
-
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-    bootstrap_default_profile(api_module.store)
-    api_module.voice_cli.atmosphere = STANDARD_ATMOSPHERE
-    api_module.voice_cli.wind = WindCondition()
-
-    client = TestClient(api_module.app)
-
-    r = client.post("/voice/query", json={"text": "switch to 21.0gr"})
-    assert r.status_code == 200
-    assert "21.0gr" in r.json()["reply"]
-
-    baseline = client.post("/voice/query", json={"text": "what's my drop at 500 yards"}).json()["reply"]
-
-    r = client.post("/voice/query", json={
-        "text": "set conditions temp 90 pressure 26.5 altitude 3500 humidity 40",
-    })
-    reply = r.json()["reply"]
+    reply = cli.handle("set conditions temp 90 pressure 26.5 altitude 3500 humidity 40")
     assert "AtmosphereConditions" not in reply
     assert "90 degrees" in reply
 
-    after = client.post("/voice/query", json={"text": "what's my drop at 500 yards"}).json()["reply"]
+    after = cli.handle("what's my drop at 500 yards")
     assert after != baseline
 
-    r = client.post("/voice/query", json={"text": "quit"})
-    assert r.status_code == 200
-    assert "session" in r.json()["reply"].lower()
+    with pytest.raises(SystemExit):
+        cli.handle("quit")
 
-    r = client.post("/voice/query", json={"text": "gibberish nonsense query"})
-    assert r.status_code == 200
+    reply = cli.handle("gibberish nonsense query")
+    assert isinstance(reply, str)
 
 
-def test_repeat_solution_reuses_last_drop_without_recalculating():
+def test_repeat_solution_reuses_last_drop_without_recalculating(tmp_path):
     """"repeat windage/elevation/solution" should re-speak the last
     drop-at-range answer from memory, not recompute it -- so it still
     reflects what was actually last spoken even if conditions changed
     in between. Also pins the no-solution-yet case (fresh session,
     asked to repeat before ever getting a solution) doesn't crash."""
-    from pathlib import Path
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
-    import ballistica.api as api_module
-    from ballistica.cli import bootstrap_default_profile
-    from ballistica.trajectory import WindCondition
-    from fastapi.testclient import TestClient
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
 
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-    bootstrap_default_profile(api_module.store)
-    api_module.voice_cli.atmosphere = STANDARD_ATMOSPHERE
-    api_module.voice_cli.wind = WindCondition()
-    api_module.voice_cli._last_solution = None
+    reply = cli.handle("repeat solution")
+    assert "no solution" in reply.lower()
 
-    client = TestClient(api_module.app)
-
-    r = client.post("/voice/query", json={"text": "repeat solution"})
-    assert "no solution" in r.json()["reply"].lower()
-
-    baseline = client.post("/voice/query", json={"text": "drop at 400 yards"}).json()["reply"]
+    baseline = cli.handle("drop at 400 yards")
 
     # Conditions change after the solution was spoken -- repeat should
     # still hand back the original answer, not a freshly recalculated one.
-    client.post("/voice/query", json={"text": "set conditions temp 100 pressure 26.0 altitude 5000 humidity 10"})
+    cli.handle("set conditions temp 100 pressure 26.0 altitude 5000 humidity 10")
 
-    full = client.post("/voice/query", json={"text": "repeat solution"}).json()["reply"]
+    full = cli.handle("repeat solution")
     assert full == baseline
 
-    elevation = client.post("/voice/query", json={"text": "repeat elevation"}).json()["reply"]
+    elevation = cli.handle("repeat elevation")
     assert elevation in baseline
     assert "Windage" not in elevation
 
-    windage = client.post("/voice/query", json={"text": "repeat the windage"}).json()["reply"]
+    windage = cli.handle("repeat the windage")
     assert windage in baseline
     assert "Elevation" not in windage
 
 
-def test_voice_query_signals_awaiting_response_during_conversation():
+def test_voice_query_signals_awaiting_response_during_conversation(tmp_path):
     """Regression: the voice frontend used to always drop back to
     wake-word-only listening after one question/answer exchange, which
     silently ate every field after the first during guided setup (Rick
     would answer the first question, get silence, and only "waking" her
     back up mid-setup would resume it -- but from the frontend's
     perspective every answer given without saying "Ballistica" again
-    was never even sent). /voice/query now tells the frontend whether
-    to keep listening without the wake word: true while a guided setup
-    is genuinely mid-conversation, false once it's done, cancelled, or
-    for an ordinary one-shot command."""
-    from pathlib import Path
+    was never even sent). The API tells the frontend whether to keep
+    listening without the wake word by checking exactly this: true
+    while a guided setup is genuinely mid-conversation, false once it's
+    done, cancelled, or for an ordinary one-shot command -- checked here
+    directly against the CLI's own session state (api.py's
+    `awaiting_response` field is a one-line derivation of this same
+    state, see v2_voice_query in api.py)."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
-    import ballistica.api as api_module
-    from ballistica.cli import bootstrap_default_profile
-    from fastapi.testclient import TestClient
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
 
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-    bootstrap_default_profile(api_module.store)
+    def awaiting_response() -> bool:
+        return cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
 
-    client = TestClient(api_module.app)
+    cli.handle("what's my drop at 400 yards")
+    assert awaiting_response() is False
 
-    r = client.post("/voice/query", json={"text": "what's my drop at 400 yards"})
-    assert r.json()["awaiting_response"] is False
+    cli.handle("let's set up a new load")
+    assert awaiting_response() is True
 
-    r = client.post("/voice/query", json={"text": "let's set up a new load"})
-    assert r.json()["awaiting_response"] is True
-
-    r = client.post("/voice/query", json={"text": "never mind, cancel"})
-    assert r.json()["awaiting_response"] is False
+    cli.handle("never mind, cancel")
+    assert awaiting_response() is False
 
 
 def test_update_rifle_fields_command_edits_the_active_rifle(tmp_path):
@@ -1049,47 +888,33 @@ def test_setup_cancel_discards_draft_without_saving(monkeypatch, tmp_path):
     assert "should not save" not in store.get_active_rifle().loads
 
 
-def test_voice_query_understands_natural_range_phrasing():
+def test_voice_query_understands_natural_range_phrasing(tmp_path):
     """Regression: the parser used to only recognize the literal phrase
     "drop at X yards" -- real speech doesn't come out that precisely.
     Caught live: "set range for 400 yard and give solution" (Rick's
     actual wake-word command) returned "Didn't understand that" even
     though a working drop-at-range command exists for that same load."""
-    from pathlib import Path
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
-    import ballistica.api as api_module
-    from ballistica.cli import bootstrap_default_profile
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
 
-    profiles_path = Path(__file__).resolve().parent.parent / "data" / "profiles.json"
-    if profiles_path.exists():
-        profiles_path.unlink()
-    api_module.store.rifles.clear()
-    api_module.store.active_rifle_name = None
-    bootstrap_default_profile(api_module.store)
-
-    from fastapi.testclient import TestClient
-    client = TestClient(api_module.app)
-
-    baseline = client.post("/voice/query", json={"text": "what's my drop at 400 yards"}).json()["reply"]
+    baseline = cli.handle("what's my drop at 400 yards")
 
     for phrasing in [
         "set range for 400 yard and give solution",
         "set raNGE FOR 400 YRD AND GIVE SOLUTION",
         "give me a solution for 400 yards",
     ]:
-        r = client.post("/voice/query", json={"text": phrasing})
-        assert r.status_code == 200
-        assert r.json()["reply"] == baseline, f"{phrasing!r} didn't match the drop-at-range reply"
+        reply = cli.handle(phrasing)
+        assert reply == baseline, f"{phrasing!r} didn't match the drop-at-range reply"
 
     # Still must not hijack the other command types, which all also
     # mention "yards" -- these have to keep routing to their own handlers.
-    assert "21.0gr" in client.post("/voice/query", json={"text": "switch to 21.0gr"}).json()["reply"]
-    assert "yard zero" in client.post(
-        "/voice/query", json={"text": "what zero minimizes my spread out to 500 yards"},
-    ).json()["reply"]
-    assert "Angle confirmed" in client.post(
-        "/voice/query", json={"text": "I'm seeing 12 clicks at 400 yards"},
-    ).json()["reply"]
+    assert "21.0gr" in cli.handle("switch to 21.0gr")
+    assert "yard zero" in cli.handle("what zero minimizes my spread out to 500 yards")
+    assert "Angle confirmed" in cli.handle("I'm seeing 12 clicks at 400 yards")
 
 
 def test_voice_speak_rejects_empty_text():
