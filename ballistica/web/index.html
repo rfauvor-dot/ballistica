@@ -405,6 +405,26 @@ function sessionFromAuthResponse(data, fallbackEmail) {
 // required signup. This is the capture that never depends on the user
 // coming back; PENDING_WAIVER_KEY below (staged in localStorage, mirrored
 // into the real table on first authenticated session) is the other half.
+const KNOWN_ACCOUNT_KEY = 'ballistica_known_account_email';
+
+// Remembers that THIS browser has gone through account creation or a
+// successful sign-in before -- confirmed live (Rick, 2026-08-29): two
+// different people hit the same confusion returning to the site later
+// and landing on "Create account" by default, re-attempting signup on
+// an email they already had an account for (which just silently no-ops
+// per Supabase's own anti-enumeration behavior -- see signUp() below --
+// so nothing visibly happens and it reads as broken). This is a plain
+// per-browser memory, not a real "is this email registered" check --
+// Supabase deliberately never answers that question -- but it's enough
+// to fix the actual repeated confusion: default back to Sign In instead
+// of Create account for anyone this browser has seen before.
+function rememberKnownAccount(email) {
+  try { localStorage.setItem(KNOWN_ACCOUNT_KEY, email); } catch (e) {}
+}
+function getKnownAccountEmail() {
+  try { return localStorage.getItem(KNOWN_ACCOUNT_KEY); } catch (e) { return null; }
+}
+
 async function signUp(email, password, waiverInfo) {
   const data = await supabaseAuthCall('/signup', {
     email, password,
@@ -413,6 +433,7 @@ async function signUp(email, password, waiverInfo) {
       waiver_sha256: waiverInfo.waiver_sha256, waiver_accepted_at: waiverInfo.accepted_at,
     },
   });
+  rememberKnownAccount(email);
   if (!data.access_token) {
     // No session yet (email confirmation required) -- stage the
     // acceptance so it still lands in the structured, queryable table
@@ -428,6 +449,7 @@ async function signUp(email, password, waiverInfo) {
 async function signIn(email, password) {
   const data = await supabaseAuthCall('/token?grant_type=password', { email, password });
   setSession(sessionFromAuthResponse(data, email));
+  rememberKnownAccount(email);
 }
 
 const PENDING_WAIVER_KEY = 'ballistica_pending_waiver_acceptance';
@@ -501,7 +523,18 @@ function showAuthPanel() {
   document.getElementById('authPanel').style.display = 'block';
   document.getElementById('waiverPanel').style.display = 'none';
   document.getElementById('appContent').style.display = 'none';
-  setAuthMode('signup');
+  // Default to whichever screen actually fits: someone this browser
+  // has seen sign up or sign in before almost certainly already has an
+  // account, so Sign In (with their email already filled in) is the
+  // right default -- Create Account is only the right default for a
+  // browser that's never touched Ballistica before.
+  const knownEmail = getKnownAccountEmail();
+  if (knownEmail) {
+    document.getElementById('authEmail').value = knownEmail;
+    setAuthMode('signin');
+  } else {
+    setAuthMode('signup');
+  }
 }
 function showAppContent() {
   const session = getSession();
@@ -1500,18 +1533,19 @@ waiverEl.acceptBtn.addEventListener('click', async () => {
       waiverEl.panel.style.display = 'none';
       document.getElementById('authPanel').style.display = 'block';
       setAuthMode('signin');
-      // Deliberately doesn't say "an email was just sent" -- Supabase's
-      // signup response is identical whether this is a genuinely new
-      // address or one that already has an account (a deliberate anti-
-      // enumeration measure on their end: revealing "that email's
-      // already registered" would itself be a real privacy leak, so
-      // there's no reliable signal here to tell the two cases apart).
-      // Confirmed live (Rick, 2026-08-28): re-submitting an already-
-      // registered, already-confirmed email silently no-ops -- no new
-      // mail actually goes out -- so a message asserting one was just
-      // sent would be false in that case. This wording stays true
-      // either way instead of guessing which case just happened.
-      flash(authOkEl, "If that's a new email, check it for a verification link to finish setup. Already have an account? Just sign in below.");
+      // Confirmed live (Rick, 2026-08-29): the previous, hedged wording
+      // here ("if that's a new email...") read as uncertain rather than
+      // a clear confirmation -- people assumed signup had silently
+      // failed and retried it. Made affirmative instead: this IS the
+      // real outcome for the overwhelming majority of people who reach
+      // this message (a genuinely new signup). The rarer already-
+      // registered case -- Supabase's signup response is identical
+      // either way, a deliberate anti-enumeration measure on their end
+      // this code can't see behind -- is now caught earlier anyway:
+      // showAuthPanel() defaults a browser it's seen before straight to
+      // Sign In (see getKnownAccountEmail()), so far fewer people reach
+      // this exact screen on an email that already has an account.
+      flash(authOkEl, "You're set -- check your email for a verification link, then come back and sign in.");
     } else {
       await init();
     }
