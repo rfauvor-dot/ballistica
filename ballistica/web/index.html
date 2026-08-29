@@ -167,10 +167,13 @@
       <label for="authPassword">Password</label>
       <input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 6 characters">
     </div>
-    <button id="signInBtn" class="primary big">Sign in</button>
-    <button id="signUpBtn" class="big">Create account</button>
+    <button id="signUpBtn" class="primary big">Create account</button>
+    <button id="signInBtn" class="primary big" style="display:none">Sign in</button>
     <div id="authOk"></div>
     <div id="authError"></div>
+    <div id="authModeToggle" style="text-align:center; margin-top:10px; font-size:14px;">
+      <a href="#" id="authModeToggleLink" style="color:var(--muted); text-decoration:underline;">Already have an account? Sign in</a>
+    </div>
   </div>
 
   <div id="waiverPanel" style="display:none">
@@ -496,6 +499,7 @@ function showAuthPanel() {
   document.getElementById('authPanel').style.display = 'block';
   document.getElementById('waiverPanel').style.display = 'none';
   document.getElementById('appContent').style.display = 'none';
+  setAuthMode('signup');
 }
 function showAppContent() {
   const session = getSession();
@@ -1329,6 +1333,34 @@ const authErrorEl = document.getElementById('authError');
 const signInBtn = document.getElementById('signInBtn');
 const signUpBtn = document.getElementById('signUpBtn');
 const signOutBtn = document.getElementById('signOutBtn');
+const authModeToggleLink = document.getElementById('authModeToggleLink');
+
+// Two competing full-width buttons (Sign in styled primary, Create
+// account styled secondary) read as an ambiguous choice, especially
+// confusing for the far more common first-time case -- confirmed
+// confusing live (Rick, 2026-08-28). Create account is now the one
+// obvious primary action; sign-in is still fully available (removing
+// it outright would strand anyone who clears storage or switches
+// devices), just behind a small, clearly secondary toggle link rather
+// than a second competing button.
+let authMode = 'signup';
+function setAuthMode(mode) {
+  authMode = mode;
+  hide(authOkEl); hide(authErrorEl);
+  if (mode === 'signin') {
+    signUpBtn.style.display = 'none';
+    signInBtn.style.display = '';
+    authModeToggleLink.textContent = 'New here? Create an account instead';
+  } else {
+    signInBtn.style.display = 'none';
+    signUpBtn.style.display = '';
+    authModeToggleLink.textContent = 'Already have an account? Sign in';
+  }
+}
+authModeToggleLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  setAuthMode(authMode === 'signup' ? 'signin' : 'signup');
+});
 
 signInBtn.addEventListener('click', async () => {
   hide(authOkEl); hide(authErrorEl);
@@ -1422,7 +1454,8 @@ waiverEl.acceptBtn.addEventListener('click', async () => {
     if (result.needsConfirmation) {
       waiverEl.panel.style.display = 'none';
       document.getElementById('authPanel').style.display = 'block';
-      flash(authOkEl, 'Account created -- check your email to confirm, then sign in.');
+      setAuthMode('signin');
+      flash(authOkEl, 'Account created -- check your email for a verification link, then sign in.');
     } else {
       await init();
     }
