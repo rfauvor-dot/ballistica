@@ -128,7 +128,23 @@ def web_ui():
     html = _WEB_INDEX.read_text(encoding="utf-8")
     html = html.replace("__SUPABASE_URL__", os.environ.get("SUPABASE_URL", ""))
     html = html.replace("__SUPABASE_ANON_KEY__", os.environ.get("SUPABASE_ANON_KEY", ""))
-    return html
+    # Root-caused live (2026-08-28): this response had no cache-control
+    # headers at all, so a browser's own caching heuristics -- or,
+    # worse, back-forward-cache serving a fully-instantiated stale page
+    # with no network request whatsoever -- could keep running whatever
+    # JS was loaded before a deploy indefinitely, even after a hard
+    # reload in some cases. Confirmed as the cause of a real report: a
+    # signup that appeared to skip the waiver screen entirely and go
+    # straight to a Supabase auth error, which only happens on JS from
+    # before the waiver flow existed. This page is dynamically
+    # generated per request (live config injection) and drives a legal-
+    # acceptance flow -- it must never be served stale, so every
+    # response explicitly forbids caching rather than relying on
+    # whatever a given browser's default heuristics decide to do.
+    return HTMLResponse(
+        content=html,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/manifest.json", include_in_schema=False)
