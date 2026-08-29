@@ -1094,3 +1094,51 @@ the full browser click-through (geolocation stubbed to simulate a real
 GPS fix, since no real hardware is available here) -- confirmed every
 field pre-fills correctly and the Clock field is left untouched at its
 prior value.
+
+## 15. Self-service account deletion (2026-08-29)
+
+Closes a gap flagged back in §6.2 and carried in RISK_REGISTER.md ever
+since: the schema was always designed for account deletion (every per-
+user table CASCADEs on `auth.users` delete), but nothing let a user
+actually trigger one. Confirmed live need: Rick had no way to reset his
+own test account and retry the signup flow -- a real user would have
+the identical problem.
+
+**This is the first time this codebase uses the Supabase service_role
+key**, and deliberately the only place it's used. Every other endpoint
+in `api.py` runs on the caller's own access token -- RLS is the real
+isolation boundary, per `supabase_store.py`'s whole design. Deleting the
+actual login (the `auth.users` row) is an admin-only operation in
+Supabase's API; there's no way to do it with a user's own token. The
+new `DELETE /v2/account` (`api.py`) verifies the caller's own token
+first, exactly like every other endpoint, and only ever acts on the
+user_id that verification produced -- there is no code path that
+accepts an id from the client, which is the one thing standing between
+"delete your own account" and "delete anyone's account."
+
+**Why this is safe to be this simple:** every per-user table's foreign
+key to `auth.users` is already `ON DELETE CASCADE` (rifles, loads,
+conversation_state, profiles, waiver_acceptances -- confirmed against
+the actual schema, not assumed). A single admin-level delete of the
+auth user atomically removes all of it in one Postgres transaction,
+exactly matching this section's own original design intent -- no
+manual per-table cleanup needed or attempted. `events` has no user_id
+column at all anymore (§14/db/005) -- nothing there to touch either way.
+
+**Depends on `SUPABASE_SERVICE_ROLE_KEY` being set** -- not configured
+yet as of this writing, in either `.env` or Render. The endpoint fails
+closed with a clear 503 ("Account deletion isn't configured yet on this
+server") rather than crashing or silently doing nothing if it's
+missing -- confirmed live, the account was untouched when tested
+without the key configured. Get the key from the Supabase dashboard
+(Settings → API → service_role secret, NOT the anon key) and add it to
+both places before this can actually delete anything.
+
+Frontend: a new "Account" panel (matching the Help/Walkthrough
+collapsible pattern) with a single "Delete my account" button, styled
+as a clear danger action, gated by one strongly-worded native
+`confirm()` -- consistent with how rifle deletion already confirms
+elsewhere in the app, not a heavier multi-step flow. On success, clears
+the session AND the "known account" memory from the signup-UX fix
+earlier the same day (§ above) -- leaving that in place would
+incorrectly default a deleted account's browser straight to Sign In.

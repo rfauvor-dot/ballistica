@@ -58,6 +58,14 @@ from .weather import fetch_nearest_station_conditions
 
 _SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 _SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+# Only ever used by v2_delete_account below, for exactly one narrow
+# purpose: actually removing a user's own login (auth.users row) once
+# their own token has already been independently verified. Every other
+# endpoint in this file uses the caller's own access token, never this
+# key -- see supabase_store.py's docstring for why that's the real
+# isolation boundary. This is the one deliberate, narrow exception,
+# not a precedent for using it more broadly.
+_SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 app = FastAPI(title="Ballistica API", version="0.1.0")
 app.add_middleware(
@@ -595,6 +603,54 @@ def v2_mark_walkthrough_first_played(auth: tuple[str, str] = Depends(_verify_bea
     )
     resp.raise_for_status()
     return {"marked": True}
+
+
+@app.delete("/v2/account")
+@limiter.limit("5/minute")
+def v2_delete_account(request: Request, auth: tuple[str, str] = Depends(_verify_bearer)):
+    """Self-service, permanent account deletion -- confirmed live (Rick,
+    2026-08-29): needed for his own testing (no way to reset a test
+    account and retry signup), and a real gap for any real user too.
+
+    The user_id being deleted is ALWAYS the one this endpoint's own auth
+    dependency just verified from the caller's own token -- never a
+    value read from the request body or query string. That's the one
+    thing standing between "a user can delete their own account" and "a
+    user can delete anyone's account"; there is deliberately no code
+    path here that accepts an id from the client at all.
+
+    Deleting the auth.users row (the login itself) requires Supabase's
+    admin API, which requires the service_role key -- the one place in
+    this codebase that key is used, for exactly this one operation.
+    Everywhere else (every other endpoint in this file) uses the
+    caller's own access token, per supabase_store.py's whole design.
+    Deliberately NOT manually deleting rifles/loads/conversation_state/
+    profile/waiver_acceptances first -- every one of those tables' FK to
+    auth.users is ON DELETE CASCADE (waiver_acceptances aside, which is
+    also CASCADE -- see db/004's own comment on that specific choice),
+    so a single admin-level delete of the auth user atomically removes
+    all of it in one transaction, exactly matching
+    MULTI_TENANCY_DESIGN.md #6.2's original design intent. `events` has
+    no user_id column at all anymore (db/005) -- nothing there to touch
+    either way."""
+    if not _SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Account deletion isn't configured yet on this server "
+                   "(SUPABASE_SERVICE_ROLE_KEY is not set).",
+        )
+    user_id, _ = auth
+    resp = httpx.delete(
+        f"{_SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+        headers={
+            "apikey": _SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {_SUPABASE_SERVICE_ROLE_KEY}",
+        },
+        timeout=15,
+    )
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=502, detail=f"Account deletion failed: {resp.text}")
+    return {"deleted": True}
 
 
 @app.get("/v2/rifles", response_model=list[RifleSummary])

@@ -245,6 +245,12 @@ for the range. As of this cutover, it requires signing in first.
   (Getting Started) also auto-plays once, automatically, the very first
   time a brand-new account signs in — never again after that, and the
   other three never auto-play at all.
+- **Account → Delete my account (added 2026-08-29):** permanently
+  deletes your account and everything tied to it — every rifle, load,
+  and calibration record. One confirmation dialog, no undo. This is
+  real deletion, not deactivation — there's no way to get the data back
+  afterward, and no separate "are you sure you're sure" step beyond
+  that one dialog.
 - **Enable voice ("Ballistica"):** the one required tap to arm the
   wake-word listener (mic permission).
 - **Rifle picker:** a dropdown/list of every saved rifle. Clicking one

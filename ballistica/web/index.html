@@ -114,7 +114,7 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError, #authError, #waiverError {
+  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
@@ -197,6 +197,15 @@
   <details id="walkthroughMenu" style="margin-bottom:14px">
     <summary>Help / Walkthrough</summary>
     <div class="panel-body" id="walkthroughList"></div>
+  </details>
+
+  <details id="accountMenu" style="margin-bottom:14px">
+    <summary>Account</summary>
+    <div class="panel-body">
+      <p style="font-size:14px; color:var(--muted); margin:0 0 12px;">Permanently delete your account, along with every rifle, load, and calibration record tied to it. This cannot be undone.</p>
+      <button id="deleteAccountBtn" style="background:var(--error-bg); color:var(--error-text); font-weight:600; width:100%;">Delete my account</button>
+      <div id="deleteAccountError"></div>
+    </div>
   </details>
 
   <div class="voice-panel">
@@ -1569,6 +1578,32 @@ signUpBtn.addEventListener('click', async () => {
 signOutBtn.addEventListener('click', () => {
   clearSession();
   showAuthPanel();
+});
+
+document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
+  const errorEl = document.getElementById('deleteAccountError');
+  hide(errorEl);
+  const email = (getSession() || {}).email || 'your account';
+  if (!confirm(
+    `Permanently delete ${email} and everything tied to it -- every rifle, load, and ` +
+    `calibration record? This cannot be undone.`
+  )) return;
+  const btn = document.getElementById('deleteAccountBtn');
+  btn.disabled = true;
+  try {
+    await api('/account', { method: 'DELETE' });
+    // The account is gone -- a stale "known account, default to Sign
+    // In" memory would now be actively wrong (see rememberKnownAccount),
+    // so it has to go too, not just the session.
+    clearSession();
+    try { localStorage.removeItem(KNOWN_ACCOUNT_KEY); } catch (e) {}
+    showAuthPanel();
+    flash(authOkEl, 'Your account and all its data have been permanently deleted.');
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // ---------------------------------------------------------- walkthrough

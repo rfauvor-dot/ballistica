@@ -103,16 +103,16 @@ expensive than designing for it up front -- especially since the stated
 future goal (aggregate anonymized cross-user shooting data) requires
 knowing which data came from which user in the first place.
 
-**Remaining before this is fully closed out:** (1) run `db/003_...sql`,
-`db/004_waiver_acceptance.sql`, `db/005_anonymize_events_at_ingestion.sql`,
-and `db/006_walkthrough_progress.sql` in Supabase's SQL Editor (four
-pending migrations as of 2026-08-28, none applied yet -- concrete,
-mechanical, not a judgment call for any of them); (2) Rick creating his
-real account through the login flow --
-which now includes accepting the liability waiver, see the **Legal /
-Liability** entry above -- and confirming it works for him live; (3) a
-decision on migrating Rick's existing single-tenant data into his new
-account.
+**Update 2026-08-29:** all four migrations above have been run
+successfully (confirmed by Rick, including the urgent `db/007` fix for
+a circular-RLS bug `db/003` itself introduced -- see MULTI_TENANCY_
+DESIGN.md §11). Self-service account deletion is also now built
+(§15) -- closes the account-side half of what "a real second user"
+needs, though it still needs `SUPABASE_SERVICE_ROLE_KEY` configured
+before it actually works (not set yet as of this writing). Remaining:
+a decision on migrating Rick's existing single-tenant data into his
+real account, whenever he's ready to treat that account as permanent
+rather than for testing.
 
 **Owning lens:** Build scoped and shipped the technical approach; Chief of
 Staff to track the account-creation/migration decision and the pending
