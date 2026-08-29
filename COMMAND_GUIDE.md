@@ -277,6 +277,15 @@ for the range. As of this cutover, it requires signing in first.
   Pressure, wind Clock): its own one-shot values sent with each GET
   SOLUTION click — defaults (59°F, 0% humidity, no wind) apply unless
   filled in. Entirely separate from voice's conditions/wind state (§4).
+- **"Use my location" (added 2026-08-28):** pre-fills Temp, Humidity,
+  Wind speed, Altitude, and Pressure from the nearest live-reporting
+  weather station, using your device's GPS — a real request to a public
+  aviation-weather API, not a guess. Shows which station it used, how
+  far away, and how recent the reading is, so you can judge it before
+  trusting it. **Does not fill in the wind Clock (direction) field** —
+  your GPS position doesn't tell the app which way you're aimed, so
+  guessing that specific number would risk being wrong in a way that
+  looks authoritative; you still set that one yourself.
 
 ---
 

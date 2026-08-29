@@ -317,6 +317,8 @@
   <details id="condDetails">
     <summary>Conditions (optional)</summary>
     <div class="panel-body">
+      <button id="useLocationBtn" type="button" style="margin-bottom:10px;">Use my location</button>
+      <div id="useLocationStatus" style="font-size:13px; color:var(--muted); margin-bottom:8px; min-height:16px;"></div>
       <div class="row">
         <div class="field w-xs"><label>Temp</label><input id="tempF" type="number" value="59" title="Temperature, degrees F"></div>
         <div class="field w-xs"><label>Humid</label><input id="humidPct" type="number" value="0" title="Relative humidity, %"></div>
@@ -325,7 +327,7 @@
       <div class="row">
         <div class="field w-sm"><label>Alt</label><input id="altFt" type="number" value="0" title="Altitude, feet"></div>
         <div class="field w-sm"><label>Press</label><input id="pressInHg" type="number" step="0.01" placeholder="auto" title="Barometric pressure, inHg -- leave blank to estimate from altitude"></div>
-        <div class="field w-xs"><label>Clock</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12" title="Wind direction: 12 = headwind, 3 = from the right, 9 = from the left"></div>
+        <div class="field w-xs"><label>Clock</label><input id="windClock" type="number" min="0" max="12" step="0.5" value="12" title="Wind direction: 12 = headwind, 3 = from the right, 9 = from the left -- not auto-filled by 'Use my location': GPS can't know which way you're facing"></div>
       </div>
     </div>
   </details>
@@ -829,6 +831,49 @@ loadSelect.addEventListener('change', () => {
   if (!currentRifleDetail) return;
   const l = currentRifleDetail.loads.find(l => l.name === loadSelect.value);
   if (l) fillLoadForm(l);
+});
+
+// --------------------------------------------------------- conditions
+// "Use my location" pre-fills temp/humidity/pressure/altitude/wind
+// speed from the nearest live-reporting weather station -- deliberately
+// leaves wind Clock (direction) untouched, see the input's own title
+// text and api.py's v2_conditions_from_location docstring for why: GPS
+// says where you are, not which way you're aimed, and guessing wrong
+// there is a real safety concern, not just a UX nicety.
+document.getElementById('useLocationBtn').addEventListener('click', () => {
+  const statusEl = document.getElementById('useLocationStatus');
+  if (!navigator.geolocation) {
+    statusEl.textContent = 'Geolocation not supported by this browser.';
+    return;
+  }
+  statusEl.textContent = 'Getting your location...';
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      statusEl.textContent = 'Finding the nearest weather station...';
+      try {
+        const r = await api(
+          `/conditions/from-location?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`,
+        );
+        document.getElementById('tempF').value = r.temp_f.toFixed(1);
+        document.getElementById('humidPct').value = r.humidity_pct.toFixed(0);
+        document.getElementById('windMph').value = r.wind_speed_mph.toFixed(1);
+        document.getElementById('altFt').value = r.altitude_ft.toFixed(0);
+        document.getElementById('pressInHg').value = r.pressure_inhg.toFixed(2);
+        const observedAgo = Math.round((Date.now() - new Date(r.observed_at).getTime()) / 60000);
+        statusEl.textContent =
+          `Filled from ${r.station_name} (${r.distance_mi} mi away, updated ${observedAgo} min ago). ` +
+          `Wind direction not auto-filled -- set the Clock field yourself.`;
+      } catch (e) {
+        statusEl.textContent = 'Could not fill from location -- ' + e.message;
+      }
+    },
+    (err) => {
+      statusEl.textContent = err.code === err.PERMISSION_DENIED
+        ? 'Location permission denied -- enter conditions manually below.'
+        : 'Could not get your location -- ' + err.message;
+    },
+    { timeout: 15000 },
+  );
 });
 
 solveBtn.addEventListener('click', async () => {

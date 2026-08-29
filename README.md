@@ -169,10 +169,13 @@ rather than running on a tunnel indefinitely.
   a spoken miss distance/direction hands-free) is real, untested work:
   streaming mic capture, a recognition service, and push-to-talk vs.
   wake-word UX, on top of whichever client ends up being the field app.
-- GPS/weather auto-fill (sections 2-3) -- the web page takes
-  conditions as manual optional input for now; wiring an actual
-  browser Geolocation + weather API call in is a natural next step on
-  the same page, not a rebuild.
+- ~~GPS/weather auto-fill~~ -- **built 2026-08-28**: "Use my location"
+  on the web Conditions panel pre-fills temp/humidity/pressure/altitude/
+  wind speed from the nearest METAR-reporting station
+  (`ballistica/weather.py`, `GET /v2/conditions/from-location`).
+  Deliberately does NOT auto-fill wind direction -- GPS says where you
+  are, not which way you're aimed, so guessing it would risk a wrong
+  value that looks trustworthy; that field stays manual.
 - Session history logging, CSV import, historical cross-referencing
   (sections 7, 11, 12) -- not built yet; the API's shape (rifle/load
   keyed, JSON-backed) extends naturally to it when it's next.

@@ -161,41 +161,6 @@ ships to real customers, per the caveat above).
 
 ---
 
-## Auto-fill conditions from nearest weather station (GPS + METAR)
-
-**Raised:** Rick, 2026-08-28 — surfaced while reviewing the audio
-walkthrough's Section 4 script, which describes conditions (wind,
-temperature, altitude, humidity) as manual entry only. Rick asked whether
-Ballistica could instead pull this from "a local tower."
-
-**What:** Use the device's GPS to find the nearest METAR-reporting
-airport weather station, pull its latest report, and pre-fill the
-existing conditions fields (web Conditions panel and/or voice) with it —
-temp, wind speed/direction, pressure, and humidity (derived from METAR's
-temp/dewpoint) all map directly. Confirmed already listed as a known gap
-in README.md's "what's not built yet" section (GPS/weather auto-fill),
-not a new idea — this just adds the specific "pull from a real station"
-shape to it rather than a generic consumer weather API.
-
-**Why this shape specifically:** aviationweather.gov's METAR API is free,
-requires no API key, and reports exactly the ballistics-relevant fields
-already used in Ballistica's atmosphere model — more precise and more
-directly usable than a general-purpose weather API built for showing a
-forecast icon, and it's the same approach established ballistic-calculator
-apps already take.
-
-**Real tradeoff worth remembering when this gets scoped:** the nearest
-station can be miles from the actual shooting position, and its reported
-elevation isn't necessarily the shooter's own — so this should pre-fill
-the existing manual fields as an editable starting point, not silently
-replace manual entry or be trusted uncritically. Matches the app's
-existing reference-only framing (waiver, disclaimers) rather than cutting
-against it.
-
-**Status:** Backlog, not scoped. No urgency flagged; log and revisit
-later.
-
-**Owning lenses when scoped:** Build (Geolocation API, nearest-station
-lookup, METAR parsing, wiring into the existing AtmosphereConditions
-model); Marketing (worth flagging as a real differentiator vs. apps that
-require full manual entry).
+(The GPS/METAR weather auto-fill item logged here 2026-08-28 has been
+built — see MULTI_TENANCY_DESIGN.md and ballistica/weather.py. Moved out
+of backlog per this file's own convention.)

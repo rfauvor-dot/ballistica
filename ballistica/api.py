@@ -54,6 +54,7 @@ from .trajectory import TrajectorySolver, WindCondition
 from .waiver import (
     WAIVER_ACKNOWLEDGMENT_TEXT, WAIVER_SECTIONS, WAIVER_TEXT_SHA256, WAIVER_TITLE, WAIVER_VERSION,
 )
+from .weather import fetch_nearest_station_conditions
 
 _SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 _SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -750,6 +751,34 @@ def v2_status(user_store: SupabaseProfileStore = Depends(_get_user_store)):
     if rifle.active_load_name is not None and rifle.active_load_name in rifle.loads:
         active_load = _load_to_out(rifle.get_active_load())
     return {"rifle": _rifle_to_detail(rifle), "active_load": active_load}
+
+
+@app.get("/v2/conditions/from-location")
+@limiter.limit("20/minute")
+def v2_conditions_from_location(
+    request: Request, lat: float, lon: float, auth: tuple[str, str] = Depends(_verify_bearer),
+):
+    """Temperature/humidity/pressure/altitude from the nearest METAR-
+    reporting station to the given GPS coordinates (see weather.py).
+    Deliberately does NOT return a wind direction -- see that module's
+    docstring for why guessing one from GPS alone isn't safe to do.
+    Rate-limited alongside the other endpoints that proxy a third-party
+    API (here: to avoid this server hammering aviationweather.gov on
+    behalf of abusive callers, not a paid-API-cost concern -- their
+    API is free)."""
+    result = fetch_nearest_station_conditions(lat, lon)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No nearby weather station with usable data found -- enter conditions manually.",
+        )
+    return {
+        "temp_f": result.temp_f, "humidity_pct": result.humidity_pct,
+        "pressure_inhg": result.pressure_inhg, "altitude_ft": result.altitude_ft,
+        "wind_speed_mph": result.wind_speed_mph, "station_id": result.station_id,
+        "station_name": result.station_name, "distance_mi": result.distance_mi,
+        "observed_at": result.observed_at,
+    }
 
 
 def _v2_resolve(user_store: SupabaseProfileStore, rifle_query: str | None, load_query: str | None) -> tuple[Rifle, Load]:
