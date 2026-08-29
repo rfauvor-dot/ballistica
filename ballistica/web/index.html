@@ -1455,7 +1455,18 @@ waiverEl.acceptBtn.addEventListener('click', async () => {
       waiverEl.panel.style.display = 'none';
       document.getElementById('authPanel').style.display = 'block';
       setAuthMode('signin');
-      flash(authOkEl, 'Account created -- check your email for a verification link, then sign in.');
+      // Deliberately doesn't say "an email was just sent" -- Supabase's
+      // signup response is identical whether this is a genuinely new
+      // address or one that already has an account (a deliberate anti-
+      // enumeration measure on their end: revealing "that email's
+      // already registered" would itself be a real privacy leak, so
+      // there's no reliable signal here to tell the two cases apart).
+      // Confirmed live (Rick, 2026-08-28): re-submitting an already-
+      // registered, already-confirmed email silently no-ops -- no new
+      // mail actually goes out -- so a message asserting one was just
+      // sent would be false in that case. This wording stays true
+      // either way instead of guessing which case just happened.
+      flash(authOkEl, "If that's a new email, check it for a verification link to finish setup. Already have an account? Just sign in below.");
     } else {
       await init();
     }
