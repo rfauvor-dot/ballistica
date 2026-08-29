@@ -1142,3 +1142,73 @@ elsewhere in the app, not a heavier multi-step flow. On success, clears
 the session AND the "known account" memory from the signup-UX fix
 earlier the same day (§ above) -- leaving that in place would
 incorrectly default a deleted account's browser straight to Sign In.
+
+---
+
+## 16. Sign in / Create account: symmetric choice instead of a guessed default (2026-08-29)
+
+Supersedes the `KNOWN_ACCOUNT_KEY`-based default from earlier the same
+day (§15's "known account" memory). That fix used per-browser
+`localStorage` to guess whether a returning visitor should see Sign In
+or Create Account by default. Rick's own follow-up testing showed it
+wasn't enough: "real customers won't know to click a small secondary
+link... this needs a proper fix so sign in versus create account
+behaves correctly and predictably for anyone, on any browser" --
+`localStorage` can't help a new browser, a new device, or incognito,
+which is exactly the population most likely to hit this confusion.
+
+**The tempting wrong fix, considered and rejected:** an unauthenticated
+endpoint that checks whether an email is already registered, so the
+frontend could pick the right screen with certainty. Rick's explicit
+call: no. Ballistica accounts carry firearm, ammunition, load, and
+shooting data, which makes "does this email have an account" a more
+sensitive fact than it would be for a generic SaaS product -- a
+dedicated check-endpoint is an enumeration oracle regardless of rate
+limiting or other hardening layered on top, and he judged the UX
+benefit didn't justify that privacy tradeoff even with those
+protections in place. Standing instruction: **no unauthenticated
+email-existence endpoint, ever; preserve Supabase's own anti-
+enumeration behavior; solve this in the UI instead.**
+
+**What shipped instead:** stopped trying to guess. "Sign in" and
+"Create account" are now both always-visible, equally-weighted
+buttons (`ballistica/web/index.html`) -- no default mode, no hidden
+secondary link, no dependency on browser memory at all (the
+`localStorage` email prefill from §15 is kept purely as a convenience;
+it no longer picks which button shows). Every visitor makes their own
+explicit choice, which sidesteps the ambiguity instead of resolving it
+computationally -- the same idea as showing both options on a login
+screen rather than the app deciding which one someone probably wants.
+
+Each path's response also had to be made genuinely non-revealing on
+its own terms, since Supabase's `/token` (sign in) and `/signup`
+endpoints don't (and per the instruction above, must not be made to)
+distinguish "wrong password" from "no such account," or "new signup"
+from "already registered":
+
+- **Sign in failure** (any cause other than an unconfirmed email or a
+  network error) now surfaces one fixed message, "Email or password is
+  incorrect.", instead of passing Supabase's raw error text through
+  unmodified. Verified live: attempting sign-in against a genuinely
+  nonexistent address produces this exact message, not a distinct
+  "account not found" variant.
+- **Create account**, once Supabase's own response comes back
+  (identical whether the email was new or already registered), now
+  shows one message written to be true and actionable either way:
+  "Check your email for a verification link to finish creating your
+  account. Already have an account with this email? Sign in instead."
+  Verified live end-to-end with a genuinely new throwaway address
+  (`dt-signup-uxtest-<timestamp>@mailinator.com`, not a real account or
+  either hardcoded test fixture) through the full waiver -> signup
+  flow.
+
+"Email not confirmed" is deliberately left as its own distinct message
+rather than folded into the generic sign-in failure -- it's not a
+credentials guess, and someone seeing it already knows they have an
+account here (they just typed the right password), so it isn't a new
+disclosure to a stranger the way distinguishing "wrong password" from
+"no account" would be.
+
+**Owning lens:** Rick made the privacy-vs-UX call explicitly and
+rejected the endpoint; Build implemented the UI-only fix and verified
+both the sign-in and create-account response paths live.

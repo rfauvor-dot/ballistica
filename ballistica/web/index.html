@@ -167,13 +167,10 @@
       <label for="authPassword">Password</label>
       <input id="authPassword" type="password" autocomplete="current-password" placeholder="At least 6 characters">
     </div>
+    <button id="signInBtn" class="primary big">Sign in</button>
     <button id="signUpBtn" class="primary big">Create account</button>
-    <button id="signInBtn" class="primary big" style="display:none">Sign in</button>
     <div id="authOk"></div>
     <div id="authError"></div>
-    <div id="authModeToggle" style="text-align:center; margin-top:10px; font-size:14px;">
-      <a href="#" id="authModeToggleLink" style="color:var(--muted); text-decoration:underline;">Already have an account? Sign in</a>
-    </div>
   </div>
 
   <div id="waiverPanel" style="display:none">
@@ -456,7 +453,20 @@ async function signUp(email, password, waiverInfo) {
 }
 
 async function signIn(email, password) {
-  const data = await supabaseAuthCall('/token?grant_type=password', { email, password });
+  let data;
+  try {
+    data = await supabaseAuthCall('/token?grant_type=password', { email, password });
+  } catch (e) {
+    // Normalize to one generic message regardless of whether the email
+    // has no account at all or the password is just wrong -- per
+    // Rick's instruction (2026-08-29), sign-in must never reveal which
+    // of those two happened. "Email not confirmed" and network errors
+    // are left as-is: they're not a credentials guess, they're
+    // legitimately actionable for someone who already knows they have
+    // an account here.
+    if (/confirm/i.test(e.message) || /network/i.test(e.message)) throw e;
+    throw new Error('Email or password is incorrect.');
+  }
   setSession(sessionFromAuthResponse(data, email));
   rememberKnownAccount(email);
 }
@@ -532,18 +542,17 @@ function showAuthPanel() {
   document.getElementById('authPanel').style.display = 'block';
   document.getElementById('waiverPanel').style.display = 'none';
   document.getElementById('appContent').style.display = 'none';
-  // Default to whichever screen actually fits: someone this browser
-  // has seen sign up or sign in before almost certainly already has an
-  // account, so Sign In (with their email already filled in) is the
-  // right default -- Create Account is only the right default for a
-  // browser that's never touched Ballistica before.
+  hide(authOkEl); hide(authErrorEl);
+  // Sign In and Create Account are both always shown -- deliberately, so
+  // every visitor picks for themselves rather than the app guessing on
+  // their behalf (confirmed live, Rick 2026-08-29: a per-browser "which
+  // one to default to" heuristic isn't good enough, since a real
+  // customer on a new browser/device has no way to know a secondary
+  // option is even there). Pre-filling the email for a browser that's
+  // used Ballistica before is still a harmless convenience -- it doesn't
+  // hide either button or pick a mode for them.
   const knownEmail = getKnownAccountEmail();
-  if (knownEmail) {
-    document.getElementById('authEmail').value = knownEmail;
-    setAuthMode('signin');
-  } else {
-    setAuthMode('signup');
-  }
+  if (knownEmail) document.getElementById('authEmail').value = knownEmail;
 }
 function showAppContent() {
   const session = getSession();
@@ -1420,34 +1429,17 @@ const authErrorEl = document.getElementById('authError');
 const signInBtn = document.getElementById('signInBtn');
 const signUpBtn = document.getElementById('signUpBtn');
 const signOutBtn = document.getElementById('signOutBtn');
-const authModeToggleLink = document.getElementById('authModeToggleLink');
 
-// Two competing full-width buttons (Sign in styled primary, Create
-// account styled secondary) read as an ambiguous choice, especially
-// confusing for the far more common first-time case -- confirmed
-// confusing live (Rick, 2026-08-28). Create account is now the one
-// obvious primary action; sign-in is still fully available (removing
-// it outright would strand anyone who clears storage or switches
-// devices), just behind a small, clearly secondary toggle link rather
-// than a second competing button.
-let authMode = 'signup';
-function setAuthMode(mode) {
-  authMode = mode;
-  hide(authOkEl); hide(authErrorEl);
-  if (mode === 'signin') {
-    signUpBtn.style.display = 'none';
-    signInBtn.style.display = '';
-    authModeToggleLink.textContent = 'New here? Create an account instead';
-  } else {
-    signInBtn.style.display = 'none';
-    signUpBtn.style.display = '';
-    authModeToggleLink.textContent = 'Already have an account? Sign in';
-  }
-}
-authModeToggleLink.addEventListener('click', (e) => {
-  e.preventDefault();
-  setAuthMode(authMode === 'signup' ? 'signin' : 'signup');
-});
+// Sign In and Create Account are both always-visible, equally-weighted
+// buttons -- deliberately, not a primary/secondary pair and not a
+// mode the app defaults on the visitor's behalf. Confirmed live (Rick,
+// 2026-08-29): a single dominant button plus a small secondary toggle
+// link caused real people to land on the wrong one and get confused
+// (either "Create account" silently no-opping on an email they already
+// had, or missing the tiny "sign in instead" link entirely). Making
+// the choice itself explicit and symmetric fixes that without needing
+// any way to check whether an email is already registered -- see
+// signIn()/signUp() below for how each path stays non-revealing.
 
 signInBtn.addEventListener('click', async () => {
   hide(authOkEl); hide(authErrorEl);
@@ -1541,20 +1533,15 @@ waiverEl.acceptBtn.addEventListener('click', async () => {
     if (result.needsConfirmation) {
       waiverEl.panel.style.display = 'none';
       document.getElementById('authPanel').style.display = 'block';
-      setAuthMode('signin');
-      // Confirmed live (Rick, 2026-08-29): the previous, hedged wording
-      // here ("if that's a new email...") read as uncertain rather than
-      // a clear confirmation -- people assumed signup had silently
-      // failed and retried it. Made affirmative instead: this IS the
-      // real outcome for the overwhelming majority of people who reach
-      // this message (a genuinely new signup). The rarer already-
-      // registered case -- Supabase's signup response is identical
-      // either way, a deliberate anti-enumeration measure on their end
-      // this code can't see behind -- is now caught earlier anyway:
-      // showAuthPanel() defaults a browser it's seen before straight to
-      // Sign In (see getKnownAccountEmail()), so far fewer people reach
-      // this exact screen on an email that already has an account.
-      flash(authOkEl, "You're set -- check your email for a verification link, then come back and sign in.");
+      // Supabase's signup response is identical whether this email is
+      // genuinely new or already has an account -- deliberate anti-
+      // enumeration behavior on their end, and per Rick's explicit
+      // instruction (2026-08-29) this code must not try to see behind
+      // it (no separate "does this email exist" check, ever). So this
+      // message is written to be true and actionable either way,
+      // rather than confidently claiming a specific outcome it can't
+      // actually verify.
+      flash(authOkEl, "Check your email for a verification link to finish creating your account. Already have an account with this email? Sign in instead.");
     } else {
       await init();
     }
