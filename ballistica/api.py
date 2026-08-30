@@ -76,8 +76,8 @@ app.add_middleware(
 )
 
 
-def _rate_limit_key(request: Request) -> str:
-    """IP-based rate-limit key. Render (like most PaaS) terminates TLS
+def _ip_rate_limit_key(request: Request) -> str:
+    """IP-based fallback key. Render (like most PaaS) terminates TLS
     and proxies every request through its own load balancer, so
     request.client.host would be Render's proxy address on every
     request -- not the real caller -- unless the ASGI server is started
@@ -93,8 +93,35 @@ def _rate_limit_key(request: Request) -> str:
     exposed directly on another host without a trusted proxy in front."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return get_remote_address(request)
+        return "ip:" + forwarded.split(",")[0].strip()
+    return "ip:" + get_remote_address(request)
+
+
+def _rate_limit_key(request: Request) -> str:
+    """Per-user where possible, per-IP otherwise (2026-08-29, per Rick's
+    instruction: people sharing a connection -- same office/home
+    network, same NAT -- shouldn't throttle each other). slowapi's
+    key_func runs as ASGI middleware, before the route's own auth
+    dependency executes, so there's no already-verified user id sitting
+    on the request to reuse here -- this independently re-verifies the
+    bearer token itself. That's a real, deliberate signature check, not
+    a cheap unverified decode: using an unverified `sub` would let an
+    attacker manufacture a fresh, never-throttled bucket per request
+    just by changing a claim in a token with no valid signature, which
+    would quietly defeat rate limiting for exactly the requests it most
+    needs to catch. A token that fails verification here falls straight
+    through to the same IP-based key as before -- no regression for the
+    unauthenticated-abuse case this was already protecting against.
+    The extra verification is cheap (JWKS keys are cached by PyJWKClient
+    after the first fetch) and duplicates work the route's own auth
+    dependency does moments later anyway."""
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            return "user:" + verify_token(auth_header[len("Bearer "):])
+        except Exception:
+            pass  # falls through to the IP-based key below
+    return _ip_rate_limit_key(request)
 
 
 # Standard approach (per-IP, in-memory -- Render runs this as a single

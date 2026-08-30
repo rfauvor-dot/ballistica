@@ -1259,10 +1259,20 @@ const ACK_PHRASES = [
   "I'm here, Rick. Go ahead.",
 ];
 
+// The reference-only/verify-before-firing line (2026-08-29, Rick's
+// explicit instruction) is woven into every variant, not appended as a
+// separate sentence or shown as a popup/confirmation step -- it has to
+// land naturally as part of the greeting itself, every single time
+// voice mode starts a new session, since that's the load-bearing
+// safety reminder RISK_REGISTER.md's "Legal / Liability" entry flagged
+// as still outstanding after the signup-time waiver. The core clause
+// ("my data's reference only... verify before firing") stays close to
+// verbatim across all three so the substance never varies even though
+// the wrapper sentence does.
 const GREETING_PHRASES = [
-  "Hey Rick, Ballistica's up. What are we working with today?",
-  "Good to go, Rick -- what do you need?",
-  "Ballistica's online. Let's get you dialed in.",
+  "Hey Rick, Ballistica's up. My data's reference only, so always verify before firing. What are we working with today?",
+  "Good to go, Rick -- quick reminder, my data's reference only, always verify before firing. What do you need?",
+  "Ballistica's online. Remember, my data's reference only -- always verify before firing. Let's get you dialed in.",
 ];
 
 const SIGNOFF_PHRASES = [

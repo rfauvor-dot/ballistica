@@ -1546,3 +1546,57 @@ issuer tests); full suite re-run for zero regression.
 **Owning lens:** Rick ran the second review and shared it; Build
 triaged, verified each concrete claim against real code before acting,
 and fixed the three that were genuine and in-scope.
+
+---
+
+## 22. Per-user rate limiting; the spoken safety reminder finally shipped (2026-08-29)
+
+Two decisions Rick made explicitly, closing two of the items §21 had
+flagged as "needs your call, not mine."
+
+**Per-user rate limiting.** Previously every limit (`api.py`) was keyed
+purely by IP (`X-Forwarded-For`), so people sharing a connection --
+same office, same home network, same NAT -- competed for the same
+bucket. `_rate_limit_key()` now tries per-user first: it independently
+re-verifies the request's bearer token (via the real `verify_token()`,
+a genuine signature check, not a cheap unverified decode) and keys on
+the resulting user id if that succeeds, falling back to the existing
+IP-based key (renamed `_ip_rate_limit_key()`) otherwise. The real-
+verification requirement matters: an unverified `sub` claim would let
+an attacker manufacture a fresh, never-throttled bucket on every
+request just by changing a claim in a token with no valid signature,
+quietly defeating rate limiting for exactly the traffic it most needs
+to catch. A token that fails verification falls straight through to
+the same IP-based key as before -- no regression for the unauthenticated-
+abuse case. Verified directly (not just by reading the code): two
+different real tokens produce two different keys; an invalid token and
+no token at all both correctly fall back to the IP key.
+
+**The spoken safety reminder.** RISK_REGISTER.md's "Legal / Liability"
+entry has carried this as an outstanding next step since the waiver
+screen shipped (§5 of the app summary, §12 of two separate external
+reviews) -- Rick gave the final exact wording and shipped it today
+rather than leaving it deferred further: "My data is for reference
+only, always verify before firing," spoken as part of Ballistica's own
+greeting, not a separate popup or confirmation step. Landed in
+`GREETING_PHRASES` (`index.html`), which `handleWakeWord()` already
+spoke on the first wake-word of every voice session (`sessionWakeCount
+=== 0`) -- the existing "warm hello" moment, not a new code path. All
+three greeting variants keep the core safety clause close to verbatim
+so the substance never varies even though the surrounding sentence
+does, by design -- this is the one place variety shouldn't dilute the
+message. Fires every session, not once ever, matching "always verify"
+being an always-true fact rather than an onboarding-only notice.
+
+**Noted, not fixed (out of scope for this ask):** all three greeting
+variants (and `ACK_PHRASES`) still hardcode "Rick" by name, a leftover
+from the single-tenant era -- now a real, visible issue for any other
+real signed-in user, who'd hear Ballistica call them "Rick." No display-
+name field exists on a profile today (only email), so this isn't a
+one-line fix; flagged for Rick to prioritize separately, not silently
+patched as a side effect of this change.
+
+**Verified:** full suite green, zero regression, after both changes.
+
+**Owning lens:** Rick made both calls explicitly and supplied the exact
+safety-line wording; Build implemented and verified each independently.

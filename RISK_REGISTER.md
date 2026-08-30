@@ -41,16 +41,20 @@ community-sourced load data has real physical consequences. This closes
 the account-creation gate; it does not cover in-app reminders during
 actual use (see next step).
 
-**Next step, not yet done:** The original "Next step" here (a lightweight
-in-session reminder -- e.g. a spoken caveat the first time voice mode is
-enabled, "solutions are a starting point -- verify before you dial them
-in") is still worth doing and is now smaller in scope, since the
-one-time, load-bearing legal acceptance is handled by the waiver screen --
-this remaining piece is a UX reinforcement, not a liability gap.
+**In-session reminder -- done (2026-08-29).** The remaining "next step"
+here was a lightweight spoken caveat during actual voice use, not just
+at signup. Rick gave final wording and shipped it: "My data is for
+reference only, always verify before firing," woven into
+`GREETING_PHRASES` (`ballistica/web/index.html`), spoken as part of
+Ballistica's own greeting on the first wake-word of every voice
+session -- not a popup, not a one-time notice, and not appended as a
+separate sentence. Two independent external security reviews had also
+flagged this as outstanding (see MULTI_TENANCY_DESIGN.md §22 for full
+detail); this closes it.
 
-**Owning lens:** Attorney approved the waiver content; Build implemented
-and verified the acceptance flow; Chief of Staff to scope the smaller
-in-session reminder next step with Rick whenever it's prioritized.
+**Owning lens:** Attorney approved the waiver content; Rick gave the
+final spoken-reminder wording and decided to ship it now rather than
+defer further; Build implemented and verified both pieces.
 
 ---
 
