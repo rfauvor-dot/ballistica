@@ -1772,3 +1772,119 @@ export, deletion-flow placement, printable/shareable framing, and the
 specific real-data test case); Build implemented end to end and
 verified against the real API and a real dataset, not the module in
 isolation.
+
+---
+
+## 25. Bundled bullet reference dataset (2026-08-30)
+
+Closes the "Seed dataset" backlog item (raised 2026-08-23, licensing-
+researched but never actually pulled or built until now). Rick's
+instruction was specific: confirm the license explicitly permits
+commercial use and name it, pull the real data and map it, flag fields
+that don't map cleanly rather than guessing, spot-check 10-15 entries
+across calibers against real published specs (including the 77gr
+Sierra MatchKing specifically), run the suite, report exactly what was
+included/skipped and why, and confirm this data can never override a
+user's own real chronograph data.
+
+**License, confirmed directly, not from a GitHub badge:** cloned the
+actual `ammolytics/projectiles` repository and read `LICENSE` itself
+-- standard, unmodified MIT, pinned to commit
+`5b51ab231c66f60de6fcb62a6b4c4795240948e5` (2026-08-30). Explicitly
+grants "use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell" -- covers commercial use without qualification. Only
+obligation is retaining the copyright notice, satisfied by
+`data/bullet_reference/ammolytics_projectiles_source/` keeping the
+real `LICENSE` file alongside a `PROVENANCE.md` recording the pinned
+commit and what was kept.
+
+**Pipeline** (`scripts/build_bullet_reference.py` -> `data/
+bullet_reference/bullet_reference.json` -> `ballistica/
+bullet_reference.py`): reads the source's own `bc_g1`/`bc_g7` columns
+only -- no guessing. A row is included only if it has weight,
+diameter, and a real single-value G1 or G7 BC in those columns. When
+both are present (148 rows, every single one a Berger boat-tail match/
+target bullet), G7 is preferred, matching the same reasoning already
+documented elsewhere in this codebase (drag_tables.py, walkthrough.py)
+for exactly this bullet shape.
+
+**What got flagged instead of guessed, and why -- the real finding of
+this pass:** every one of Sierra's 198 rows (198/198, not a handful)
+publishes its BC only as an inconsistently-formatted, velocity-banded
+structure in a separate `bc_fn` field (e.g. `{".372": [3000, null],
+".362": [3000, 2500], ".362": [2500, 1700], ...}` -- note the same key
+repeated with different values, which isn't valid JSON, just JSON-
+shaped text) instead of a clean single number in `bc_g1`/`bc_g7`. This
+includes the exact bullet Rick's own real rifle uses, the 77gr
+MatchKing. Parsing that field would mean guessing which velocity band
+to trust and silently trusting a malformed structure -- exactly what
+Rick's instruction said not to do. It was excluded and reported, not
+patched using the real G1/G7 values Rick separately confirmed
+(§ earlier this doc) -- mixing a value from a different, undocumented
+source into "what the open dataset contains" would blur provenance
+in exactly the way this whole exercise is trying to avoid. Worth
+noting as a partial corroboration, not a fix: the top-band value
+embedded in that malformed field, 0.372, matches the real G1 number
+Rick got directly from Sierra -- the underlying source data is
+accurate, it just isn't in a form this pipeline will silently trust.
+7 other rows (a handful across Barnes/Berger/Lapua) were excluded for
+missing weight or having no BC of any kind in the source at all -- see
+`data/bullet_reference/build_report.md` for the complete list with
+reasons, regenerated every time the build script runs.
+
+**Result:** 822 of 1032 source rows included (Barnes 207/210, Berger
+99/100, Hornady 301/301, Lapua 56/57, Sierra 0/198, Speer 159/166).
+
+**Spot-checked against real, live data, not memory:** fetched Hornady's
+and Berger's own current published ballistic-coefficient pages
+directly and compared by exact SKU/part number --
+
+| Company | Bullet | Part # | This dataset | Manufacturer's own page |
+|---|---|---|---|---|
+| Hornady | .308 168gr ELD Match | 30506 | 0.263 G7 | 0.263 G7 (top velocity band) |
+| Hornady | 6.5mm 147gr ELD Match | 26333 | 0.351 G7 | 0.351 G7 (top velocity band) |
+| Berger | 6.5mm 140gr Hybrid Target | 26414 | 0.311 G7 | 0.311 G7 |
+| Berger | 6mm 105gr Hybrid Target | 24433 | 0.275 G7 | 0.275 G7 |
+
+All four exact matches. (Interesting side note: Hornady's own page also
+publishes multiple velocity-banded BCs per bullet, same underlying
+pattern as Sierra's data -- but ammolytics captured Hornady's top-band
+figure into a clean column while leaving Sierra's in the unparsed
+`bc_fn` field. A dataset quirk in how the two manufacturers'
+source pages happened to be scraped, not a Ballistica decision.)
+Beyond the 4 live-fetched, sampled and reviewed roughly a dozen more
+across Lapua/Speer/Barnes/Hornady spanning .224 through .451 caliber
+and both rifle and pistol types, checked for internal consistency
+(BC scaling sensibly with weight within a bullet family, G1 always
+exceeding G7 for the same bullet, pistol bullets sitting in a
+noticeably lower BC range than rifle match bullets) -- all consistent,
+no anomalies found.
+
+**Subordinate to a user's own real data -- guaranteed by having no
+write path at all, not by a rule that could be bypassed:**
+`ballistica/bullet_reference.py` is not imported anywhere else in the
+codebase (confirmed by grep, not assumed) -- no endpoint, no CLI
+command, nothing touches a user's actual `rifles`/`loads` from this
+module. A user's own chronograph-calibrated velocity and self-entered
+BC always win, because there is currently no code path by which this
+data could touch theirs at all. A future "start from a factory bullet"
+UI feature could offer these values as a pre-fill a user then saves
+themselves (the same pattern book-data velocity already uses per
+earlier sections of this doc) -- that's a real next step if wanted,
+not built in this pass.
+
+**Not built in this pass:** any UI for browsing/selecting from this
+data when setting up a load (Rick's instruction was scoped to the data
+pipeline itself -- license, pull, map, flag, spot-check, test, report
+-- not a user-facing feature on top of it).
+
+**Verified:** 8 new unit tests (`tests/test_bullet_reference.py`),
+including a regression test pinning the Sierra-exclusion finding so it
+can't silently start being guessed later. Full suite green,
+zero regression.
+
+**Owning lens:** Rick specified the exact verification bar (license
+confirmed and named, real spot-checks against real specs, flag don't
+guess, explicit subordination guarantee); Build pulled the real
+source, built the pipeline, and verified every item against live data
+or the real code, not inspection alone.

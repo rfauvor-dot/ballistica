@@ -129,6 +129,21 @@ pipeline), Marketing (competitive-parity framing — this is closing a gap,
 not building a moat), Legal-adjacent (real counsel review before this data
 ships to real customers, per the caveat above).
 
+**Update 2026-08-30: built.** See MULTI_TENANCY_DESIGN.md §25 for full
+detail. Pulled and inspected the actual `ammolytics/projectiles` repo
+(not just its GitHub license badge) — real, unmodified MIT license,
+pinned to commit `5b51ab231c66f60de6fcb62a6b4c4795240948e5`. 822 of
+1032 source rows cleanly mapped into `ballistica/bullet_reference.py`
+(Barnes/Berger/Hornady/Lapua/Speer); every Sierra row (198, including
+the 77gr MatchKing) was excluded and explicitly flagged rather than
+guessed at, since Sierra's own BC data in this source is only
+published as an inconsistently-formatted, velocity-banded structure,
+not a clean single value. Spot-checked against real, live-fetched
+manufacturer data (Hornady's and Berger's own published BC pages) for
+4 bullets — exact matches on every one — plus internal-consistency
+checks across Lapua/Speer/Barnes. Moved out of backlog per this file's
+own convention.
+
 ---
 
 (The GPS/METAR weather auto-fill item logged here 2026-08-28 has been
