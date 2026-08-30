@@ -1410,3 +1410,73 @@ output for identical inputs exactly.
 **Owning lens:** Rick scoped the ask and approved the core-only v1
 boundary after the technical assessment; Build implemented and
 verified against the real engine, not a mock.
+
+---
+
+## 20. JWT verification hardening -- two real bugs found by new tests (2026-08-29)
+
+Followed up on a cross-model (ChatGPT) security review of a summary of
+this whole app: most of its "must resolve" list turned out to already
+be handled (the old single-tenant endpoints are fully removed, not a
+fallback; rate limiting is real and live) or forward-looking for
+features that don't exist yet (aggregate-model provenance/poisoning
+protection, with no aggregate pipeline built). One item was concretely
+actionable and correct: JWT tests covered forged-signature and
+missing-token, but not expired tokens, tampered signatures, or
+malformed/missing claims. Rick asked for that coverage explicitly.
+
+**New file: `tests/test_auth_hardening.py`** -- 15 adversarial cases
+against `supabase_auth.py`'s real `verify_token()`, signed with the
+project's actual legacy HS256 secret (`SUPABASE_JWT_SECRET`) rather
+than a made-up one, specifically so these tests exercise claim
+validation, not just "wrong secret gets rejected" (already covered by
+`test_tenant_isolation.py`'s forged-token case). Covers: expired
+tokens (including right at the leeway boundary), completely malformed/
+empty/truncated tokens, a tampered signature, a tampered payload
+(swapped-in different `sub` without re-signing), missing/null/empty
+`sub`, missing/wrong `aud`, missing `exp`, the classic `alg: none`
+attack, and an out-of-allowlist algorithm family.
+
+**Two real bugs found and fixed, not just tested:**
+
+1. **Missing `sub` claim caused an unhandled 500, not a 401.**
+   `payload["sub"]` on a validly-signed token with no `sub` claim at
+   all raised a bare `KeyError`, which `get_current_user_id`'s except
+   clause (`jwt.InvalidTokenError, jwt.PyJWKClientError`) doesn't
+   catch -- confirmed live via `TestClient(raise_server_exceptions=
+   False)` before fixing, not assumed. Fixed via a new `_extract_sub()`
+   helper that checks for a real value and raises a proper
+   `jwt.InvalidTokenError` if absent, used by both the JWKS and legacy
+   verification paths.
+2. **Missing `exp` or `aud` claims were silently accepted.** PyJWT's
+   `jwt.decode()` only *validates* `exp`/`aud` if they're present in
+   the token -- it doesn't *require* them to be there at all unless
+   told to. A token with no `exp` claim verified successfully and
+   would never expire; confirmed live (the first version of the new
+   test suite caught this on its first run, not by inspection). Fixed
+   by adding `options={"require": ["exp", "aud", "sub"]}` to both
+   `jwt.decode()` calls.
+
+**Neither bug was reachable through the actual product** -- both
+require a validly-signed JWT (the real Supabase secret or a real
+JWKS-matched key) with a claim deliberately stripped out, which
+Supabase's own token issuance never produces. Real exposure was
+narrow: (1) the missing-`sub` case was a robustness/DoS-adjacent bug
+(an unhandled 500 on a crafted request) more than a data-access one;
+(2) the missing-`exp`/`aud` case only matters if the legacy HS256
+secret is ever exposed by some other means, at which point a forged
+token could additionally never expire -- a real defense-in-depth gap,
+not a live exploitable one today. Fixed anyway because "not reachable
+today" isn't the same as "correct," and this is exactly the kind of
+latent gap that becomes reachable the moment some other assumption
+changes.
+
+**Verified:** all 15 new tests pass after the fix; full suite (85 tests
+total now -- 70 existing + 15 new) re-run to confirm zero regression
+against real, live Supabase-issued tokens -- legitimate tokens always
+carry `exp`/`aud`/`sub`, so requiring them changes nothing for real
+usage.
+
+**Owning lens:** Rick directed the cross-model review and the specific
+follow-up ask; Build found, fixed, and verified both bugs against real
+code execution, not inspection alone.

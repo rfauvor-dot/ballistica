@@ -51,13 +51,35 @@ _jwks_client = jwt.PyJWKClient(_JWKS_URL) if _JWKS_URL else None
 # token; the signature check itself is untouched).
 _CLOCK_SKEW_LEEWAY_SECONDS = 10
 
+# PyJWT only *validates* exp/aud if they're present -- it doesn't require
+# them to be there at all unless told to. A token with no 'exp' claim at
+# all would otherwise verify successfully and never expire, and a
+# missing 'aud' would skip the audience check entirely (found via real
+# testing, tests/test_auth_hardening.py -- not a hypothetical).
+_REQUIRED_CLAIMS = ["exp", "aud", "sub"]
+
+
+def _extract_sub(payload: dict) -> str:
+    # jwt.decode() only validates the claims it's told to check (signature,
+    # exp, aud) -- a well-signed token missing 'sub' entirely decodes
+    # without error, and payload["sub"] would then raise a bare KeyError
+    # that get_current_user_id's except clause doesn't catch, surfacing as
+    # an unhandled 500 instead of a clean 401. Found via real testing
+    # (tests/test_auth_hardening.py), not a hypothetical -- a raw ["sub"]
+    # was the pre-2026-08-29 code here.
+    sub = payload.get("sub")
+    if not sub:
+        raise jwt.InvalidTokenError("Token missing required 'sub' claim")
+    return sub
+
 
 def _verify_via_jwks(token: str, client: jwt.PyJWKClient) -> str:
     signing_key = client.get_signing_key_from_jwt(token)
-    return jwt.decode(
+    payload = jwt.decode(
         token, signing_key.key, algorithms=["ES256", "RS256"], audience="authenticated",
-        leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
-    )["sub"]
+        leeway=_CLOCK_SKEW_LEEWAY_SECONDS, options={"require": _REQUIRED_CLAIMS},
+    )
+    return _extract_sub(payload)
 
 
 def verify_token(token: str) -> str:
@@ -95,10 +117,11 @@ def verify_token(token: str) -> str:
         raise
     if not _JWT_SECRET:
         raise jwt.InvalidTokenError("No matching JWKS signing key found, and no legacy secret configured")
-    return jwt.decode(
+    payload = jwt.decode(
         token, _JWT_SECRET, algorithms=["HS256"], audience="authenticated",
-        leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
-    )["sub"]
+        leeway=_CLOCK_SKEW_LEEWAY_SECONDS, options={"require": _REQUIRED_CLAIMS},
+    )
+    return _extract_sub(payload)
 
 
 def get_current_user_id(authorization: str = Header(...)) -> str:
