@@ -77,6 +77,7 @@
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
   button.big { width: 100%; font-size: 22px; min-height: 58px; margin-top: 4px; }
   button:active { opacity: 0.85; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* Addendum 35: a native <select> with appearance:none has no visual
      affordance signaling it's tappable -- Rick never noticed it was
@@ -244,6 +245,8 @@
     </details>
   </div>
 
+  <div id="offlineBanner" style="display:none; margin-bottom:14px; padding:10px 12px; border-radius:8px; background:#fff6e0; color:#7a5b00; font-weight:600; font-size:14px;"></div>
+
   <div class="voice-panel">
     <div class="state-line" id="voiceState">Voice: off</div>
     <div class="heard-line" id="voiceHeard"></div>
@@ -392,6 +395,7 @@
   </div>
   </div> <!-- #appContent -->
 
+<script src="/engine.js"></script>
 <script>
 // ---------------------------------------------------------------- auth
 // Cutover to the multi-tenant foundation: every data-touching endpoint
@@ -402,6 +406,89 @@
 const SUPABASE_URL = "__SUPABASE_URL__";
 const SUPABASE_ANON_KEY = "__SUPABASE_ANON_KEY__";
 const SESSION_KEY = 'ballistica_session';
+
+// ------------------------------------------------------------- offline
+// Local cache of each saved rifle's full detail (specs, click value,
+// every load's BC/velocity/zero) -- enough to run the same calculation
+// locally via engine.js with no connection. Written opportunistically
+// whenever the live rifle list loads successfully; read back only when
+// a live fetch actually fails. See MULTI_TENANCY_DESIGN.md §19.
+const OFFLINE_DB_NAME = 'ballistica-offline';
+const OFFLINE_DB_VERSION = 1;
+const OFFLINE_STORE = 'rifles';
+const OFFLINE_SYNCED_AT_KEY = 'ballistica_offline_synced_at';
+
+function openOfflineDb() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) { reject(new Error('IndexedDB unavailable')); return; }
+    const req = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(OFFLINE_STORE)) {
+        req.result.createObjectStore(OFFLINE_STORE, { keyPath: 'name' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Failure here (private browsing with storage blocked, etc.) just means
+// offline mode has nothing to fall back to later -- never fatal to the
+// live, online path that called this.
+async function cacheRifleLibrary(rifleDetails) {
+  try {
+    const db = await openOfflineDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
+      const store = tx.objectStore(OFFLINE_STORE);
+      store.clear();
+      rifleDetails.forEach((r) => store.put(r));
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    localStorage.setItem(OFFLINE_SYNCED_AT_KEY, String(Date.now()));
+  } catch (e) { /* nothing to cache with -- offline fallback just won't have data */ }
+}
+
+async function getCachedRifleLibrary() {
+  try {
+    const db = await openOfflineDb();
+    const rifles = await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_STORE, 'readonly');
+      const req = tx.objectStore(OFFLINE_STORE).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const syncedRaw = localStorage.getItem(OFFLINE_SYNCED_AT_KEY);
+    return { rifles: rifles || [], syncedAt: syncedRaw ? Number(syncedRaw) : null };
+  } catch (e) {
+    return { rifles: [], syncedAt: null };
+  }
+}
+
+function isNetworkError(e) {
+  return /network error/i.test(e.message || '');
+}
+
+function formatSyncedAt(ms) {
+  if (!ms) return 'a previous visit';
+  const diffMin = Math.round((Date.now() - ms) / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + ' min ago';
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return diffHr + ' hr ago';
+  return new Date(ms).toLocaleDateString();
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Offline app-shell loading just won't work on this browser/session --
+      // the rest of the app (including offline calc once data is cached)
+      // is unaffected either way.
+    });
+  });
+}
 
 function getSession() {
   try {
@@ -570,7 +657,14 @@ async function getValidAccessToken() {
     try {
       session = await refreshSession(session);
     } catch (e) {
-      clearSession();
+      // A genuine rejection (revoked/expired refresh token) means the
+      // session really is gone -- clear it, same as before. A network
+      // error means we simply couldn't reach Supabase right now (e.g.
+      // no connection at the range); the session itself might still be
+      // perfectly good, so don't wipe it out from under someone who's
+      // about to fall back to offline mode -- requireAuth() below
+      // decides what to do with "no live token right now" from there.
+      if (!isNetworkError(e)) clearSession();
       return null;
     }
   }
@@ -593,6 +687,8 @@ function showAuthPanel() {
   const knownEmail = getKnownAccountEmail();
   if (knownEmail) document.getElementById('authEmail').value = knownEmail;
 }
+let offlineMode = false;
+
 function showAppContent() {
   const session = getSession();
   document.getElementById('authEmailLabel').textContent = session ? session.email : '';
@@ -601,19 +697,49 @@ function showAppContent() {
   document.getElementById('appContent').style.display = 'block';
 }
 
+function hideOfflineBanner() {
+  offlineMode = false;
+  document.getElementById('offlineBanner').style.display = 'none';
+  document.getElementById('enableVoiceBtn').disabled = false;
+}
+
+function showOfflineBanner(syncedAt) {
+  offlineMode = true;
+  const el = document.getElementById('offlineBanner');
+  el.textContent = 'Offline -- using saved rifle data cached ' + formatSyncedAt(syncedAt) +
+    '. Voice mode and editing need a connection; distance and solution still work.';
+  el.style.display = 'block';
+  // Voice needs live OpenAI STT/TTS calls -- fails in a confusing,
+  // half-listening state offline rather than a clean error, so it's
+  // disabled outright here instead of just letting it fail naturally.
+  document.getElementById('enableVoiceBtn').disabled = true;
+}
+
 // Called once at page load, and after a sign-in/sign-up succeeds.
-// Returns whether the app content is actually showing (a signed-in,
-// currently-valid session) -- callers that need auth before doing
-// anything else (loadRifles, voice enable) check this first.
+// Returns whether the app content is actually showing -- callers that
+// need auth before doing anything else (loadRifles, voice enable)
+// check this first. A signed-in-but-currently-unreachable session
+// (no token available, but only because we're offline -- see
+// getValidAccessToken()) still shows app content in read-only offline
+// mode as long as a previously-cached rifle library exists, rather
+// than bouncing to a sign-in screen that's equally unusable with no
+// connection (2026-08-29, MULTI_TENANCY_DESIGN.md §19).
 async function requireAuth() {
   const token = await getValidAccessToken();
-  if (!token) {
-    showAuthPanel();
-    return false;
+  if (token) {
+    await recordPendingWaiverAcceptanceIfAny(token);
+    showAppContent();
+    return true;
   }
-  await recordPendingWaiverAcceptanceIfAny(token);
-  showAppContent();
-  return true;
+  if (getSession() && !navigator.onLine) {
+    const ok = await tryLoadFromOfflineCache();
+    if (ok) {
+      showAppContent();
+      return true;
+    }
+  }
+  showAuthPanel();
+  return false;
 }
 
 const loadSelect = document.getElementById('loadSelect');
@@ -641,8 +767,18 @@ function setStatus(msg) { statusEl.textContent = msg; }
 async function api(path, options) {
   const token = await getValidAccessToken();
   if (!token) {
-    showAuthPanel();
-    throw new Error('Signed out -- please sign in again.');
+    // No live token right now: if there's genuinely no session, that's
+    // a real sign-out -- send them to the auth screen. If a session
+    // exists but getValidAccessToken() couldn't refresh it, that's
+    // getValidAccessToken()'s network-error case (offline mode keeps
+    // the session around for exactly this) -- fail this one call as a
+    // network error instead of yanking a signed-in user back to the
+    // auth screen while they're using cached data with no connection.
+    if (!getSession()) {
+      showAuthPanel();
+      throw new Error('Signed out -- please sign in again.');
+    }
+    throw new Error('Network error -- check the connection and try again.');
   }
   const opts = Object.assign({}, options);
   opts.headers = Object.assign({}, opts.headers, { Authorization: `Bearer ${token}` });
@@ -669,6 +805,7 @@ async function loadRifles(selectName) {
   setStatus('Loading rifles...');
   try {
     allRifles = await api('/rifles');
+    hideOfflineBanner();
     if (!allRifles.length) {
       currentRifleDetail = null;
       renderRiflePicker();
@@ -694,24 +831,59 @@ async function loadRifles(selectName) {
       : stillExists(currentRifleDetail && currentRifleDetail.name) ? currentRifleDetail.name
       : allRifles[0].name;
     await loadRifleDetail(name);
+    // Opportunistic full-detail cache refresh for offline fallback --
+    // fire-and-forget, never blocks the UI and never surfaces its own
+    // errors (the online path just finished succeeding regardless).
+    cacheAllRifleDetails(allRifles, currentRifleDetail).catch(() => {});
   } catch (e) {
+    if (isNetworkError(e) && await tryLoadFromOfflineCache()) {
+      setStatus('');
+      return;
+    }
     flash(calcError, 'Could not reach Ballistica: ' + e.message);
   }
   setStatus('');
 }
 
-async function loadRifleDetail(name) {
-  currentRifleDetail = await api('/rifles/' + encodeURIComponent(name));
-  loadSelect.innerHTML = currentRifleDetail.loads.map(l =>
-    `<option value="${l.name}" ${l.name === currentRifleDetail.active_load_name ? 'selected' : ''}>${l.name}</option>`
+async function cacheAllRifleDetails(summaries, alreadyFetchedDetail) {
+  const details = await Promise.all(summaries.map((r) =>
+    (alreadyFetchedDetail && r.name === alreadyFetchedDetail.name)
+      ? alreadyFetchedDetail
+      : api('/rifles/' + encodeURIComponent(r.name))
+  ));
+  await cacheRifleLibrary(details);
+}
+
+// No connection and no cache means there's genuinely nothing to show --
+// returns false so the caller can fall back to its normal error message
+// instead of silently rendering an empty app.
+async function tryLoadFromOfflineCache() {
+  const { rifles, syncedAt } = await getCachedRifleLibrary();
+  if (!rifles.length) return false;
+  allRifles = rifles.map((r) => ({ name: r.name, active_load_name: r.active_load_name, load_count: r.loads.length }));
+  const preferred = rifles.find((r) => r.name === (currentRifleDetail && currentRifleDetail.name));
+  applyRifleDetailToUI(preferred || rifles[0]);
+  showOfflineBanner(syncedAt);
+  return true;
+}
+
+function applyRifleDetailToUI(detail) {
+  currentRifleDetail = detail;
+  loadSelect.innerHTML = detail.loads.map(l =>
+    `<option value="${l.name}" ${l.name === detail.active_load_name ? 'selected' : ''}>${l.name}</option>`
   ).join('');
-  fillRifleForm(currentRifleDetail);
-  if (currentRifleDetail.loads.length) {
-    fillLoadForm(currentRifleDetail.loads.find(l => l.name === loadSelect.value) || currentRifleDetail.loads[0]);
+  fillRifleForm(detail);
+  if (detail.loads.length) {
+    fillLoadForm(detail.loads.find(l => l.name === loadSelect.value) || detail.loads[0]);
   } else {
     openLoadFormBlank();
   }
   renderRiflePicker();
+}
+
+async function loadRifleDetail(name) {
+  const detail = await api('/rifles/' + encodeURIComponent(name));
+  applyRifleDetailToUI(detail);
 }
 
 // Addendum 35: a visible, always-current list of every saved rifle --
@@ -966,35 +1138,66 @@ document.getElementById('useLocationBtn').addEventListener('click', () => {
   );
 });
 
+// Runs the exact same calculation engine.js runs against the server
+// (ballistica/api.py's v2_calc_drop_at_range), but locally against the
+// rifle/load detail already sitting in memory (either just fetched
+// live, or restored from the offline cache) -- verified to match the
+// server's own output via scripts/check_engine_parity.js. Returns the
+// same snake_case shape the server does so the rendering code below
+// doesn't need two versions.
+function solveOffline(rifle, load, rangeYd, atmosphere, wind) {
+  const r = BallisticaEngine.solveDropAtRange({ rifle, load, rangeYd, atmosphere, wind });
+  return {
+    range_yd: r.rangeYd, drop_in: r.dropIn, drop_moa: r.dropMoa, drop_mrad: r.dropMrad,
+    drop_clicks: r.dropClicks, windage_in: r.windageIn, windage_moa: r.windageMoa,
+    windage_mrad: r.windageMrad, windage_clicks: r.windageClicks,
+    velocity_fps: r.velocityFps, mach: r.mach, time_s: r.timeS,
+  };
+}
+
 solveBtn.addEventListener('click', async () => {
   hide(calcError);
   const range = parseFloat(rangeInput.value);
   if (!range || range <= 0) { flash(calcError, 'Enter a distance in yards.'); return; }
   if (!currentRifleDetail || !loadSelect.value) { flash(calcError, 'Select a rifle and load first.'); return; }
+  const load = currentRifleDetail.loads.find(l => l.name === loadSelect.value);
   solveBtn.disabled = true;
   setStatus('Calculating...');
   try {
     const pressRaw = document.getElementById('pressInHg').value.trim();
-    const payload = {
-      range_yd: range,
-      rifle: currentRifleDetail.name,
-      load: loadSelect.value,
-      atmosphere: {
-        temp_f: parseFloat(document.getElementById('tempF').value) || 59,
-        altitude_ft: parseFloat(document.getElementById('altFt').value) || 0,
-        pressure_inhg: pressRaw === '' ? null : parseFloat(pressRaw),
-        humidity_pct: parseFloat(document.getElementById('humidPct').value) || 0,
-      },
-      wind: {
-        speed_mph: parseFloat(document.getElementById('windMph').value) || 0,
-        clock_deg: (parseFloat(document.getElementById('windClock').value) || 0) * 30,
-      },
+    const atmosphere = {
+      temp_f: parseFloat(document.getElementById('tempF').value) || 59,
+      altitude_ft: parseFloat(document.getElementById('altFt').value) || 0,
+      pressure_inhg: pressRaw === '' ? null : parseFloat(pressRaw),
+      humidity_pct: parseFloat(document.getElementById('humidPct').value) || 0,
     };
-    const r = await api('/calc/drop-at-range', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const wind = {
+      speed_mph: parseFloat(document.getElementById('windMph').value) || 0,
+      clock_deg: (parseFloat(document.getElementById('windClock').value) || 0) * 30,
+    };
+
+    let r;
+    if (offlineMode || !navigator.onLine) {
+      r = solveOffline(currentRifleDetail, load, range, atmosphere, wind);
+    } else {
+      try {
+        r = await api('/calc/drop-at-range', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ range_yd: range, rifle: currentRifleDetail.name, load: load.name, atmosphere, wind }),
+        });
+      } catch (e) {
+        // navigator.onLine said we had a connection but this call still
+        // failed to reach the network (a common false positive -- e.g.
+        // connected to a Wi-Fi with no real internet) -- fall back to
+        // the same local engine offline mode uses, rather than just
+        // showing an error for a distance/solution request that could
+        // still be answered from what's already cached.
+        if (!isNetworkError(e)) throw e;
+        r = solveOffline(currentRifleDetail, load, range, atmosphere, wind);
+      }
+    }
+
     document.getElementById('dropIn').textContent = r.drop_in.toFixed(1) + ' in';
     document.getElementById('dropSub').textContent =
       r.drop_mrad.toFixed(2) + ' mrad  /  ' + r.drop_clicks.toFixed(1) + ' clicks';

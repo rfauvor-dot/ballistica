@@ -1,0 +1,442 @@
+[
+  {
+    "label": "AR15_223_short",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.5,
+        "click_value_mrad": 0.1
+      },
+      "load": {
+        "muzzle_velocity_fps": 2900,
+        "bc": 0.245,
+        "drag_model": "G1",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 300,
+      "atmosphere": {
+        "temp_f": 70,
+        "pressure_inhg": 29.92,
+        "humidity_pct": 40,
+        "altitude_ft": 500
+      },
+      "wind": {
+        "speed_mph": 5,
+        "clock_deg": 3
+      }
+    },
+    "expected": {
+      "rangeYd": 300.0,
+      "dropIn": 13.316351782664091,
+      "dropMoa": 4.238726300768502,
+      "dropMrad": 1.2329955354318602,
+      "dropClicks": 12.329955354318601,
+      "windageIn": -0.35204047780023867,
+      "windageMoa": -0.11205796126005085,
+      "windageMrad": -0.032596340537059135,
+      "windageClicks": -0.3259634053705913,
+      "velocityFps": 1869.2382220342517,
+      "mach": 1.6536796267597198,
+      "timeS": 0.3869762057721515
+    }
+  },
+  {
+    "label": "AR15_223_long",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.5,
+        "click_value_mrad": 0.1
+      },
+      "load": {
+        "muzzle_velocity_fps": 2900,
+        "bc": 0.245,
+        "drag_model": "G1",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 600,
+      "atmosphere": {
+        "temp_f": 70,
+        "pressure_inhg": 29.92,
+        "humidity_pct": 40,
+        "altitude_ft": 500
+      },
+      "wind": {
+        "speed_mph": 10,
+        "clock_deg": 9
+      }
+    },
+    "expected": {
+      "rangeYd": 600.0,
+      "dropIn": 122.5754140525726,
+      "dropMoa": 19.50848249775975,
+      "dropMrad": 5.6747876876191015,
+      "dropClicks": 56.747876876191015,
+      "windageIn": -10.705022609341398,
+      "windageMoa": -1.7037572161321695,
+      "windageMrad": -0.49560289858062023,
+      "windageClicks": -4.956028985806202,
+      "velocityFps": 1151.6479297339622,
+      "mach": 1.018841095881553,
+      "timeS": 1.0114469333894442
+    }
+  },
+  {
+    "label": "308_hunting_mid",
+    "input": {
+      "rifle": {
+        "scope_height_in": 1.8,
+        "click_value_mrad": 0.25
+      },
+      "load": {
+        "muzzle_velocity_fps": 2650,
+        "bc": 0.475,
+        "drag_model": "G7",
+        "zero_distance_yd": 200
+      },
+      "rangeYd": 500,
+      "atmosphere": {
+        "temp_f": 55,
+        "pressure_inhg": 29.5,
+        "humidity_pct": 60,
+        "altitude_ft": 2000
+      },
+      "wind": {
+        "speed_mph": 8,
+        "clock_deg": 4.5
+      }
+    },
+    "expected": {
+      "rangeYd": 500.0,
+      "dropIn": 41.58460082243612,
+      "dropMoa": 7.9420735088641,
+      "dropMrad": 2.3102556012464515,
+      "dropClicks": 9.241022404985806,
+      "windageIn": -0.6194850479882082,
+      "windageMoa": -0.11831292573355834,
+      "windageMrad": -0.034415835999344904,
+      "windageClicks": -0.13766334399737962,
+      "velocityFps": 2192.8496953139315,
+      "mach": 1.9684209667036814,
+      "timeS": 0.6223630870007077
+    }
+  },
+  {
+    "label": "6.5CM_precision_long",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.0,
+        "click_value_mrad": 0.1
+      },
+      "load": {
+        "muzzle_velocity_fps": 2750,
+        "bc": 0.315,
+        "drag_model": "G7",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 800,
+      "atmosphere": {
+        "temp_f": 45,
+        "pressure_inhg": 26.0,
+        "humidity_pct": 20,
+        "altitude_ft": 6000
+      },
+      "wind": {
+        "speed_mph": 12,
+        "clock_deg": 6
+      }
+    },
+    "expected": {
+      "rangeYd": 800.0,
+      "dropIn": 163.76021268927386,
+      "dropMoa": 19.54743494711693,
+      "dropMrad": 5.686118496155342,
+      "dropClicks": 56.86118496155342,
+      "windageIn": -4.558585591667776,
+      "windageMoa": -0.5441410574683928,
+      "windageMrad": -0.1582842219329089,
+      "windageClicks": -1.5828422193290888,
+      "velocityFps": 1796.7411061572175,
+      "mach": 1.6307762765056584,
+      "timeS": 1.080533462868415
+    }
+  },
+  {
+    "label": "6.5CM_precision_verylong",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.0,
+        "click_value_mrad": 0.1
+      },
+      "load": {
+        "muzzle_velocity_fps": 2750,
+        "bc": 0.315,
+        "drag_model": "G7",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 1200,
+      "atmosphere": {
+        "temp_f": 45,
+        "pressure_inhg": 26.0,
+        "humidity_pct": 20,
+        "altitude_ft": 6000
+      },
+      "wind": {
+        "speed_mph": 15,
+        "clock_deg": 7.5
+      }
+    },
+    "expected": {
+      "rangeYd": 1200.0,
+      "dropIn": 478.92118791019936,
+      "dropMoa": 38.111336128733,
+      "dropMrad": 11.086138609032393,
+      "dropClicks": 110.86138609032392,
+      "windageIn": -18.176588805717035,
+      "windageMoa": -1.4464469376918427,
+      "windageMrad": -0.42075437050270914,
+      "windageClicks": -4.207543705027091,
+      "velocityFps": 1390.677240292762,
+      "mach": 1.2622204968618067,
+      "timeS": 1.8407614801721668
+    }
+  },
+  {
+    "label": "338LM_extreme",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.25,
+        "click_value_mrad": 0.1
+      },
+      "load": {
+        "muzzle_velocity_fps": 2950,
+        "bc": 0.768,
+        "drag_model": "G7",
+        "zero_distance_yd": 200
+      },
+      "rangeYd": 1500,
+      "atmosphere": {
+        "temp_f": 30,
+        "pressure_inhg": 24.5,
+        "humidity_pct": 10,
+        "altitude_ft": 8000
+      },
+      "wind": {
+        "speed_mph": 20,
+        "clock_deg": 10.5
+      }
+    },
+    "expected": {
+      "rangeYd": 1500.0,
+      "dropIn": 474.2379615159459,
+      "dropMoa": 30.19092545929009,
+      "dropMrad": 8.782184472517518,
+      "dropClicks": 87.82184472517517,
+      "windageIn": -15.648414560684731,
+      "windageMoa": -0.9962089834552751,
+      "windageMrad": -0.289785454827495,
+      "windageClicks": -2.89785454827495,
+      "velocityFps": 2187.374084126392,
+      "mach": 2.0161271554477564,
+      "timeS": 1.7717569235202721
+    }
+  },
+  {
+    "label": "hot_humid_sealevel",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.0,
+        "click_value_mrad": 0.2
+      },
+      "load": {
+        "muzzle_velocity_fps": 2800,
+        "bc": 0.4,
+        "drag_model": "G1",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 400,
+      "atmosphere": {
+        "temp_f": 105,
+        "pressure_inhg": 30.1,
+        "humidity_pct": 90,
+        "altitude_ft": 0
+      },
+      "wind": {
+        "speed_mph": 0,
+        "clock_deg": 0
+      }
+    },
+    "expected": {
+      "rangeYd": 400.0,
+      "dropIn": 29.12373820293928,
+      "dropMoa": 6.9527801483627165,
+      "dropMrad": 2.022481819648561,
+      "dropClicks": 10.112409098242804,
+      "windageIn": 0.0,
+      "windageMoa": 0.0,
+      "windageMrad": 0.0,
+      "windageClicks": 0.0,
+      "velocityFps": 2006.5528784118083,
+      "mach": 1.7004891694340287,
+      "timeS": 0.5065668020111541
+    }
+  },
+  {
+    "label": "cold_dry_highalt",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.0,
+        "click_value_mrad": 0.2
+      },
+      "load": {
+        "muzzle_velocity_fps": 2800,
+        "bc": 0.4,
+        "drag_model": "G1",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 400,
+      "atmosphere": {
+        "temp_f": -10,
+        "pressure_inhg": 22.0,
+        "humidity_pct": 5,
+        "altitude_ft": 9000
+      },
+      "wind": {
+        "speed_mph": 0,
+        "clock_deg": 0
+      }
+    },
+    "expected": {
+      "rangeYd": 400.0,
+      "dropIn": 28.042329169824434,
+      "dropMoa": 6.694612765957727,
+      "dropMrad": 1.9473839701266968,
+      "dropClicks": 9.736919850633484,
+      "windageIn": 0.0,
+      "windageMoa": 0.0,
+      "windageMrad": 0.0,
+      "windageClicks": 0.0,
+      "velocityFps": 2084.4915719164756,
+      "mach": 2.005166256740951,
+      "timeS": 0.4970555945897407
+    }
+  },
+  {
+    "label": "calm_zero_wind",
+    "input": {
+      "rifle": {
+        "scope_height_in": 1.5,
+        "click_value_mrad": 0.25
+      },
+      "load": {
+        "muzzle_velocity_fps": 2600,
+        "bc": 0.35,
+        "drag_model": "G1",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 200,
+      "atmosphere": {
+        "temp_f": 59,
+        "pressure_inhg": 29.92,
+        "humidity_pct": 0,
+        "altitude_ft": 0
+      },
+      "wind": {
+        "speed_mph": 0,
+        "clock_deg": 0
+      }
+    },
+    "expected": {
+      "rangeYd": 200.0,
+      "dropIn": 4.823134766332799,
+      "dropMoa": 2.302877152827334,
+      "dropMrad": 0.6698798286573331,
+      "dropClicks": 2.6795193146293323,
+      "windageIn": 0.0,
+      "windageMoa": 0.0,
+      "windageMrad": 0.0,
+      "windageClicks": 0.0,
+      "velocityFps": 2112.741182572622,
+      "mach": 1.8923571410695341,
+      "timeS": 0.25605039234842714
+    }
+  },
+  {
+    "label": "close_range_50yd",
+    "input": {
+      "rifle": {
+        "scope_height_in": 1.5,
+        "click_value_mrad": 0.25
+      },
+      "load": {
+        "muzzle_velocity_fps": 2600,
+        "bc": 0.35,
+        "drag_model": "G1",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 50,
+      "atmosphere": {
+        "temp_f": 59,
+        "pressure_inhg": 29.92,
+        "humidity_pct": 0,
+        "altitude_ft": 0
+      },
+      "wind": {
+        "speed_mph": 0,
+        "clock_deg": 0
+      }
+    },
+    "expected": {
+      "rangeYd": 50.0,
+      "dropIn": 0.03900514576086436,
+      "dropMoa": 0.07449433894520091,
+      "dropMrad": 0.021669525422702424,
+      "dropClicks": 0.0866781016908097,
+      "windageIn": 0.0,
+      "windageMoa": 0.0,
+      "windageMrad": 0.0,
+      "windageClicks": 0.0,
+      "velocityFps": 2472.899397377962,
+      "mach": 2.2149465691185672,
+      "timeS": 0.05915727140640466
+    }
+  },
+  {
+    "label": "no_station_pressure_highalt",
+    "input": {
+      "rifle": {
+        "scope_height_in": 2.0,
+        "click_value_mrad": 0.1
+      },
+      "load": {
+        "muzzle_velocity_fps": 2750,
+        "bc": 0.315,
+        "drag_model": "G7",
+        "zero_distance_yd": 100
+      },
+      "rangeYd": 700,
+      "atmosphere": {
+        "temp_f": 50,
+        "pressure_inhg": null,
+        "humidity_pct": 30,
+        "altitude_ft": 7500
+      },
+      "wind": {
+        "speed_mph": 6,
+        "clock_deg": 3
+      }
+    },
+    "expected": {
+      "rangeYd": 700.0,
+      "dropIn": 110.62268301734875,
+      "dropMoa": 15.090982563181687,
+      "dropMrad": 4.38978900862495,
+      "dropClicks": 43.8978900862495,
+      "windageIn": -0.7128702985242263,
+      "windageMoa": -0.0972487102229484,
+      "windageMrad": -0.028288503909691523,
+      "windageClicks": -0.2828850390969152,
+      "velocityFps": 2012.9828763312864,
+      "mach": 1.8172028900792807,
+      "timeS": 0.8930362652952117
+    }
+  }
+]

@@ -292,6 +292,15 @@ for the range. As of this cutover, it requires signing in first.
   your GPS position doesn't tell the app which way you're aimed, so
   guessing that specific number would risk being wrong in a way that
   looks authoritative; you still set that one yourself.
+- **Offline fallback mode (added 2026-08-29):** once you've opened the
+  app with a connection at least once (so your rifles/loads have synced
+  to this device), Distance + GET SOLUTION keeps working with zero
+  connectivity — the same calculation runs locally instead of on the
+  server, verified to give the exact same numbers. An amber banner
+  says "Offline -- using saved rifle data cached [when]" whenever
+  you're on cached data rather than a live fetch. Voice mode, editing a
+  rifle/load, and chronograph calibration all need a connection and
+  won't work offline — only the manual distance/solution path does.
 
 ---
 

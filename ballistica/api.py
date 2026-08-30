@@ -164,6 +164,22 @@ def web_manifest():
     return FileResponse(_WEB_DIR / "manifest.json", media_type="application/manifest+json")
 
 
+# Served from the root path (not under /icons or another mount) so its
+# default scope covers the whole origin -- a service worker only
+# controls requests under the path it's served from. See sw.js's own
+# header comment for why it's safe alongside the no-cache "/" route.
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    return FileResponse(_WEB_DIR / "sw.js", media_type="application/javascript")
+
+
+# Offline-mode ballistic engine (see MULTI_TENANCY_DESIGN.md §19) --
+# plain JS, no per-request templating, safe to cache normally.
+@app.get("/engine.js", include_in_schema=False)
+def offline_engine_script():
+    return FileResponse(_WEB_DIR / "engine.js", media_type="application/javascript")
+
+
 # ---------------------------------------------------------------- schemas
 
 class AtmosphereIn(BaseModel):

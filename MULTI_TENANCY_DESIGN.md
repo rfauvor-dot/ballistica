@@ -1313,3 +1313,100 @@ against all four sections, not because their text changed.
 narration against the real, deployed feature set -- exactly the kind of
 check a script review alone wouldn't catch; Build fixed the source text
 and regenerated the audio.
+
+---
+
+## 19. Offline fallback mode -- core drop/windage calc (2026-08-29)
+
+Rick's ask: rifle/load profiles cache locally once set up with a
+connection, so at the range with no cell service, tapping a saved
+rifle and typing a distance still gives an instant drop/windage
+solution -- no voice, no internet required. Assessed before building
+(see the technical-assessment message earlier the same day): scoped to
+the core calculation for v1; chronograph calibration (zero.py) and
+incline-angle solving (angle.py) deferred -- both are setup-time tools
+used at home with a connection, not needed for "offline at the range."
+
+**Three genuinely separate pieces**, easy to conflate into one:
+
+1. **The engine port** (`ballistica/web/engine.js`) -- a line-for-line
+   JS port of `trajectory.py`, `drag_tables.py`, `atmosphere.py`,
+   `units.py`, and `reporting.py`. Feasible specifically because that
+   code is pure stdlib Python (`math`, `bisect`, dataclasses only, no
+   NumPy) -- a mechanical translation, not a redesign. Verified against
+   the real Python engine, not assumed correct: `scripts/
+   generate_engine_parity_cases.py` runs the actual Python engine
+   across 11 realistic rifle/load/distance/condition combinations
+   (short/long range, multiple calibers, both drag models, extreme
+   atmospheres, a strong crosswind, and the `pressure_inhg=null`
+   altitude-estimate fallback specifically) and writes the results to
+   `scripts/engine_parity_cases.json`; `scripts/check_engine_parity.js`
+   (`node scripts/check_engine_parity.js`) runs the same inputs through
+   `engine.js` and asserts every field matches to 1e-6. All 11
+   cases/132 fields pass. Re-run both whenever either engine changes --
+   they must never be allowed to silently drift apart, since the whole
+   point is that an offline solution shows the same number a live one
+   would.
+
+2. **The local cache** (`ballistica/web/index.html`, IndexedDB, store
+   `ballistica-offline`) -- every saved rifle's full detail (specs,
+   click value, every load's BC/velocity/zero) is exactly the JSON
+   `RifleDetail` shape the server already returns, so caching it is a
+   straight mirror, no transformation. Written opportunistically
+   whenever the live rifle list loads successfully (`cacheAllRifleDetails`
+   in `loadRifles()`, fire-and-forget); read back only when a live
+   fetch actually fails (`tryLoadFromOfflineCache`).
+
+3. **The service worker** (`ballistica/web/sw.js`, registered from
+   `/sw.js`, served via a dedicated `api.py` route so its scope covers
+   the whole origin) -- without this, the page itself can't open at
+   all with zero connectivity, regardless of how good the offline math
+   is; easy to miss if "offline mode" is thought of as one feature
+   rather than three. Deliberately narrow: it only ever caches and
+   falls back for the static shell (`/`, `/manifest.json`, `/engine.js`,
+   icons, the branding image) via network-first-falling-back-to-cache,
+   and never touches API traffic (`/v2/*`, `/waiver`, Supabase calls) --
+   those pass straight through untouched. This preserves the no-cache
+   guarantee on `/` from earlier the same project (see the `web_ui()`
+   comment in `api.py`) for the online case exactly as before; the
+   cached fallback is only ever seen with genuinely zero connectivity,
+   at which point nothing dynamic (signup, sign-in, waiver, sync) is
+   reachable anyway regardless of which shell version is cached.
+
+**A real bug this surfaced and fixed in passing:** `getValidAccessToken()`
+previously treated a failed token refresh as a dead session regardless
+of *why* it failed, clearing it and forcing a re-login -- fine when the
+cause is a genuinely revoked/expired refresh token, actively broken
+when the cause is simply no network (exactly the offline scenario this
+whole feature is for). It now only clears the session on a real
+rejection; a network error just means no live token is available right
+now, leaving the stored session intact for when connectivity returns.
+`api()` had the same conflation (any missing token forced the auth
+screen) and got the same fix: only a genuinely absent session forces
+sign-out; a session that exists but is currently unreachable fails
+individual calls as network errors instead, letting callers (`loadRifles`,
+`solveBtn`) fall back to cache/local-compute rather than getting bounced
+out of the app entirely.
+
+**UI:** a visible amber banner ("Offline -- using saved rifle data
+cached [relative time]...") whenever running against cached data
+instead of a live fetch, so cached-but-possibly-stale data is never
+mistaken for a fresh solution -- an important distinction for a live-
+fire tool. Voice mode is explicitly disabled while offline (it needs
+live OpenAI STT/TTS calls and would otherwise fail into a confusing
+half-listening state rather than a clean error); rifle/load editing is
+left enabled and just fails naturally with a network-error message if
+attempted, rather than gating every individual button.
+
+**Verified live** (not just unit-tested): local dev server, a real
+rifle cached via the actual UI flow, then the backend process stopped
+entirely (not simulated -- genuinely not running) and the page
+reloaded. The shell rendered fully from the service worker cache with
+zero backend running; the cached rifle loaded from IndexedDB; clicking
+GET SOLUTION for 500 yd on a 77gr .223 load produced 68.9 in / 3.83
+mrad / 38.3 clicks / 1329 fps -- matching the real Python engine's own
+output for identical inputs exactly.
+
+**Owning lens:** Rick scoped the ask and approved the core-only v1
+boundary after the technical assessment; Build implemented and
+verified against the real engine, not a mock.
