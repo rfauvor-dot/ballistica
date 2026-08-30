@@ -1278,3 +1278,38 @@ waiver, and signed-in app content alike -- and through scrolling,
 satisfying "visible at all times" literally rather than per-screen.
 Verified locally across both the signed-out and signed-in views; no
 collision with the account menu (opposite corner).
+
+---
+
+## 18. Walkthrough script updated to mention GPS weather auto-fill (2026-08-29)
+
+Rick caught a real gap after listening to the deployed walkthrough
+again: Section 4 (Long Range Shooting and Spotting) tells the listener
+they can update wind/temperature/altitude/humidity by voice, but never
+mentions "Use my location" -- the GPS-to-nearest-METAR-station auto-
+fill built in §14 -- even though that feature has been live in the app
+this whole time. The script (`Ballistica_Audio_Walkthrough_Script.docx`)
+simply predated that feature; nothing was broken, the narration was
+just incomplete.
+
+**Fix:** added two sentences to Section 4's conditions paragraph in
+`ballistica/walkthrough.py` -- the single source of truth for this
+narration -- describing "Use my location" and the same wind-direction
+caveat already documented in COMMAND_GUIDE.md ("GPS has no way of
+knowing which direction you're actually facing"). Per §13's own design
+principle (narration must match `walkthrough.py` exactly, since that's
+also literally what gets sent to TTS), text and audio have to move
+together -- regenerated all four MP3s via
+`python -m scripts.generate_walkthrough_audio` (same tts-1/shimmer/0.9
+settings as every other narration in the app) rather than hand-patching
+just the one file, and replaced all four in
+`ballistica/web/audio/`.
+
+Only Section 4's content actually changed; Sections 1-3 were
+regenerated incidentally as a side effect of the script re-running
+against all four sections, not because their text changed.
+
+**Owning lens:** Rick caught the gap by listening to the real, deployed
+narration against the real, deployed feature set -- exactly the kind of
+check a script review alone wouldn't catch; Build fixed the source text
+and regenerated the audio.

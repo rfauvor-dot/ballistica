@@ -126,7 +126,11 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
             "everything else.",
             "Conditions matter for accuracy, so you can update wind, temperature, altitude, or "
             "humidity at any point, just by telling me the new numbers, and your next solution "
-            "will reflect them.",
+            "will reflect them. There's also a faster way to get most of that: tap use my "
+            "location, and Ballistica pulls temperature, humidity, altitude, and pressure "
+            "automatically from the nearest weather station to you. Wind still needs your own "
+            "call either way, since GPS has no way of knowing which direction you're actually "
+            "facing.",
             "If you need to switch loads or rifles mid-session, just tell me which one you want, "
             "and I'll switch context immediately, your dialed corrections and history stay tied to "
             "the right rifle and load automatically.",
