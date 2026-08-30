@@ -1260,11 +1260,21 @@ button visible; opening Danger zone reveals it. Full test suite still
 green (all existing ids for walkthrough and delete-account preserved
 unchanged, so their JS needed no changes).
 
-**Not done in this pass:** the "small thumbnail of the Mister and
-Missus Ballistica marketing image" Rick asked for in the same
-instruction, for a corner of the app. No such image file exists
-anywhere in this repo or was attached to the request -- needs Rick to
-provide the actual asset before it can be added.
-
 **Owning lens:** Rick specified the restructuring and flagged the
 accidental-tap risk; Build implemented and verified locally.
+
+**Update, same day:** the branding thumbnail Rick asked for in the
+same instruction -- initially deferred, no such image existed in the
+repo or the conversation -- is done. Rick provided the actual asset
+from his own Desktop (`Mr and Mrs. Ballistica photo.jpg`, an AI-
+generated marketing image, not a photo of real people); copied into
+`ballistica/web/images/mr-and-mrs-ballistica.jpg` and served via a new
+static mount (`/images`, `api.py`) matching the existing `/icons` and
+`/audio` pattern -- unauthenticated, non-personalized static content.
+Rendered as a small (56px) circular badge, `position:fixed` in the
+bottom-right corner, placed as a direct child of `<body>` (outside
+every panel div) so it stays visible across every screen -- auth,
+waiver, and signed-in app content alike -- and through scrolling,
+satisfying "visible at all times" literally rather than per-screen.
+Verified locally across both the signed-out and signed-in views; no
+collision with the account menu (opposite corner).

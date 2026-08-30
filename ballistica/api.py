@@ -124,6 +124,9 @@ app.mount("/icons", StaticFiles(directory=_WEB_DIR / "icons"), name="icons")
 # this account heard section 1 yet," tracked separately via
 # /v2/walkthrough-status, not by gating access to the audio files.
 app.mount("/audio", StaticFiles(directory=_WEB_DIR / "audio"), name="audio")
+# Static marketing/branding assets (the corner thumbnail, etc.) -- same
+# unauthenticated, non-personalized static-file pattern as /icons and /audio.
+app.mount("/images", StaticFiles(directory=_WEB_DIR / "images"), name="images")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
