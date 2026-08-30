@@ -371,6 +371,7 @@
         <div class="field w-lg"><label for="lNotes">Notes</label><input id="lNotes" type="text"></div>
       </div>
       <button id="saveLoadBtn" class="primary">Save load</button>
+      <button id="deleteLoadBtn" style="display:none">Delete load</button>
       <div id="loadOk"></div>
       <div id="loadError"></div>
     </div>
@@ -822,6 +823,13 @@ const rifleDetails = document.getElementById('rifleDetails');
 const loadDetails = document.getElementById('loadDetails');
 
 let currentRifleDetail = null;
+// True only between clicking "+ New" and the next real rifle load --
+// the explicit signal saveRifleBtn uses to decide create vs. rename/
+// update, replacing an old, buggy name-comparison check (2026-08-30).
+let creatingNewRifle = false;
+// Same idea, same reason, for loads within the current rifle -- fixes
+// the identical rename-becomes-a-duplicate bug for loads (2026-08-30).
+let creatingNewLoad = false;
 let allRifles = []; // [{name, active_load_name, load_count}] -- this listing never
                      // requires an active load to exist (Addendum 36: zero loads is
                      // a valid rifle state), unlike the per-rifle detail fetch below.
@@ -879,7 +887,7 @@ async function loadRifles(selectName) {
     if (!allRifles.length) {
       currentRifleDetail = null;
       renderRiflePicker();
-      openRifleFormBlank();
+      openRifleFormBlank(); // sets creatingNewRifle = true itself -- nothing to edit yet, the next save is necessarily a create
       setStatus('');
       return;
     }
@@ -939,6 +947,7 @@ async function tryLoadFromOfflineCache() {
 
 function applyRifleDetailToUI(detail) {
   currentRifleDetail = detail;
+  creatingNewRifle = false; // loading any real rifle means we're editing it, not creating a new one
   loadSelect.innerHTML = detail.loads.map(l =>
     `<option value="${l.name}" ${l.name === detail.active_load_name ? 'selected' : ''}>${l.name}</option>`
   ).join('');
@@ -1017,6 +1026,7 @@ function toggleSuppressorType() {
 }
 document.getElementById('rSuppressor').addEventListener('change', toggleSuppressorType);
 function openRifleFormBlank() {
+  creatingNewRifle = true;
   document.getElementById('rName').value = '';
   document.getElementById('rCaliber').value = '';
   document.getElementById('rBarrel').value = '';
@@ -1040,6 +1050,7 @@ function openRifleFormBlank() {
 }
 
 function fillLoadForm(l) {
+  creatingNewLoad = false;
   document.getElementById('lName').value = l.name;
   document.getElementById('lBulletType').value = l.bullet_type || '';
   document.getElementById('lBulletWt').value = l.bullet_weight_gr;
@@ -1050,12 +1061,15 @@ function fillLoadForm(l) {
   document.getElementById('lPowder').value = l.powder || '';
   document.getElementById('lCharge').value = l.powder_charge_gr ?? '';
   document.getElementById('lNotes').value = l.notes || '';
+  document.getElementById('deleteLoadBtn').style.display = '';
 }
 function openLoadFormBlank() {
+  creatingNewLoad = true;
   ['lName','lBulletType','lBulletWt','lBC','lMV','lZero','lPowder','lCharge','lNotes'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('lDragModel').value = 'G1';
+  document.getElementById('deleteLoadBtn').style.display = 'none';
   loadDetails.open = true;
 }
 
@@ -1076,7 +1090,17 @@ document.getElementById('saveRifleBtn').addEventListener('click', async () => {
   hide(document.getElementById('rifleError'));
   const name = document.getElementById('rName').value.trim();
   if (!name) { flash(document.getElementById('rifleError'), 'Gun name is required.'); return; }
-  const isNew = !currentRifleDetail || currentRifleDetail.name !== name;
+  // Whether this is a genuinely new rifle is tracked explicitly
+  // (creatingNewRifle, set by the "+ New" button and cleared the
+  // moment any real rifle is loaded) -- NOT inferred by comparing the
+  // typed name against currentRifleDetail.name. That comparison used
+  // to be the only signal, and it was wrong: editing the name field on
+  // an existing rifle made this look identical to starting a new one,
+  // so saving silently created a second rifle under the new name
+  // (empty, no loads) while leaving the original untouched under its
+  // old name -- a real bug (2026-08-30), not a hypothetical, fixed
+  // here and in profiles.py's update_rifle_fields().
+  const isNew = creatingNewRifle;
   const meta = {
     scope_height_in: parseFloat(document.getElementById('rScope').value) || 0,
     caliber: document.getElementById('rCaliber').value.trim(),
@@ -1101,10 +1125,17 @@ document.getElementById('saveRifleBtn').addEventListener('click', async () => {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, ...meta, loads: [] }),
       });
+      creatingNewRifle = false;
     } else {
-      await api('/rifles/' + encodeURIComponent(name), {
+      // URL identifies the EXISTING rifle by its original name;
+      // `name` (possibly changed) goes in the body so the backend can
+      // detect and apply a rename -- using the typed `name` in the URL
+      // here was the other half of the original bug (it would 404 on
+      // a real Supabase rifle whose name no longer matched what's in
+      // the URL the moment the name field was edited).
+      await api('/rifles/' + encodeURIComponent(currentRifleDetail.name), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(meta),
+        body: JSON.stringify({ name, ...meta }),
       });
     }
     flash(document.getElementById('rifleOk'), 'Saved.', 2000);
@@ -1147,13 +1178,45 @@ document.getElementById('saveLoadBtn').addEventListener('click', async () => {
     notes: document.getElementById('lNotes').value.trim(),
   };
   try {
-    await api('/rifles/' + encodeURIComponent(currentRifleDetail.name) + '/loads', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    if (creatingNewLoad) {
+      await api('/rifles/' + encodeURIComponent(currentRifleDetail.name) + '/loads', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      creatingNewLoad = false;
+    } else {
+      // loadSelect.value still holds the ORIGINAL load's name -- typing
+      // into the name field only changes the text input, not the
+      // dropdown's own selected value -- so this correctly identifies
+      // which existing load to update even when its name changed.
+      // Using PUT here (not POST) is the actual fix: POST always
+      // created a new load regardless of whether one by that name
+      // already existed, so editing a load's name used to leave a
+      // duplicate under the old name behind (2026-08-30).
+      await api('/rifles/' + encodeURIComponent(currentRifleDetail.name) + '/loads/' + encodeURIComponent(loadSelect.value), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
     flash(document.getElementById('loadOk'), 'Saved.', 2000);
     await loadRifleDetail(currentRifleDetail.name);
     loadSelect.value = name;
+  } catch (e) {
+    flash(document.getElementById('loadError'), e.message);
+  }
+});
+
+document.getElementById('deleteLoadBtn').addEventListener('click', async () => {
+  hide(document.getElementById('loadError'));
+  if (!currentRifleDetail || !loadSelect.value) return;
+  const loadName = loadSelect.value;
+  if (!confirm(`Delete load "${loadName}"? This can't be undone.`)) return;
+  try {
+    await api('/rifles/' + encodeURIComponent(currentRifleDetail.name) + '/loads/' + encodeURIComponent(loadName), {
+      method: 'DELETE',
+    });
+    flash(document.getElementById('loadOk'), 'Deleted.', 2000);
+    await loadRifleDetail(currentRifleDetail.name);
   } catch (e) {
     flash(document.getElementById('loadError'), e.message);
   }

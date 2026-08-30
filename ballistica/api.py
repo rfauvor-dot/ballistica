@@ -296,7 +296,12 @@ class RifleIn(BaseModel):
 
 
 class RifleUpdate(BaseModel):
-    """Full replace of a rifle's editable metadata (not its loads)."""
+    """Full replace of a rifle's editable metadata (not its loads).
+    `name` is optional and, when present and different from the
+    {rifle_name} in the URL, renames the rifle in place -- see
+    profiles.py's update_rifle_fields() for why this has to be a real
+    rename (re-keying the in-memory dict) and not a plain field set."""
+    name: str | None = None
     scope_height_in: float
     caliber: str = ""
     barrel_length_in: float | None = None
@@ -1013,6 +1018,12 @@ def v2_voice_query(
 def v2_update_rifle(
     rifle_name: str, payload: RifleUpdate, user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
+    # Checked here, not just inside update_rifle_fields, so a genuine
+    # name collision reports 409 (matches v2_create_rifle's own
+    # duplicate-name response) rather than folding into the same 404
+    # every other validation error in this endpoint already uses.
+    if payload.name and payload.name != rifle_name and payload.name in user_store.rifles:
+        raise HTTPException(status_code=409, detail=f"Rifle '{payload.name}' already exists")
     try:
         rifle = user_store.update_rifle_fields(rifle_name, **payload.model_dump())
     except (KeyError, ValueError) as exc:
@@ -1040,6 +1051,49 @@ def v2_add_load(
     # Section 4. Best-effort: never blocks this endpoint's own success.
     contribute_load(rifle, load, user_store.access_token)
     return _load_to_out(load)
+
+
+@app.put("/v2/rifles/{rifle_name}/loads/{load_name}", response_model=LoadOut)
+def v2_update_load(
+    rifle_name: str, load_name: str, payload: LoadIn,
+    user_store: SupabaseProfileStore = Depends(_get_user_store),
+):
+    """Updates an existing load in place, including a real rename if
+    payload.name differs from {load_name} in the URL -- the load-level
+    counterpart to v2_update_rifle's rename fix (2026-08-30), same root
+    cause: rifle.loads is keyed by name, so a rename has to re-key the
+    dict, not just overwrite a field. Distinct from POST .../loads
+    (v2_add_load), which is for creating a genuinely new load -- the
+    web app tracks which one applies the same way it now tracks rifles
+    (an explicit "creating new" flag, not a name comparison)."""
+    try:
+        rifle = user_store.find_rifle(rifle_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    if payload.name != load_name and payload.name in rifle.loads:
+        raise HTTPException(status_code=409, detail=f"A load named '{payload.name}' already exists on this rifle")
+    try:
+        load = user_store.update_load_fields(rifle_name, load_name, **payload.model_dump())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    user_store.save()
+    contribute_load(rifle, load, user_store.access_token)
+    return _load_to_out(load)
+
+
+@app.delete("/v2/rifles/{rifle_name}/loads/{load_name}")
+def v2_delete_load(rifle_name: str, load_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    """Removes a single load without touching the rifle or its other
+    loads -- previously the only way to remove one bad/duplicate load
+    was deleting the whole rifle and recreating it from scratch (real,
+    documented gap, COMMAND_GUIDE.md's own "Known limitations"
+    section, closed 2026-08-30)."""
+    try:
+        load = user_store.delete_load(rifle_name, load_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_msg(exc))
+    user_store.save()
+    return {"deleted": load.name}
 
 
 @app.get("/v2/status")

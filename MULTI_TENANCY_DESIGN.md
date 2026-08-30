@@ -1991,3 +1991,98 @@ explicitly, after an initial round of clarifying questions; Build
 implemented exactly as specified, flagged the legal-weight tradeoff
 once, and verified every piece against live behavior -- including the
 still-pending-migration failure mode, not just the success path.
+
+---
+
+## 27. Rename bug (rifles and loads) + single-load/rifle delete (2026-08-30)
+
+Rick reported: "editing a rifle profile's name creates a duplicate
+instead of updating in place." Confirmed by reading the actual code,
+not assumed: `saveRifleBtn`'s handler decided create-vs-update purely
+by comparing the typed name against `currentRifleDetail.name` --
+`const isNew = !currentRifleDetail || currentRifleDetail.name !==
+name;`. Editing the name field makes that comparison true by
+construction, so editing a name looked identical to starting a
+brand-new rifle: it silently POSTed a second rifle under the new name
+(empty, no loads) while the original sat untouched under its old name
+-- not a rename, a duplicate. **The same root cause turned out to
+affect loads too** (found while fixing the rifle case, not separately
+reported): `saveLoadBtn` always POSTed to the create-a-load endpoint
+regardless of whether a load by that name already existed, so editing
+a load's name produced a second, duplicate load rather than renaming
+the original. Fixed both, plus added rifle- and load-level single-item
+delete, all in one pass since it's the identical dict-keyed-by-name
+architecture underneath both bugs and both new features.
+
+**Root fix, not a workaround:** `self.rifles` and `rifle.loads` are
+both plain dicts keyed by name -- a rename has to re-key the dict, not
+just set an attribute on the object sitting at the old key. Added to
+`ProfileStore` (`profiles.py`): `update_rifle_fields()` now accepts an
+optional `name`, pops it out, applies the other field changes (with
+the existing rollback-on-validation-failure behavior unchanged), then
+-- only if the name actually changed -- deletes the old dict key,
+sets the object's `.name`, and inserts it at the new key, updating
+`active_rifle_name` too if it pointed at the old name. `update_load_
+fields()` is the exact same pattern one level down, for `rifle.loads`/
+`active_load_name`. Both reject an empty new name and a collision with
+an existing name at that level (rifle-name collisions across the
+account, load-name collisions within that one rifle).
+
+**Frontend fix:** the create-vs-update decision no longer infers
+anything from comparing names. Two explicit flags, `creatingNewRifle`/
+`creatingNewLoad`, are set exactly where "+ New" is clicked (and the
+zero-rifles/zero-loads fallback states, which are equally "nothing to
+edit yet") and cleared exactly where a real rifle/load gets loaded for
+editing (`applyRifleDetailToUI`/`fillLoadForm`) -- not inferred
+anywhere else. `saveRifleBtn` now PUTs to the rifle's *original* name
+(from `currentRifleDetail.name`, not the possibly-just-edited form
+field) with the new name in the body; `saveLoadBtn` does the same
+against `loadSelect.value` (which holds the original load name even
+after the name *input* has been edited, since typing in a text field
+doesn't change a separate `<select>`'s own value).
+
+**New endpoints:** `PUT /v2/rifles/{rifle_name}/loads/{load_name}`
+(update/rename a load -- the load-level counterpart to the rifle's
+existing `PUT /v2/rifles/{rifle_name}`, which already existed but
+didn't accept a name until this fix); `DELETE /v2/rifles/{rifle_name}/
+loads/{load_name}` (closes a real, previously-documented gap --
+COMMAND_GUIDE.md's own "Known limitations" said the only way to remove
+one bad load was deleting the whole rifle). Rifle-level delete already
+existed; only load-level was new.
+
+**Verified against the real API, not just unit tests:** using the
+`dt-auth-smoketest` fixture account -- created a rifle with a load,
+edited the rifle's name field and saved through the actual save
+handler, confirmed exactly one rifle exists afterward under the new
+name with the load intact (not two rifles, not zero loads). Same
+check for a load rename via the real `PUT .../loads/{name}` endpoint,
+and for the new delete-load endpoint (removes only that load, rifle
+and its other loads untouched, active_load_name reassigned or cleared
+correctly). All test data cleaned up afterward -- fixture account
+confirmed back to zero rifles.
+
+**Noticed in passing, not caused by this work:** `GET /v2/profile`
+(the display-name feature from earlier) throws a 500 against the real
+project right now -- `KeyError: 'display_name'`, because `db/008_
+display_name.sql` still hasn't been run. Already known and already
+flagged when that feature shipped; degrades silently for the user
+(`loadDisplayName()` catches every error), not a regression from
+today's changes, just re-confirmed live while testing something else
+in the same area.
+
+**Verified:** 18 new unit tests (`tests/test_profiles_rename_delete.py`)
+covering rename (dict re-keying, load preservation, no duplicate left
+behind, active-name pointer updates, collision/empty-name rejection)
+and delete (single-item removal, active pointer reassignment, 404s for
+missing rifle/load) at both the rifle and load level. Full suite green,
+zero regression. `COMMAND_GUIDE.md`'s "Known limitations" section
+updated -- removed the now-resolved single-load-delete entry, and (found
+stale while in there) two other already-resolved entries from earlier
+sessions (CSV import, bundled bullet reference) that were never cleaned
+up when those shipped.
+
+**Owning lens:** Rick reported the rifle bug and specified building
+both deletes now rather than queuing them; Build found the same root
+cause independently affected loads, fixed both together, and verified
+against the real API and a real account, not just new unit tests in
+isolation.

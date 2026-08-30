@@ -195,6 +195,23 @@ class ProfileStore:
             self.active_rifle_name = next(iter(self.rifles), None)
         return rifle
 
+    def delete_load(self, rifle_query: str, load_query: str) -> Load:
+        """Removes a single load from a rifle -- the rifle itself and
+        its other loads are untouched. Previously the only way to
+        remove one bad/duplicate load was deleting the whole rifle and
+        recreating it (2026-08-30, real documented gap, not
+        hypothetical -- COMMAND_GUIDE.md's own "Known limitations"
+        section). If the deleted load was the rifle's active one, an
+        arbitrary remaining load becomes active instead (or none, if
+        it was the last one) -- same pattern delete_rifle already uses
+        for the rifle-level active pointer."""
+        rifle = self.find_rifle(rifle_query)
+        load = rifle.find_load(load_query)
+        del rifle.loads[load.name]
+        if rifle.active_load_name == load.name:
+            rifle.active_load_name = next(iter(rifle.loads), None)
+        return load
+
     def set_active_load(self, query: str) -> Load:
         """Switches the active load on the active rifle by fuzzy name."""
         rifle = self.get_active_rifle()
@@ -212,8 +229,25 @@ class ProfileStore:
 
     def update_rifle_fields(self, rifle_query: str, **fields) -> Rifle:
         """Updates rifle metadata (scope height, caliber, barrel length,
-        twist rate, click value, etc.) in place on an existing rifle."""
+        twist rate, click value, name, etc.) in place on an existing
+        rifle. A `name` change is a real rename, not a plain attribute
+        set -- self.rifles is keyed by name, so the dict itself has to
+        be re-keyed too, and active_rifle_name updated if it pointed at
+        the old name.
+
+        Fixed a real bug here (2026-08-30): the web app's own save
+        handler used to decide "is this an edit or a new rifle" purely
+        by comparing the typed name against what was originally loaded
+        -- which meant editing the name field looked identical to
+        creating a brand-new rifle. It silently created a second rifle
+        under the new name (with none of the original's loads) while
+        leaving the original completely untouched under its old name,
+        rather than renaming anything. Renaming through this one method
+        (not a separate endpoint) is what makes the actual fix -- see
+        api.py's v2_update_rifle -- a single atomic call instead of two
+        that could partially fail."""
         rifle = self.find_rifle(rifle_query)
+        new_name = fields.pop("name", None)
         original = {}
         for key, value in fields.items():
             if not hasattr(rifle, key):
@@ -236,7 +270,57 @@ class ProfileStore:
             for key, value in original.items():
                 setattr(rifle, key, value)
             raise
+        if new_name is not None and new_name != rifle.name:
+            if not new_name.strip():
+                raise ValueError("Rifle name cannot be empty")
+            if new_name in self.rifles:
+                raise ValueError(f"A rifle named '{new_name}' already exists")
+            old_name = rifle.name
+            del self.rifles[old_name]
+            rifle.name = new_name
+            self.rifles[new_name] = rifle
+            if self.active_rifle_name == old_name:
+                self.active_rifle_name = new_name
         return rifle
+
+    def update_load_fields(self, rifle_query: str, load_query: str, **fields) -> Load:
+        """Updates load fields (bullet, BC, drag model, velocity, etc.)
+        in place on an existing load, including a real rename if `name`
+        differs -- rifle.loads is keyed by name, same as self.rifles
+        above, so this has the identical rename-has-to-re-key-the-dict
+        requirement and was fixed for the identical reason (2026-08-30):
+        the web app's "Save load" button always POSTed a new load
+        regardless of whether one by that name already existed, so
+        editing a load's name field created a second, duplicate load
+        under the new name while leaving the original sitting there
+        under its old name, rather than renaming it."""
+        rifle = self.find_rifle(rifle_query)
+        load = rifle.find_load(load_query)
+        new_name = fields.pop("name", None)
+        original = {}
+        for key, value in fields.items():
+            if not hasattr(load, key):
+                raise ValueError(f"Load has no field '{key}'")
+            original[key] = getattr(load, key)
+            setattr(load, key, value)
+        try:
+            load.__post_init__()
+        except ValueError:
+            for key, value in original.items():
+                setattr(load, key, value)
+            raise
+        if new_name is not None and new_name != load.name:
+            if not new_name.strip():
+                raise ValueError("Load name cannot be empty")
+            if new_name in rifle.loads:
+                raise ValueError(f"A load named '{new_name}' already exists on this rifle")
+            old_name = load.name
+            del rifle.loads[old_name]
+            load.name = new_name
+            rifle.loads[new_name] = load
+            if rifle.active_load_name == old_name:
+                rifle.active_load_name = new_name
+        return load
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

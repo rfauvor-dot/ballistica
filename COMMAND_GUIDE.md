@@ -293,18 +293,28 @@ for the range. As of this cutover, it requires signing in first.
   scope height, reticle unit, click value, optic type, make/model,
   suppressor + type, magnification, objective, focal plane, dot size,
   reticle type).
-- **Save rifle:** creates or updates that rifle. **Saving a brand-new
-  rifle makes it active** (same as voice) — this also changes what
-  voice commands act on next.
+- **Save rifle:** creates a rifle when opened via "+ New," or updates
+  the currently-open one otherwise — **including its name**
+  (added 2026-08-30): editing the name field and saving renames the
+  rifle in place rather than creating a second one. **Saving a
+  brand-new rifle makes it active** (same as voice) — this also
+  changes what voice commands act on next.
 - **Delete rifle:** see §8.
 - **Load dropdown (within a rifle):** switches which load's fields are
   shown **in the edit form only** — same caveat as the rifle picker,
   this does **not** change the active load for voice or for a future
   "GET SOLUTION" unless you also pick it there.
 - **+ New (load) / Save load:** same field set as voice load setup.
-  **Saving always makes that load active** on its rifle — there is
-  **no way in the web app to switch back to a previously-saved load**
-  without either using voice ("switch to <name>") or re-saving it.
+  Editing an existing load's name and saving **renames it in place**
+  (added 2026-08-30), same as rifles — it no longer creates a
+  duplicate under the new name. **Saving always makes that load
+  active** on its rifle — there is **no way in the web app to switch
+  back to a previously-saved load** without either using voice
+  ("switch to <name>") or re-saving it.
+- **Delete load (added 2026-08-30):** shown once an existing load is
+  open — removes just that load, leaving the rifle and its other loads
+  untouched. Previously the only way to remove one bad/duplicate load
+  was deleting the whole rifle and starting over.
 - **Distance + GET SOLUTION:** gets a drop/windage solution for
   whichever rifle is open and whichever load is selected in that rifle's
   dropdown — this part **is** explicit per-request (sends the exact
@@ -347,15 +357,8 @@ Verified absent from the code, not just undocumented:
   designed and scoped (male voice picked: OpenAI's "Onyx") but never
   implemented — the app always speaks in the single current voice.
   Tracked in `BACKLOG.md`.
-- **No way to delete a single load** — only a whole rifle (and
-  everything on it) can be deleted, by voice or web.
 - **No way to switch the active load from the web app** — only by
   voice, or by re-saving a load through the form.
-- **No spreadsheet/CSV import** for existing rifle/load/shooting data —
-  backlogged, sequenced after this multi-tenancy work.
-- **No bundled reference bullet/BC/factory-load database** — every
-  rifle and load is entered from scratch. A seed dataset from published
-  manufacturer data is scoped in `BACKLOG.md` but not built.
 - **No in-app disclaimer/liability language** anywhere in the product —
   flagged separately in `RISK_REGISTER.md`.
 - **`/calc/angle`, `/calc/drop-table`, and `/calc/mpbr-zero` have no
