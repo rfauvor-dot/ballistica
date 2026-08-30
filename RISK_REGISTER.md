@@ -161,6 +161,19 @@ the original design already called out.)
 
 **Owning lens:** Rick decided; Build implemented and verified same-day.
 
+**Update 2026-08-30:** the pipeline this entry originally said didn't
+exist yet now does. Every load a user saves or enters is automatically
+anonymized and merged into `events` -- a standard, non-optional part
+of the app, not an opt-in feature, per Rick's explicit instruction.
+Waiver text updated (v2) to disclose this; existing users see a
+notice on next login rather than a blocking re-consent screen,
+continued use constitutes acceptance. See MULTI_TENANCY_DESIGN.md §26
+for full detail, including the one still-open item: `db/009` (widening
+the `events` table's event_type constraint to allow `'load'`) needs
+Rick to run it before contributions actually persist -- verified live
+that a save succeeds normally either way, the pending migration only
+affects whether the contribution itself lands.
+
 ---
 
 ## Data Architecture / Schema Evolution

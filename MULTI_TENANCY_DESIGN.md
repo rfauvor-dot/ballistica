@@ -1888,3 +1888,106 @@ confirmed and named, real spot-checks against real specs, flag don't
 guess, explicit subordination guarantee); Build pulled the real
 source, built the pipeline, and verified every item against live data
 or the real code, not inspection alone.
+
+---
+
+## 26. Waiver disclosure + mandatory aggregate contribution pipeline (2026-08-30)
+
+Rick made three explicit, deliberate product/legal calls here,
+overriding what an external review (and this doc's own earlier
+framing) had recommended -- his calls, implemented as specified, not
+re-litigated:
+
+1. **No separate consent checkbox.** Data-use consent folds into the
+   existing waiver acceptance itself.
+2. **Existing users:** shown a plain on-screen notice on next login,
+   not a blocking re-acceptance screen. Continuing to use the app after
+   that notice constitutes acceptance.
+3. **No opt-in population at all.** Every load a user saves or enters
+   is automatically anonymized and merged into the aggregate pool, as
+   a standard, non-optional part of how the app works -- not a
+   per-load action, not a togglable preference.
+
+Flagged once, not re-argued: continued-use consent is legally weaker
+than the explicit-checkbox pattern the rest of this waiver flow uses,
+and mandatory (non-optional) data collection raises its own disclosure
+bar -- same "not a substitute for real legal review before real paying
+customers" caveat already on record for every aggregate-data decision
+in this project.
+
+**Waiver text (`ballistica/waiver.py`, version bumped `2026-08-28-v1`
+-> `2026-08-30-v2`):** new Section 4, "How Your Ballistic Data Is
+Used," inserted before the renumbered "Your Independent Duty to
+Verify" (sections 4-11 shifted to 5-12). States plainly: load data is
+automatically anonymized and merged into the aggregate pool as a
+standard, non-optional part of the app; anonymization happens at save
+time and can never be traced back to the account, including after
+deletion; rifle names, load names, and notes are excluded. Section 11
+("How You Accept This Agreement") gained a second paragraph describing
+the existing-user notice-and-continued-use path alongside the
+unchanged new-account checkbox path. The acknowledgment text itself
+(what the checkbox literally says) now names this consent explicitly,
+not just the body text above it. Flagged directly in the module's own
+docstring: unlike sections 1-11's original attorney-approved text,
+this new section and acceptance-mechanism paragraph are Rick's own
+operational instruction, not independently attorney-reviewed --
+recorded so that distinction is never lost track of later.
+
+**Existing-user notice** (`GET /v2/waiver/status`, `index.html`): a
+new endpoint reads the caller's own most recent `waiver_acceptances`
+row (RLS-scoped, no service role) and compares it to the live
+`WAIVER_VERSION`. `init()` calls it once per session; a stale or
+missing acceptance immediately records acceptance of the *current*
+version (reusing the exact same `recordWaiverAcceptance()` the
+signup flow already uses) and shows a plain, dismissible banner --
+acceptance is recorded the moment the mismatch is detected, per
+Rick's instruction that the notice itself is the mechanism, not a
+further click. Verified live: the `dt-auth-smoketest` fixture account
+(last accepted the old v1 text) showed the banner, `GET /v2/waiver/
+status` immediately reflected `up_to_date: true` afterward, and a
+second load produced no banner at all.
+
+**Aggregate pipeline** (`ballistica/aggregate_pool.py`, migration
+`db/009_add_load_event_type.sql`): `contribute_load()` fires from
+every place a load gets saved -- the single-load endpoint
+(`v2_add_load`), rifle creation with inline loads (`v2_create_rifle`),
+and the bulk import commit path -- covering "saves or enters" exactly
+as specified, not just one of the three save paths. Uses the caller's
+own access token for the insert, not a service role -- the
+`events_insert_any_authenticated` RLS policy only requires a real
+session, and `events` has no `user_id` column at all (§ earlier this
+doc), so the row itself carries no identity regardless of whose token
+inserted it.
+
+`build_load_event_payload()` is an explicit allow-list -- caliber,
+barrel length, twist rate, bullet type/weight, BC, drag model, muzzle
+velocity, zero distance, powder, charge -- deliberately not "every
+field except a documented exclude-list," so a future field added to
+`Rifle`/`Load` can't silently start leaking into the aggregate pool
+just because nobody remembered to add it to an exclude-list. Rifle
+name, load name, and notes (the highest-risk free-text field a user
+fully controls) never appear. Verified directly, not assumed: a test
+fixture with a rifle/load name and notes deliberately containing an
+email address and a city confirms none of it survives into the built
+payload.
+
+Contribution is best-effort and non-fatal by design (`contribute_load`
+catches and logs, never raises) -- confirmed live, not just by reading
+the code: `db/009` hasn't been run yet, so a real save's contribution
+attempt currently gets a 400 from Supabase's still-narrower check
+constraint, logged clearly in the server log, while the rifle/load
+save itself succeeded and returned normally. Once Rick runs `db/009`,
+the exact same code path succeeds instead -- no code change needed,
+only the pending migration, same pattern as every other schema-
+dependent feature in this project.
+
+**Verified:** 9 new tests (5 waiver-text assertions, 4 aggregate-
+payload exclusion tests) plus the live checks above; full suite green
+(127 passed), zero regression. `db/009` still needs Rick to run it in
+the Supabase SQL Editor before contributions actually persist.
+
+**Owning lens:** Rick made all three consent/pipeline-design calls
+explicitly, after an initial round of clarifying questions; Build
+implemented exactly as specified, flagged the legal-weight tradeoff
+once, and verified every piece against live behavior -- including the
+still-pending-migration failure mode, not just the success path.

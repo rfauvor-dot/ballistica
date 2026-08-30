@@ -265,6 +265,11 @@
 
   <div id="offlineBanner" style="display:none; margin-bottom:14px; padding:10px 12px; border-radius:8px; background:#fff6e0; color:#7a5b00; font-weight:600; font-size:14px;"></div>
 
+  <div id="waiverUpdateNotice" style="display:none; margin-bottom:14px; padding:10px 12px; border-radius:8px; background:var(--ok-bg); color:var(--text); font-size:14px; line-height:1.4;">
+    <strong>Ballistica's waiver has been updated.</strong> Load data you save (bullet, powder, charge, velocity) is automatically anonymized and used to improve Ballistica's aggregate reference models -- a standard, non-optional part of how the app works. It's never linked to your account. Continuing to use Ballistica confirms your acceptance of the updated waiver.
+    <button id="waiverUpdateOkBtn" style="margin-top:8px;">Got it</button>
+  </div>
+
   <div class="voice-panel">
     <div class="state-line" id="voiceState">Voice: off</div>
     <div class="heard-line" id="voiceHeard"></div>
@@ -2207,9 +2212,33 @@ async function init() {
     // name only when there's a real token keeps this consistent with
     // that, no separate offline cache needed for it.
     await loadDisplayName();
+    await checkWaiverStatus(token);
   }
   await loadRifles();
 }
+
+// Existing-user half of the waiver revision flow (2026-08-30, waiver.py
+// Section 11): a signed-in user whose most recent acceptance predates
+// the current waiver version gets a plain notice, not a blocking
+// re-acceptance screen. Acceptance is recorded the moment this fires --
+// per Rick's explicit instruction, the notice itself is the mechanism;
+// continuing to use the app (which they're already doing by virtue of
+// being signed in) is what constitutes acceptance, not a further click.
+async function checkWaiverStatus(accessToken) {
+  try {
+    const status = await api('/waiver/status');
+    if (status.up_to_date) return;
+    await recordWaiverAcceptance({
+      waiver_version: status.current_version,
+      waiver_sha256: status.current_sha256,
+      accepted_at: new Date().toISOString(),
+    }, accessToken);
+    document.getElementById('waiverUpdateNotice').style.display = 'block';
+  } catch (e) { /* best-effort -- never blocks the app over this */ }
+}
+document.getElementById('waiverUpdateOkBtn').addEventListener('click', () => {
+  document.getElementById('waiverUpdateNotice').style.display = 'none';
+});
 init();
 </script>
 </body>

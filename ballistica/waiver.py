@@ -20,13 +20,28 @@ whenever the section text below changes); WAIVER_TEXT_SHA256 is computed
 directly from the section text itself, not hand-maintained, so a version
 label someone forgets to bump can never silently mismatch a text change --
 the hash always reflects the exact text a user actually saw.
+
+v2 (2026-08-30, per Rick's explicit instruction): added a new section
+disclosing that saved load data is automatically anonymized and merged
+into an aggregate reference pool (MULTI_TENANCY_DESIGN.md §26), and
+updated the acceptance-mechanism section and acknowledgment text to
+cover it, plus how existing users are brought onto this version. Unlike
+sections 1-11 below (sourced verbatim from the attorney-approved
+Ballistica_Liability_Waiver_DRAFT.docx), this new section and the
+updated acceptance-mechanism paragraph are Rick's own operational
+instruction, written to match the same plain, factual style as the
+rest of the document -- not independently attorney-reviewed. Flagged
+here so that distinction is never lost; real counsel review before
+this reaches a broad base of paying customers still applies, same
+caveat already on record for every other aggregate-data decision this
+project has made.
 """
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
 
-WAIVER_VERSION = "2026-08-28-v1"
+WAIVER_VERSION = "2026-08-30-v2"
 
 WAIVER_TITLE = "SAFETY ACKNOWLEDGMENT, ASSUMPTION OF RISK, DATA DISCLAIMER, AND LIABILITY WAIVER"
 
@@ -81,7 +96,25 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="4. Your Independent Duty to Verify",
+        heading="4. How Your Ballistic Data Is Used",
+        paragraphs=(
+            "Load data you save in the App — for example, bullet, powder, charge weight, and "
+            "velocity information — is automatically anonymized and combined with other users' "
+            "contributions and third-party reference data to build and improve Ballistica's "
+            "aggregate ballistic reference models, made available to all users. This is a "
+            "standard, non-optional part of how the App operates, not a separate choice you make.",
+            "Anonymization happens at the moment your data is saved: a contribution is never "
+            "linked to your account and cannot be traced back to you by us or anyone else, "
+            "including after your account is deleted. Rifle names, load names, notes, and any "
+            "other identifying information you enter are not included in this aggregate data — "
+            "only the underlying ballistic facts (bullet, powder, charge, velocity, and similar "
+            "physical measurements) are used.",
+            "By creating an account or continuing to use the App, you acknowledge and agree to "
+            "this use of your data.",
+        ),
+    ),
+    WaiverSection(
+        heading="5. Your Independent Duty to Verify",
         paragraphs=(
             "Before loading, firing, or otherwise relying on any data displayed in the App, you "
             "agree to independently verify that data against current, published data from a "
@@ -95,7 +128,7 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="5. Assumption of Risk",
+        heading="6. Assumption of Risk",
         paragraphs=(
             "By creating an account or using the App, you knowingly and voluntarily assume all "
             "risks associated with handloading, reloading, and firearms use, and all risks "
@@ -105,7 +138,7 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="6. Release and Waiver of Liability",
+        heading="7. Release and Waiver of Liability",
         paragraphs=(
             "To the fullest extent permitted by law, you release, waive, and discharge Ballistica, "
             "its owner(s), developers, and affiliates from any and all liability, claims, demands, "
@@ -116,7 +149,7 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="7. Indemnification",
+        heading="8. Indemnification",
         paragraphs=(
             "You agree to indemnify and hold harmless Ballistica and its owner(s), developers, and "
             "affiliates from any claims, damages, losses, or expenses (including reasonable "
@@ -125,7 +158,7 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="8. No Warranty; Limitation of Liability",
+        heading="9. No Warranty; Limitation of Liability",
         paragraphs=(
             "The App and all data within it are provided “as is” and “as "
             "available,” without warranty of any kind, express or implied, including any "
@@ -136,7 +169,7 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="9. Compliance With Law; Eligibility",
+        heading="10. Compliance With Law; Eligibility",
         paragraphs=(
             "You represent that you are of legal age in your jurisdiction to purchase and possess "
             "firearms and ammunition components, and that your use of the App and any handloading "
@@ -144,18 +177,23 @@ WAIVER_SECTIONS: tuple[WaiverSection, ...] = (
         ),
     ),
     WaiverSection(
-        heading="10. How You Accept This Agreement",
+        heading="11. How You Accept This Agreement",
         paragraphs=(
-            "This agreement is not enforceable against a user until the user has affirmatively "
+            "This agreement is not enforceable against a new user until the user has affirmatively "
             "accepted it through a clear, standalone acceptance step in the App — for example, "
             "a checkbox that is unchecked by default, presented on its own screen (not bundled into "
             "general Terms of Service), that a new user must actively check before an account can "
             "be created, with the acknowledgment text visible above the checkbox rather than behind "
             "a separate link only.",
+            "When this agreement's text is revised (as with this version), an existing account that "
+            "already accepted an earlier version is shown a clear on-screen notice describing what "
+            "changed. Continuing to use the App after that notice constitutes acceptance of the "
+            "revised agreement — no separate checkbox or re-acceptance screen is required for an "
+            "existing account beyond that notice.",
         ),
     ),
     WaiverSection(
-        heading="11. Severability and General Terms",
+        heading="12. Severability and General Terms",
         paragraphs=(
             "If any provision of this agreement is found unenforceable, the remaining provisions "
             "remain in full effect. This agreement is governed by the laws of the State of Idaho, "
@@ -169,8 +207,9 @@ WAIVER_ACKNOWLEDGMENT_TEXT = (
     "I have read and understand this Safety Acknowledgment, Assumption of Risk, Data Disclaimer, "
     "and Liability Waiver. I understand that handloading and firearms use are dangerous activities, "
     "that data in this App is reference-only and may be inaccurate, and that I am solely "
-    "responsible for independently verifying any load or ballistic data before use. I voluntarily "
-    "accept these terms."
+    "responsible for independently verifying any load or ballistic data before use. I understand "
+    "that load data I save is automatically anonymized and used to improve Ballistica's aggregate "
+    "reference models, as described in Section 4 above. I voluntarily accept these terms."
 )
 
 

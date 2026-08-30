@@ -44,6 +44,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
+from .aggregate_pool import contribute_load
 from .atmosphere import AtmosphereConditions, pressure_at_altitude_inhg
 from .cli import BallisticaCLI, _CalibrationSession, _SetupSession
 from .import_export import (
@@ -578,6 +579,34 @@ def _get_user_store(auth: tuple[str, str] = Depends(_verify_bearer)) -> Supabase
     return SupabaseProfileStore(user_id, token)
 
 
+@app.get("/v2/waiver/status")
+def v2_waiver_status(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """Lets the frontend tell whether a signed-in user's most recent
+    acceptance is behind the current live waiver -- the existing-user
+    half of §26/waiver.py Section 11's revision flow: when this
+    endpoint reports a stale (or missing) acceptance, index.html shows
+    a notice and immediately records acceptance of the current version
+    via POST /v2/waiver/accept, per Rick's explicit instruction that no
+    separate re-consent screen is needed beyond that notice. Reads the
+    caller's own rows only (RLS-scoped, no service role)."""
+    user_id, token = auth
+    resp = httpx.get(
+        f"{_SUPABASE_URL}/rest/v1/waiver_acceptances",
+        headers={"apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"},
+        params={"user_id": f"eq.{user_id}", "select": "waiver_version", "order": "created_at.desc", "limit": 1},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    accepted_version = rows[0]["waiver_version"] if rows else None
+    return {
+        "current_version": WAIVER_VERSION,
+        "current_sha256": WAIVER_TEXT_SHA256,
+        "accepted_version": accepted_version,
+        "up_to_date": accepted_version == WAIVER_VERSION,
+    }
+
+
 @app.post("/v2/waiver/accept")
 def v2_accept_waiver(payload: WaiverAcceptIn, auth: tuple[str, str] = Depends(_verify_bearer)):
     """Records that the authenticated user accepted a specific, exact
@@ -779,6 +808,17 @@ async def v2_import_commit(
                                         # existing rifle objects (which alone would lose new ones).
     if touched:
         user_store.save()
+        # Same automatic, non-optional contribution as the single-load
+        # endpoints -- imported loads are still loads a user "saved or
+        # entered into the app" (waiver.py Section 4), not a separate
+        # category exempt from it.
+        for r in results:
+            if r.status == "failed":
+                continue
+            rifle = touched.get(r.rifle_name)
+            load = rifle.loads.get(r.load_name) if rifle else None
+            if rifle and load:
+                contribute_load(rifle, load, user_store.access_token)
 
     return {
         "results": [
@@ -882,6 +922,8 @@ def v2_create_rifle(payload: RifleIn, user_store: SupabaseProfileStore = Depends
         raise HTTPException(status_code=400, detail=_msg(exc))
     user_store.add_rifle(rifle)
     user_store.save()
+    for load in rifle.loads.values():
+        contribute_load(rifle, load, user_store.access_token)
     return _rifle_to_detail(rifle)
 
 
@@ -993,6 +1035,10 @@ def v2_add_load(
         raise HTTPException(status_code=400, detail=_msg(exc))
     rifle.add_load(load)
     user_store.save()
+    # Every saved load is automatically anonymized and contributed to
+    # the aggregate pool -- standard, non-optional, per waiver.py
+    # Section 4. Best-effort: never blocks this endpoint's own success.
+    contribute_load(rifle, load, user_store.access_token)
     return _load_to_out(load)
 
 
