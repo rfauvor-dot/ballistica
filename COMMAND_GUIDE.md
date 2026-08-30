@@ -251,6 +251,13 @@ for the range. As of this cutover, it requires signing in first.
   real deletion, not deactivation — there's no way to get the data back
   afterward, and no separate "are you sure you're sure" step beyond
   that one dialog.
+- **Account → Change password (added 2026-08-29):** one button, no
+  form — sends a reset link to your own signed-in email via Supabase.
+- **Account → Your name (added 2026-08-30):** optional. Set it and
+  Ballistica addresses you by it in the voice greeting ("Hey Sarah,
+  Ballistica's up..."); leave it blank and the greeting just skips the
+  name ("Hey there, Ballistica's up..."). Nothing else in the app uses
+  it today.
 - **Enable voice ("Ballistica"):** the one required tap to arm the
   wake-word listener (mic permission).
 - **Rifle picker:** a dropdown/list of every saved rifle. Clicking one

@@ -1600,3 +1600,58 @@ patched as a side effect of this change.
 
 **Owning lens:** Rick made both calls explicitly and supplied the exact
 safety-line wording; Build implemented and verified each independently.
+
+---
+
+## 23. Display name -- closes the hardcoded "Rick" gap (2026-08-30)
+
+Direct follow-up to §22's noted-but-not-fixed item: `GREETING_PHRASES`
+and `ACK_PHRASES` hardcoded "Rick" by name, wrong for any other real
+signed-in account. No display-name field existed anywhere -- only
+email. Built end to end:
+
+- **`db/008_display_name.sql`** -- nullable `display_name` on the
+  existing `profiles` table (same table `voice_id` and
+  `first_walkthrough_played_at` already live on), bounded 1-40 chars
+  when set via a check constraint. Nullable and optional by design --
+  nothing at signup requires it, so this is purely additive for anyone
+  who never sets one. **Needs Rick to run it in the Supabase SQL
+  Editor**, same as every prior migration -- not yet applied as of
+  this writing.
+- **`GET /v2/profile` / `PATCH /v2/profile`** (`api.py`) -- same
+  ensure-the-row-exists upsert pattern as the existing walkthrough-
+  status endpoints, same caller-token-scoped REST calls (no service-
+  role involved). Length validated server-side too (`ProfileUpdateIn`),
+  not just by the DB constraint, so a bad value gets a clean 422 rather
+  than a raw Postgres error.
+- **Account menu** (`index.html`) -- a "Your name" field at the top of
+  the three-dot menu (above Sign out, not nested in Danger zone --
+  this is routine, not destructive), pre-filled from `GET /v2/profile`
+  on load, saved via `PATCH /v2/profile`.
+- **`GREETING_PHRASES`/`ACK_PHRASES` are now functions** (`greetingPhrases(name)`,
+  `ackPhrases(name)`) instead of static arrays, called with
+  `userDisplayName` at the actual wake-word handling site
+  (`handleWakeWord()`). A name is used naturally when set ("Hey Sarah,
+  Ballistica's up...", "I'm here, Sarah. Go ahead."); the phrasing
+  degrades to name-less when it's not ("Hey there, Ballistica's
+  up...", "I'm here. Go ahead.") rather than falling back to anyone
+  else's name.
+
+**Not fetched offline:** `loadDisplayName()` only runs when there's a
+live token, same guard as the walkthrough autoplay call right next to
+it. No gap in practice -- voice mode (and so the greeting itself)
+already can't run offline at all (§19 disables `enableVoiceBtn` in
+that mode), so there's nothing to cache a name for.
+
+**Verified:** `greetingPhrases()`/`ackPhrases()` checked directly in
+the browser console for both the named and unset cases; the account-
+menu field renders correctly, positioned above Sign out. Full suite
+re-run for zero regression. **End-to-end save/fetch against the real
+Supabase project not yet verified** -- blocked on Rick running
+db/008 first, same as any schema-dependent feature before its
+migration lands.
+
+**Owning lens:** Rick asked for this directly, as the fix for a gap
+Build had flagged but not touched the day before; Build implemented
+end to end and verified everything short of the still-pending
+migration.

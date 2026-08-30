@@ -115,11 +115,11 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError {
+  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError, #displayNameError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
-  #rifleOk, #loadOk, #authOk, #changePasswordOk {
+  #rifleOk, #loadOk, #authOk, #changePasswordOk, #displayNameOk {
     display: none; margin-top: 10px; padding: 8px 12px; border-radius: 8px;
     background: var(--ok-bg); color: #2a6b2a; font-weight: 600; font-size: 14px;
   }
@@ -223,7 +223,15 @@
     <details id="accountMenu">
       <summary aria-label="Account menu" title="Account menu">&#8942;</summary>
       <div class="panel-body">
-        <button id="signOutBtn">Sign out</button>
+        <div class="field w-full" style="margin-bottom:8px;">
+          <label for="displayNameInput">Your name</label>
+          <input id="displayNameInput" type="text" maxlength="40" placeholder="What Ballistica calls you">
+        </div>
+        <button id="saveDisplayNameBtn">Save name</button>
+        <div id="displayNameOk"></div>
+        <div id="displayNameError"></div>
+
+        <button id="signOutBtn" style="margin-top:10px;">Sign out</button>
         <button id="changePasswordBtn" style="margin-top:8px;">Change password</button>
         <div id="changePasswordOk"></div>
         <div id="changePasswordError"></div>
@@ -1251,13 +1259,22 @@ solveBtn.addEventListener('click', async () => {
 
 // In-session wakes stay terse/tactical -- these fire mid-string, between
 // shots, where a shooter wants an ack and nothing else. Session start/stop
-// get warmer phrasing instead (see GREETING_PHRASES/SIGNOFF_PHRASES below):
+// get warmer phrasing instead (see greetingPhrases/SIGNOFF_PHRASES below):
 // that's the one moment that isn't live fire, so it can afford a sentence.
-const ACK_PHRASES = [
-  "Copy that, standing by.",
-  "Ballistica up, go ahead.",
-  "I'm here, Rick. Go ahead.",
-];
+//
+// Both ACK_PHRASES and GREETING_PHRASES used to hardcode "Rick" --
+// fine when he was the only user, wrong the moment any other real
+// account exists (2026-08-30: added userDisplayName, see above). Now
+// functions of the (possibly null/unset) display name rather than
+// static arrays, so a real name is used when set and the phrasing
+// degrades to name-less rather than defaulting to anyone else's name.
+function ackPhrases(name) {
+  return [
+    "Copy that, standing by.",
+    "Ballistica up, go ahead.",
+    name ? `I'm here, ${name}. Go ahead.` : "I'm here. Go ahead.",
+  ];
+}
 
 // The reference-only/verify-before-firing line (2026-08-29, Rick's
 // explicit instruction) is woven into every variant, not appended as a
@@ -1269,11 +1286,15 @@ const ACK_PHRASES = [
 // ("my data's reference only... verify before firing") stays close to
 // verbatim across all three so the substance never varies even though
 // the wrapper sentence does.
-const GREETING_PHRASES = [
-  "Hey Rick, Ballistica's up. My data's reference only, so always verify before firing. What are we working with today?",
-  "Good to go, Rick -- quick reminder, my data's reference only, always verify before firing. What do you need?",
-  "Ballistica's online. Remember, my data's reference only -- always verify before firing. Let's get you dialed in.",
-];
+function greetingPhrases(name) {
+  const hey = name ? `Hey ${name}, ` : 'Hey there, ';
+  const goodTo = name ? `Good to go, ${name} -- ` : 'Good to go -- ';
+  return [
+    `${hey}Ballistica's up. My data's reference only, so always verify before firing. What are we working with today?`,
+    `${goodTo}quick reminder, my data's reference only, always verify before firing. What do you need?`,
+    "Ballistica's online. Remember, my data's reference only -- always verify before firing. Let's get you dialed in.",
+  ];
+}
 
 const SIGNOFF_PHRASES = [
   "Alright, standing down. Good shooting.",
@@ -1574,7 +1595,7 @@ async function runConversationTurn() {
 async function handleWakeWord() {
   voiceState = 'acknowledging';
   setVoiceState('Ballistica heard -- acknowledging', true);
-  const ackPool = sessionWakeCount === 0 ? GREETING_PHRASES : ACK_PHRASES;
+  const ackPool = sessionWakeCount === 0 ? greetingPhrases(userDisplayName) : ackPhrases(userDisplayName);
   sessionWakeCount++;
   await speak(ackPool[Math.floor(Math.random() * ackPool.length)]);
 
@@ -1844,6 +1865,44 @@ signOutBtn.addEventListener('click', () => {
 
 // Uses Supabase's own /recover endpoint against the signed-in user's
 // own known email -- never a typed-in address -- so there's nothing
+// -------------------------------------------------------- display name
+// What Ballistica calls a signed-in user in the voice greeting
+// (GREETING_PHRASES/ACK_PHRASES below), instead of the hardcoded
+// "Rick" left over from the single-tenant era. Unset by default --
+// nothing requires it at signup -- and the greeting falls back to
+// name-less phrasing when it's null, so this is purely additive.
+let userDisplayName = null;
+
+async function loadDisplayName() {
+  try {
+    const data = await api('/profile');
+    userDisplayName = data.display_name || null;
+    document.getElementById('displayNameInput').value = userDisplayName || '';
+  } catch (e) { /* offline or a transient failure -- greeting just falls back to name-less */ }
+}
+
+document.getElementById('saveDisplayNameBtn').addEventListener('click', async () => {
+  const okEl = document.getElementById('displayNameOk');
+  const errorEl = document.getElementById('displayNameError');
+  hide(okEl); hide(errorEl);
+  const name = document.getElementById('displayNameInput').value.trim();
+  if (!name) { flash(errorEl, 'Enter a name, or leave the account menu to skip it.'); return; }
+  const btn = document.getElementById('saveDisplayNameBtn');
+  btn.disabled = true;
+  try {
+    const data = await api('/profile', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: name }),
+    });
+    userDisplayName = data.display_name;
+    flash(okEl, 'Saved.', 2000);
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // here for the anti-enumeration concern elsewhere in this file to
 // apply to (recover also always returns success regardless of whether
 // an email is registered, same as signup, but it's moot here anyway).
@@ -1963,7 +2022,14 @@ async function init() {
   if (!authed) return;
   renderWalkthroughMenu();
   const token = await getValidAccessToken();
-  if (token) await maybeAutoPlayFirstWalkthrough(token);
+  if (token) {
+    await maybeAutoPlayFirstWalkthrough(token);
+    // Voice (and so the greeting itself) already can't run offline at
+    // all (enableVoiceBtn is disabled in that mode) -- fetching the
+    // name only when there's a real token keeps this consistent with
+    // that, no separate offline cache needed for it.
+    await loadDisplayName();
+  }
   await loadRifles();
 }
 init();

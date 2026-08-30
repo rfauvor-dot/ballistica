@@ -399,6 +399,13 @@ class WaiverAcceptIn(BaseModel):
                                           "request happens to arrive.")
 
 
+class ProfileUpdateIn(BaseModel):
+    # Mirrors db/008_display_name.sql's own check constraint -- validated
+    # here too so a bad value gets a clean 422 instead of a raw Postgres
+    # constraint-violation error surfacing to the client.
+    display_name: str = Field(min_length=1, max_length=40)
+
+
 # ------------------------------------------------------------------ helpers
 
 def _msg(exc: Exception) -> str:
@@ -658,6 +665,47 @@ def v2_mark_walkthrough_first_played(auth: tuple[str, str] = Depends(_verify_bea
     )
     resp.raise_for_status()
     return {"marked": True}
+
+
+@app.get("/v2/profile")
+def v2_get_profile(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """The display name a user has chosen for themselves, if any --
+    used to address them by name in the voice greeting instead of a
+    hardcoded name from the single-tenant era (real issue for any real
+    account that isn't Rick's -- MULTI_TENANCY_DESIGN.md §23). Same
+    ensure-the-row-exists upsert pattern as /v2/walkthrough-status
+    above; unset (null) is a normal, expected state, not an error --
+    the frontend falls back to name-less greeting phrasing."""
+    user_id, token = auth
+    headers = {
+        "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    resp = httpx.post(
+        f"{_SUPABASE_URL}/rest/v1/profiles", headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"user_id": user_id}, params={"on_conflict": "user_id"}, timeout=15,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    return {"display_name": rows[0]["display_name"] if rows else None}
+
+
+@app.patch("/v2/profile")
+def v2_update_profile(payload: ProfileUpdateIn, auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    user_id, token = auth
+    headers = {
+        "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    resp = httpx.post(
+        f"{_SUPABASE_URL}/rest/v1/profiles",
+        headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json={"user_id": user_id, "display_name": payload.display_name},
+        params={"on_conflict": "user_id"}, timeout=15,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    return {"display_name": rows[0]["display_name"] if rows else None}
 
 
 @app.delete("/v2/account")
