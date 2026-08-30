@@ -1212,3 +1212,59 @@ disclosure to a stranger the way distinguishing "wrong password" from
 **Owning lens:** Rick made the privacy-vs-UX call explicitly and
 rejected the endpoint; Build implemented the UI-only fix and verified
 both the sign-in and create-account response paths live.
+
+---
+
+## 17. Account menu consolidated behind a three-dot disclosure (2026-08-29)
+
+Follow-up the same day: "Delete my account" (§15) was sitting in a
+top-level, always-expanded-to-one-tap `Account` section on the main
+app screen, alongside `Help / Walkthrough` -- both equally reachable
+from the main content flow. Rick's instruction: move delete out of the
+main panel entirely, into a three-dot/hamburger menu grouped with
+other account actions (password change, the audio walkthrough), so it
+isn't immediately visible or accidentally tappable.
+
+**Structure** (`ballistica/web/index.html`): the header row's email
+label now sits next to a `&#8942;` (three-dot) icon button -- a native
+`<details id="accountMenu">` styled as a small icon rather than a
+labeled section, opening a floating panel (absolutely positioned,
+matching the app's existing disclosure-widget convention rather than a
+bespoke dropdown component). Inside: `Sign out` and `Change password`
+as flat buttons, then `Help / Walkthrough` as its own nested
+disclosure (moved in unchanged, same ids, same JS), then a separate
+nested `Danger zone` disclosure containing `Delete my account`. Reaching
+delete now takes opening the account menu, then opening Danger zone,
+then the button itself, then the existing `confirm()` -- four
+deliberate steps where there were two, matching "not accidentally
+tappable" concretely rather than just moving the same one-tap button
+to a new location.
+
+**Change password** is new, not just relocated -- closes a real gap:
+the create-account UX message added in §16 already told people to "try
+... resetting your password," but no such action existed anywhere in
+the app. Implemented as a single button (no form -- the email is
+already known from the signed-in session) that calls Supabase's own
+`/auth/v1/recover` endpoint. This carries no enumeration exposure
+regardless: it's never called with a typed-in address, only the
+current session's own verified email, so there's nothing for the §16
+anti-enumeration constraint to even apply to here. Depends on the same
+pending Supabase Site URL fix noted in §-earlier-this-doc (the
+confirmation-link redirect misconfiguration) -- the reset email's link
+will point at `localhost:3000` until that dashboard setting is
+corrected; not a new issue, the same one still outstanding.
+
+Verified live locally (dev server): opening the menu shows Sign out /
+Change password / Help / Walkthrough / Danger zone with no delete
+button visible; opening Danger zone reveals it. Full test suite still
+green (all existing ids for walkthrough and delete-account preserved
+unchanged, so their JS needed no changes).
+
+**Not done in this pass:** the "small thumbnail of the Mister and
+Missus Ballistica marketing image" Rick asked for in the same
+instruction, for a corner of the app. No such image file exists
+anywhere in this repo or was attached to the request -- needs Rick to
+provide the actual asset before it can be added.
+
+**Owning lens:** Rick specified the restructuring and flagged the
+accidental-tap risk; Build implemented and verified locally.

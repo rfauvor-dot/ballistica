@@ -114,14 +114,39 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError {
+  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
-  #rifleOk, #loadOk, #authOk {
+  #rifleOk, #loadOk, #authOk, #changePasswordOk {
     display: none; margin-top: 10px; padding: 8px 12px; border-radius: 8px;
     background: var(--ok-bg); color: #2a6b2a; font-weight: 600; font-size: 14px;
   }
+
+  /* Account menu: a three-dot disclosure rather than a full-width
+     labeled section, deliberately -- everything in it (sign out,
+     change password, walkthrough, delete account) is either routine-
+     but-secondary or destructive, and none of it belongs in the main
+     scrolling content the way rifle/load setup does. Nested details
+     inside (walkthrough, danger zone) reuse the same disclosure
+     pattern rather than a bespoke dropdown widget. */
+  #accountMenu { position: relative; margin-top: 0; border: none; }
+  #accountMenu > summary {
+    list-style: none; cursor: pointer; padding: 6px 14px;
+    font-size: 22px; line-height: 1; color: var(--text);
+    border: 2px solid var(--line); border-radius: 8px;
+  }
+  #accountMenu > summary::-webkit-details-marker { display: none; }
+  #accountMenu > summary::before { content: none; }
+  #accountMenu > .panel-body {
+    position: absolute; top: 100%; right: 0; margin-top: 6px;
+    width: 260px; max-width: calc(100vw - 28px);
+    background: var(--bg); border: 2px solid var(--line); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2); padding: 12px 14px 14px; z-index: 30;
+  }
+  #accountMenu .panel-body button { width: 100%; }
+  #dangerZoneMenu { border-color: var(--error-text); }
+  #dangerZoneMenu > summary { color: var(--error-text); }
   #authPanel { max-width: 420px; margin: 24px auto; }
   #authPanel .field { width: 100%; margin-bottom: 10px; }
   #authPanel input { width: 100%; }
@@ -186,24 +211,32 @@
   </div>
 
   <div id="appContent" style="display:none">
-  <div class="rifle-actions" style="margin-bottom:14px">
-    <span id="authEmailLabel" style="flex:1; align-self:center; color:var(--muted); font-size:14px;"></span>
-    <button id="signOutBtn">Sign out</button>
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:14px;">
+    <span id="authEmailLabel" style="color:var(--muted); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+    <details id="accountMenu">
+      <summary aria-label="Account menu" title="Account menu">&#8942;</summary>
+      <div class="panel-body">
+        <button id="signOutBtn">Sign out</button>
+        <button id="changePasswordBtn" style="margin-top:8px;">Change password</button>
+        <div id="changePasswordOk"></div>
+        <div id="changePasswordError"></div>
+
+        <details id="walkthroughMenu" style="margin-top:10px;">
+          <summary>Help / Walkthrough</summary>
+          <div class="panel-body" id="walkthroughList"></div>
+        </details>
+
+        <details id="dangerZoneMenu" style="margin-top:10px;">
+          <summary>Danger zone</summary>
+          <div class="panel-body">
+            <p style="font-size:14px; color:var(--muted); margin:0 0 12px;">Permanently delete your account, along with every rifle, load, and calibration record tied to it. This cannot be undone.</p>
+            <button id="deleteAccountBtn" style="background:var(--error-bg); color:var(--error-text); font-weight:600;">Delete my account</button>
+            <div id="deleteAccountError"></div>
+          </div>
+        </details>
+      </div>
+    </details>
   </div>
-
-  <details id="walkthroughMenu" style="margin-bottom:14px">
-    <summary>Help / Walkthrough</summary>
-    <div class="panel-body" id="walkthroughList"></div>
-  </details>
-
-  <details id="accountMenu" style="margin-bottom:14px">
-    <summary>Account</summary>
-    <div class="panel-body">
-      <p style="font-size:14px; color:var(--muted); margin:0 0 12px;">Permanently delete your account, along with every rifle, load, and calibration record tied to it. This cannot be undone.</p>
-      <button id="deleteAccountBtn" style="background:var(--error-bg); color:var(--error-text); font-weight:600; width:100%;">Delete my account</button>
-      <div id="deleteAccountError"></div>
-    </div>
-  </details>
 
   <div class="voice-panel">
     <div class="state-line" id="voiceState">Voice: off</div>
@@ -1565,6 +1598,29 @@ signUpBtn.addEventListener('click', async () => {
 signOutBtn.addEventListener('click', () => {
   clearSession();
   showAuthPanel();
+});
+
+// Uses Supabase's own /recover endpoint against the signed-in user's
+// own known email -- never a typed-in address -- so there's nothing
+// here for the anti-enumeration concern elsewhere in this file to
+// apply to (recover also always returns success regardless of whether
+// an email is registered, same as signup, but it's moot here anyway).
+document.getElementById('changePasswordBtn').addEventListener('click', async () => {
+  const okEl = document.getElementById('changePasswordOk');
+  const errorEl = document.getElementById('changePasswordError');
+  hide(okEl); hide(errorEl);
+  const email = (getSession() || {}).email;
+  if (!email) return;
+  const btn = document.getElementById('changePasswordBtn');
+  btn.disabled = true;
+  try {
+    await supabaseAuthCall('/recover', { email });
+    flash(okEl, `Password reset link sent to ${email}.`);
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
