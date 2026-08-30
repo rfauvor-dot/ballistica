@@ -1480,3 +1480,69 @@ usage.
 **Owning lens:** Rick directed the cross-model review and the specific
 follow-up ask; Build found, fixed, and verified both bugs against real
 code execution, not inspection alone.
+
+---
+
+## 21. Second cross-model review -- three more fixes (2026-08-29)
+
+A second independent external review (of the same app summary) raised
+several points; most either duplicated the first review's already-
+resolved items or were forward-looking for unbuilt features (aggregate-
+model consent, threat-model doc, audit logging infra) -- noted for
+Rick to prioritize, not acted on unilaterally. Three were concrete,
+verified-real, and cheap enough to fix immediately:
+
+1. **`iss` (issuer) claim was never checked.** Both this review and the
+   first one flagged it. Confirmed the real value live against an
+   actual issued token (`{SUPABASE_URL}/auth/v1`) rather than
+   guessing, then pinned it in `supabase_auth.py` (`_EXPECTED_ISSUER`,
+   added to `_REQUIRED_CLAIMS`) and added two new tests
+   (`test_missing_iss_claim_rejected`, `test_wrong_iss_claim_rejected`)
+   to `test_auth_hardening.py`. Not exploitable today -- the JWKS keys
+   fetched for verification are already scoped to this one project, so
+   a token from anywhere else can't pass signature verification
+   regardless -- but a token should say who issued it, and nothing
+   checked that until now.
+
+2. **`/waiver` had no cache-control headers** -- the same staleness
+   class already fixed for `/` (§ earlier this doc): a browser could
+   serve a stale cached waiver after Rick revises the text, letting
+   someone accept an outdated version without ever seeing the current
+   one. Fixed with the identical `no-store, no-cache, must-revalidate`
+   headers `/` already uses. Verified live: `fetch('/waiver')` now
+   returns those headers.
+
+3. **The offline rifle cache (§19) was never cleared on sign-out or
+   account deletion** -- the sharpest, most concrete finding in this
+   review. On a shared/borrowed device, if a second person signs into
+   their own real account but their own `/v2/rifles` fetch happens to
+   fail right after (network blip), `loadRifles()`'s existing fallback
+   would show them whatever the *first* person's rifles were, still
+   sitting in IndexedDB under their own logged-in identity -- a real
+   cross-user data exposure on shared hardware, not a device-theft
+   hypothetical. Fixed with a new `clearOfflineCache()`, called from
+   both `signOutBtn` and the account-deletion handler, mirroring how
+   `KNOWN_ACCOUNT_KEY` is already cleared at both of those same points.
+   Verified live: seeded the cache, fired sign-out, confirmed the
+   cache is empty afterward.
+
+**Not acted on, flagged for Rick to prioritize:** per-user (not just
+per-IP) rate limiting on voice endpoints; a `solver_version` +
+input-hash field surfaced on every solution for traceability;
+shipping the in-session spoken liability reminder sooner (raised by
+both reviews now, plus it's already in RISK_REGISTER.md as a deferred
+next step); explicit consent/disclosure UX for any future aggregate-
+data contribution (also raised by the first review); IndexedDB cache-
+version bump discipline if the `RifleDetail` shape ever changes
+non-additively; voice audio/transcript retention disclosure; structured
+audit logging for RLS-critical paths; a written threat model. None of
+these are code bugs -- they're either product/consent decisions needing
+Rick's own call, or larger infrastructure investments worth sequencing
+deliberately rather than building reactively off a review.
+
+**Verified:** all 17 `test_auth_hardening.py` cases pass (15 + 2 new
+issuer tests); full suite re-run for zero regression.
+
+**Owning lens:** Rick ran the second review and shared it; Build
+triaged, verified each concrete claim against real code before acting,
+and fixed the three that were genuine and in-scope.

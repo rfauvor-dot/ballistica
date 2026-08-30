@@ -33,6 +33,14 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 _SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 _JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 _JWKS_URL = f"{_SUPABASE_URL}/auth/v1/.well-known/jwks.json" if _SUPABASE_URL else ""
+# Confirmed live against a real issued token (2026-08-29): Supabase sets
+# `iss` to exactly this. Pinning it closes a defense-in-depth gap two
+# independent external reviews flagged -- not exploitable today (the
+# JWKS keys fetched above are already scoped to this one project, so a
+# token from anywhere else can't pass signature verification regardless),
+# but a token is expected to say who issued it, and nothing here checked
+# that until now.
+_EXPECTED_ISSUER = f"{_SUPABASE_URL}/auth/v1" if _SUPABASE_URL else None
 
 _jwks_client = jwt.PyJWKClient(_JWKS_URL) if _JWKS_URL else None
 
@@ -56,7 +64,7 @@ _CLOCK_SKEW_LEEWAY_SECONDS = 10
 # all would otherwise verify successfully and never expire, and a
 # missing 'aud' would skip the audience check entirely (found via real
 # testing, tests/test_auth_hardening.py -- not a hypothetical).
-_REQUIRED_CLAIMS = ["exp", "aud", "sub"]
+_REQUIRED_CLAIMS = ["exp", "aud", "sub", "iss"]
 
 
 def _extract_sub(payload: dict) -> str:
@@ -77,7 +85,8 @@ def _verify_via_jwks(token: str, client: jwt.PyJWKClient) -> str:
     signing_key = client.get_signing_key_from_jwt(token)
     payload = jwt.decode(
         token, signing_key.key, algorithms=["ES256", "RS256"], audience="authenticated",
-        leeway=_CLOCK_SKEW_LEEWAY_SECONDS, options={"require": _REQUIRED_CLAIMS},
+        issuer=_EXPECTED_ISSUER, leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
+        options={"require": _REQUIRED_CLAIMS},
     )
     return _extract_sub(payload)
 
@@ -119,7 +128,8 @@ def verify_token(token: str) -> str:
         raise jwt.InvalidTokenError("No matching JWKS signing key found, and no legacy secret configured")
     payload = jwt.decode(
         token, _JWT_SECRET, algorithms=["HS256"], audience="authenticated",
-        leeway=_CLOCK_SKEW_LEEWAY_SECONDS, options={"require": _REQUIRED_CLAIMS},
+        issuer=_EXPECTED_ISSUER, leeway=_CLOCK_SKEW_LEEWAY_SECONDS,
+        options={"require": _REQUIRED_CLAIMS},
     )
     return _extract_sub(payload)
 

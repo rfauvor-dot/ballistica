@@ -407,14 +407,23 @@ def health() -> dict:
 
 
 @app.get("/waiver")
-def get_waiver() -> dict:
+def get_waiver(response: Response) -> dict:
     """Public, no auth -- has to be readable before an account exists at
     all (the whole point of the account-creation waiver screen). Serves
     the canonical text from waiver.py as structured JSON so index.html
     renders it directly rather than keeping its own separate copy that
     could drift from what actually gets hashed. version/sha256 are what
     the frontend echoes back on POST /v2/waiver/accept -- see that
-    endpoint for why both matter, not just one."""
+    endpoint for why both matter, not just one.
+
+    Explicit no-cache headers for the same reason as "/" above: this
+    drives a legal-acceptance flow, and a browser serving a stale
+    cached copy after Rick revises the waiver text would let someone
+    accept an outdated version without ever seeing the current one --
+    flagged by an external security review (2026-08-29), same
+    staleness class as the bug already fixed for the page itself."""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
     return {
         "version": WAIVER_VERSION,
         "sha256": WAIVER_TEXT_SHA256,

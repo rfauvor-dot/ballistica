@@ -466,6 +466,28 @@ async function getCachedRifleLibrary() {
   }
 }
 
+// Called on sign-out and account deletion (2026-08-29, flagged by an
+// external security review): a shared/borrowed device signing out one
+// account and into another must never let the next person's session
+// fall back to the PREVIOUS person's cached rifle/load data if their
+// own live fetch happens to fail right after signing in. Clearing on
+// sign-out is a small convenience cost (one re-sync needed next time
+// this device is offline) for closing a real cross-user data exposure
+// on shared hardware -- consistent with how KNOWN_ACCOUNT_KEY is
+// already cleared at both of these same points.
+async function clearOfflineCache() {
+  try {
+    const db = await openOfflineDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_STORE, 'readwrite');
+      tx.objectStore(OFFLINE_STORE).clear();
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) { /* nothing to clear, or storage unavailable -- fine either way */ }
+  try { localStorage.removeItem(OFFLINE_SYNCED_AT_KEY); } catch (e) {}
+}
+
 function isNetworkError(e) {
   return /network error/i.test(e.message || '');
 }
@@ -1806,6 +1828,7 @@ signUpBtn.addEventListener('click', async () => {
 
 signOutBtn.addEventListener('click', () => {
   clearSession();
+  clearOfflineCache();
   showAuthPanel();
 });
 
@@ -1846,9 +1869,12 @@ document.getElementById('deleteAccountBtn').addEventListener('click', async () =
     await api('/account', { method: 'DELETE' });
     // The account is gone -- a stale "known account, default to Sign
     // In" memory would now be actively wrong (see rememberKnownAccount),
-    // so it has to go too, not just the session.
+    // so it has to go too, not just the session. Same reasoning for the
+    // offline rifle cache: it belonged to an account that no longer
+    // exists.
     clearSession();
     try { localStorage.removeItem(KNOWN_ACCOUNT_KEY); } catch (e) {}
+    clearOfflineCache();
     showAuthPanel();
     flash(authOkEl, 'Your account and all its data have been permanently deleted.');
   } catch (e) {

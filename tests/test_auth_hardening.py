@@ -32,6 +32,8 @@ from conftest import requires_supabase
 pytestmark = requires_supabase
 
 _SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
+_SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+_REAL_ISSUER = f"{_SUPABASE_URL}/auth/v1" if _SUPABASE_URL else ""
 
 requires_jwt_secret = pytest.mark.skipif(
     not _SECRET, reason="SUPABASE_JWT_SECRET not configured -- can't sign real-secret test tokens.",
@@ -44,7 +46,7 @@ def _sign(claims: dict, secret: str = _SECRET, algorithm: str = "HS256") -> str:
 
 def _valid_claims(**overrides) -> dict:
     claims = {"sub": "00000000-0000-0000-0000-000000000000", "aud": "authenticated",
-              "exp": int(time.time()) + 3600}
+              "iss": _REAL_ISSUER, "exp": int(time.time()) + 3600}
     claims.update(overrides)
     return claims
 
@@ -146,6 +148,25 @@ def test_missing_aud_claim_rejected(api_client):
 @requires_jwt_secret
 def test_wrong_aud_claim_rejected(api_client):
     token = _sign(_valid_claims(aud="not-authenticated"))
+    _assert_rejected(api_client, token)
+
+
+@requires_jwt_secret
+def test_missing_iss_claim_rejected(api_client):
+    """Regression test for a gap two independent external security
+    reviews flagged (2026-08-29): nothing checked the 'iss' claim at
+    all, so a token claiming to be issued by anywhere (or nowhere)
+    verified successfully as long as the signature and other claims
+    checked out."""
+    claims = _valid_claims()
+    del claims["iss"]
+    token = _sign(claims)
+    _assert_rejected(api_client, token)
+
+
+@requires_jwt_secret
+def test_wrong_iss_claim_rejected(api_client):
+    token = _sign(_valid_claims(iss="https://not-the-real-project.supabase.co/auth/v1"))
     _assert_rejected(api_client, token)
 
 
