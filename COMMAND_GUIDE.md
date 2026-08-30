@@ -258,6 +258,29 @@ for the range. As of this cutover, it requires signing in first.
   Ballistica's up..."); leave it blank and the greeting just skips the
   name ("Hey there, Ballistica's up..."). Nothing else in the app uses
   it today.
+- **Account → Import / Export (added 2026-08-30):**
+  - **Export my data (CSV):** downloads every rifle and load on the
+    account as a CSV, any time — one row per load, a rifle with no
+    loads yet still gets its own row so it isn't dropped. Opens
+    cleanly in Excel/Sheets; safe to print or hand to another shooter
+    with the same setup.
+  - **Import rifles / loads:** upload a `.csv` or `.xlsx` file. The
+    next screen shows every column Ballistica understands and lets you
+    match each one to whichever column your file actually has (auto-
+    guessed first, always yours to correct) — nothing is written until
+    you confirm the mapping and hit Import. Every row is checked
+    independently: a file with some rows missing required data (most
+    commonly the ballistic coefficient — a real, expected case for a
+    shooter's own load-development notes, not a bug) still imports
+    every row that *is* complete, and tells you exactly why each
+    incomplete one didn't. A load name isn't required in your file —
+    if you don't have one, Ballistica builds one from the powder charge
+    (e.g. "22.5gr H335"). Re-importing a rifle that already exists only
+    ever adds/updates loads on it — it never overwrites the rifle's own
+    saved details.
+  - **Download my data first (in Danger Zone, right above Delete my
+    account):** the same export, specifically surfaced as the thing to
+    do before you delete everything.
 - **Enable voice ("Ballistica"):** the one required tap to arm the
   wake-word listener (mic permission).
 - **Rifle picker:** a dropdown/list of every saved rifle. Clicking one

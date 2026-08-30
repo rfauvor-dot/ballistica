@@ -1655,3 +1655,120 @@ migration lands.
 Build had flagged but not touched the day before; Build implemented
 end to end and verified everything short of the still-pending
 migration.
+
+---
+
+## 24. Bulk CSV/Excel import + export (2026-08-30)
+
+The backlogged "Spreadsheet / CSV data import" item (raised 2026-08-23,
+explicitly sequenced after multi-tenancy) -- unblocked now that
+multi-tenancy exists, and built to the fuller spec Rick actually asked
+for: a column-mapping step (not an exact-header-match requirement),
+paired with an export in the same shape, surfaced both generally and
+specifically before account deletion. Real test case: Rick's own 20in
+Faxon .223 Wylde barrel data (3 charge-weight loads, chronograph
+strings, real conditions -- see the correction he made to the 22.5gr
+spread, 104 fps not 80, confirmed and used as the actual test input).
+
+**Three pieces** (`ballistica/import_export.py`, new `/v2/import/preview`,
+`/v2/import/commit`, `/v2/export/rifles` in `api.py`, an `#importPanel`
+in `index.html`):
+
+1. **Parsing** -- CSV (stdlib `csv`) and `.xlsx` (`openpyxl`, new
+   dependency). 2MB / 500-row caps, checked both via `Content-Length`
+   before the body is even read and again after parsing, since
+   `Content-Length` isn't guaranteed present or accurate for every
+   client.
+2. **Column mapping** -- `TARGET_FIELDS` is the full rifle+load field
+   set (27 fields, same order as export, so an export re-imports with
+   zero manual correction). `suggest_mapping()` best-guesses which of
+   the file's own headers goes with which target field via a two-pass
+   exact-then-loose alias match; the user confirms/corrects on the
+   mapping screen before anything is written. **A real bug found while
+   testing, not by inspection:** a single pass-per-field let a short,
+   generic alias on one field ("model" on `scope_model`) steal a
+   header that was an exact match for a different field (`drag_model`'s
+   own "drag model" alias, against a real "Drag Model" column) just
+   because that field happened to be checked first in iteration order.
+   Fixed by resolving every field's exact match first, across the
+   whole set, before any field is allowed to fall back to a looser
+   one -- closes the whole class of bug, not just this instance.
+3. **Per-row validation, not all-or-nothing** -- every row is checked
+   independently using the exact same `Rifle`/`Load` dataclass
+   validation every other write path already enforces; a file with
+   some invalid rows still imports every row that IS valid, reporting
+   exactly why each failure failed. This is deliberate, not a
+   shortcut: Rick's own real chronograph data has no ballistic
+   coefficient (BC is a published-data lookup, not something a
+   chronograph measures) -- importing it correctly produces three
+   clean "BC is missing or not positive" failures, which is the
+   CORRECT behavior, confirmed live against the real API, not a
+   limitation to work around. Re-running the same import with a BC
+   value added succeeds cleanly and persists for real (verified via a
+   direct `GET /v2/rifles/{name}` afterward).
+
+   A load name isn't required in the mapped file at all -- most real
+   load-development logs have no such column (charge weight + powder
+   IS the identifier a shooter thinks in). `apply_mapping()` synthesizes
+   one ("22.5gr H335") from powder charge + powder, or bullet weight +
+   type, falling back to "Load N" only if neither is present.
+
+   Re-importing into an existing rifle only ever ADDS a load -- it
+   never overwrites that rifle's own already-saved metadata (scope
+   height, caliber, etc.) even if the row includes different values
+   for those columns, so a partial re-import can't clobber real data
+   filled in some other way since.
+
+**Export** (`generate_export_csv`) -- one CSV, column order matching
+`TARGET_FIELDS` exactly (the round-trip property above), UTF-8 BOM so
+Excel opens it correctly rather than mis-encoding it. **CSV/formula-
+injection protected**: every free-text field (rifle name, notes, ...)
+a user fully controls gets escaped if it starts with a formula-trigger
+character (`=+-@`, tab, CR) -- a leading apostrophe forces Excel to
+treat it as text rather than evaluating it as a formula, since this
+file is explicitly meant to be opened in a spreadsheet app and
+potentially handed to someone else. Verified directly, not assumed:
+a rifle named `=cmd|/c calc!A1` and a note starting `+SUM(...)` both
+export with the escape applied, confirmed present in the actual output
+bytes.
+
+**Surfaced two ways with the same function**, per Rick's explicit ask:
+generally, any time, in an "Import / Export" account-menu section; and
+again specifically as "Download my data first," directly above the
+delete button in Danger Zone.
+
+**Reuses the existing rifle/load store**, not a separate write path --
+`apply_mapping()` builds/mutates real `Rifle`/`Load` objects against
+`user_store.rifles` (already loaded for the request) and a single
+`user_store.save()` persists everything, the same method every other
+rifle-writing endpoint already calls. New rifles have to be merged
+back into `user_store.rifles` before `save()` (it does a full delete-
+then-reinsert of whatever's in that dict, same as every existing write
+path) -- mutating an *existing* rifle object in place is automatically
+reflected there, but a brand-new one only exists in the import's own
+local result set until explicitly merged in.
+
+**Verified end to end against the real API** (not just the standalone
+module): preview and commit both tested live via the `dt-auth-
+smoketest` fixture account -- Rick's real (BC-less) data correctly
+failed all three rows with the expected reason; the same data with a
+BC value added succeeded, persisted (confirmed via a real `GET`), and
+appeared correctly in an actual export download; the account-menu UI
+and the full mapping-screen flow were exercised through real clicks,
+not just API calls. Every test rifle created during verification was
+deleted afterward -- the fixture account was confirmed back to zero
+rifles before finishing. 23 new unit tests
+(`tests/test_import_export.py`) cover parsing, the mapping-collision
+fix, every validation failure path, and the export/re-import round
+trip, with no network dependency.
+
+**Not built:** XLSX export (CSV only, both directions of "same
+format" -- import accepts it, export produces it; sufficient for
+print/share/re-import, and a second export format didn't seem worth
+the added surface for what this is actually for).
+
+**Owning lens:** Rick specified the full scope (mapping UI, paired
+export, deletion-flow placement, printable/shareable framing, and the
+specific real-data test case); Build implemented end to end and
+verified against the real API and a real dataset, not the module in
+isolation.

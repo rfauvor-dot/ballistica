@@ -19,6 +19,7 @@ Interactive docs at http://127.0.0.1:8000/docs once it's running.
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +34,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 import httpx
 import jwt
 import openai
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -45,6 +46,10 @@ from slowapi.util import get_remote_address
 
 from .atmosphere import AtmosphereConditions, pressure_at_altitude_inhg
 from .cli import BallisticaCLI, _CalibrationSession, _SetupSession
+from .import_export import (
+    MAX_IMPORT_FILE_BYTES, TARGET_FIELDS, ImportError_, apply_mapping,
+    generate_export_csv, parse_uploaded_file, suggest_mapping,
+)
 from .openai_client import get_openai_client
 from .profiles import Load, Rifle
 from .reporting import report_for_point
@@ -706,6 +711,97 @@ def v2_update_profile(payload: ProfileUpdateIn, auth: tuple[str, str] = Depends(
     resp.raise_for_status()
     rows = resp.json()
     return {"display_name": rows[0]["display_name"] if rows else None}
+
+
+def _reject_if_too_large(request: Request) -> None:
+    """Checked before reading the upload body at all -- the in-parser
+    size check (import_export.py) only runs after the bytes are
+    already fully read into memory, so this is the actual first line
+    of defense against a deliberately huge upload. Content-Length isn't
+    guaranteed to be present/accurate for every client, so this is a
+    cheap early-exit for the common case, not a substitute for the
+    real check."""
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_IMPORT_FILE_BYTES:
+        raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_IMPORT_FILE_BYTES // 1024}KB).")
+
+
+@app.post("/v2/import/preview")
+@limiter.limit("10/minute")
+async def v2_import_preview(request: Request, file: UploadFile = File(...), auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """First step of import: parse the uploaded file and return its
+    headers, a best-guess column mapping, and a small preview -- never
+    writes anything. The frontend renders a mapping screen from this,
+    the user confirms/corrects it, then POSTs to /v2/import/commit with
+    the same file plus the confirmed mapping. Stateless on purpose (no
+    server-side file caching between the two calls) -- the browser
+    already has the file in memory from the file picker and can just
+    re-send it, so there's no need for this to hold anything between
+    requests."""
+    _reject_if_too_large(request)
+    raw = await file.read()
+    try:
+        headers, rows = parse_uploaded_file(file.filename or "", raw)
+    except ImportError_ as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "headers": headers,
+        "suggested_mapping": suggest_mapping(headers),
+        "target_fields": [{"key": f.key, "label": f.label, "required": f.required} for f in TARGET_FIELDS],
+        "preview_rows": rows[:5],
+        "row_count": len(rows),
+    }
+
+
+@app.post("/v2/import/commit")
+@limiter.limit("10/minute")
+async def v2_import_commit(
+    request: Request, file: UploadFile = File(...), mapping: str = Form(...),
+    user_store: SupabaseProfileStore = Depends(_get_user_store),
+) -> dict:
+    """Second step: the same file, plus the mapping the user confirmed
+    on the preview screen, actually creates/updates rifles and loads.
+    Every row is validated independently (see import_export.py's own
+    docstring) -- a file with some invalid rows still imports every
+    row that IS valid, and reports exactly why each failure failed."""
+    _reject_if_too_large(request)
+    raw = await file.read()
+    try:
+        _, rows = parse_uploaded_file(file.filename or "", raw)
+        mapping_dict = json.loads(mapping)
+    except (ImportError_, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    results, touched = apply_mapping(rows, mapping_dict, existing_rifles=user_store.rifles)
+    user_store.rifles.update(touched)  # new rifles weren't in user_store.rifles until now -- save()
+                                        # persists the FULL set it finds there, so this must happen
+                                        # before save(), not just rely on in-place mutation of
+                                        # existing rifle objects (which alone would lose new ones).
+    if touched:
+        user_store.save()
+
+    return {
+        "results": [
+            {"row": r.row_number, "rifle": r.rifle_name, "load": r.load_name, "status": r.status, "detail": r.detail}
+            for r in results
+        ],
+        "created_or_updated": len(touched),
+        "failed": sum(1 for r in results if r.status == "failed"),
+    }
+
+
+@app.get("/v2/export/rifles")
+@limiter.limit("10/minute")
+def v2_export_rifles(request: Request, user_store: SupabaseProfileStore = Depends(_get_user_store)) -> Response:
+    """Every rifle and load this account has, as a CSV in the exact
+    column shape /v2/import expects -- available any time (not gated to
+    right before account deletion), and also the thing the deletion
+    flow itself prompts for right before the delete button (index.html)."""
+    csv_bytes = generate_export_csv(list(user_store.rifles.values()))
+    return Response(
+        content=csv_bytes, media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=ballistica-export.csv"},
+    )
 
 
 @app.delete("/v2/account")

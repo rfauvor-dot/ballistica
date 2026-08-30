@@ -115,7 +115,7 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError, #displayNameError {
+  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError, #displayNameError, #importExportError, #importError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
@@ -241,10 +241,20 @@
           <div class="panel-body" id="walkthroughList"></div>
         </details>
 
+        <details id="importExportMenu" style="margin-top:10px;">
+          <summary>Import / Export</summary>
+          <div class="panel-body">
+            <button id="exportDataBtn">Export my data (CSV)</button>
+            <button id="openImportBtn" style="margin-top:8px;">Import rifles / loads</button>
+            <div id="importExportError"></div>
+          </div>
+        </details>
+
         <details id="dangerZoneMenu" style="margin-top:10px;">
           <summary>Danger zone</summary>
           <div class="panel-body">
             <p style="font-size:14px; color:var(--muted); margin:0 0 12px;">Permanently delete your account, along with every rifle, load, and calibration record tied to it. This cannot be undone.</p>
+            <button id="exportBeforeDeleteBtn" style="margin-bottom:10px;">Download my data first</button>
             <button id="deleteAccountBtn" style="background:var(--error-bg); color:var(--error-text); font-weight:600;">Delete my account</button>
             <div id="deleteAccountError"></div>
           </div>
@@ -402,6 +412,31 @@
     <div class="meta" id="velMeta"></div>
   </div>
   </div> <!-- #appContent -->
+
+  <div id="importPanel" style="display:none; max-width:640px; margin:24px auto;">
+    <h2 style="font-size:18px; margin-bottom:4px;">Import rifles &amp; loads</h2>
+
+    <div id="importStep1">
+      <p style="font-size:14px; color:var(--muted);">Upload a CSV or Excel (.xlsx) file. The next screen lets you match whichever columns your file actually has to Ballistica's fields -- nothing is imported until you confirm that.</p>
+      <input type="file" id="importFileInput" accept=".csv,.xlsx" style="margin:10px 0;">
+      <button id="importPreviewBtn" class="primary big">Preview</button>
+    </div>
+
+    <div id="importStep2" style="display:none">
+      <p id="importRowCount" style="font-size:14px; color:var(--muted);"></p>
+      <div id="importMappingTable"></div>
+      <button id="importCommitBtn" class="primary big" style="margin-top:14px;">Import</button>
+      <button id="importBackBtn" class="big">Back</button>
+    </div>
+
+    <div id="importStep3" style="display:none">
+      <p id="importSummary" style="font-weight:700;"></p>
+      <div id="importResultsTable" style="max-height:50vh; overflow-y:auto; border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin:10px 0; font-size:14px;"></div>
+      <button id="importDoneBtn" class="primary big">Done</button>
+    </div>
+
+    <div id="importError"></div>
+  </div>
 
 <script src="/engine.js"></script>
 <script>
@@ -1923,6 +1958,149 @@ document.getElementById('changePasswordBtn').addEventListener('click', async () 
     btn.disabled = false;
   }
 });
+
+// -------------------------------------------------- import / export
+// Bulk CSV/Excel rifle+load import with a column-mapping step, paired
+// with an export in the same shape (2026-08-30, per Rick's instruction --
+// the backlogged BACKLOG.md item, unblocked now that multi-tenancy
+// exists). Export is deliberately reachable two ways with the same
+// function: generally, any time, from this menu section; and again,
+// specifically, right before the delete button in Danger Zone below.
+
+async function downloadExport() {
+  const token = await getValidAccessToken();
+  if (!token) throw new Error('Signed out -- please sign in again.');
+  const res = await fetch('/v2/export/rifles', { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ballistica-export.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function handleExportClick(errorElId) {
+  const errorEl = document.getElementById(errorElId);
+  hide(errorEl);
+  try {
+    await downloadExport();
+  } catch (e) {
+    flash(errorEl, e.message);
+  }
+}
+document.getElementById('exportDataBtn').addEventListener('click', () => handleExportClick('importExportError'));
+document.getElementById('exportBeforeDeleteBtn').addEventListener('click', () => handleExportClick('deleteAccountError'));
+
+let importTargetFields = [];
+let importHeaders = [];
+
+function showImportPanel() {
+  document.getElementById('appContent').style.display = 'none';
+  document.getElementById('importPanel').style.display = 'block';
+  document.getElementById('importStep1').style.display = 'block';
+  document.getElementById('importStep2').style.display = 'none';
+  document.getElementById('importStep3').style.display = 'none';
+  hide(document.getElementById('importError'));
+  document.getElementById('importFileInput').value = '';
+}
+
+function hideImportPanel() {
+  document.getElementById('importPanel').style.display = 'none';
+  document.getElementById('appContent').style.display = 'block';
+}
+
+document.getElementById('openImportBtn').addEventListener('click', showImportPanel);
+document.getElementById('importBackBtn').addEventListener('click', () => {
+  document.getElementById('importStep1').style.display = 'block';
+  document.getElementById('importStep2').style.display = 'none';
+});
+document.getElementById('importDoneBtn').addEventListener('click', async () => {
+  hideImportPanel();
+  await loadRifles();  // new/updated rifles from the import need to show up in the picker
+});
+
+document.getElementById('importPreviewBtn').addEventListener('click', async () => {
+  const errorEl = document.getElementById('importError');
+  hide(errorEl);
+  const fileInput = document.getElementById('importFileInput');
+  if (!fileInput.files.length) { flash(errorEl, 'Choose a file first.'); return; }
+  const btn = document.getElementById('importPreviewBtn');
+  btn.disabled = true;
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    const data = await api('/import/preview', { method: 'POST', body: formData });
+    importTargetFields = data.target_fields;
+    importHeaders = data.headers;
+    renderMappingTable(data.target_fields, data.headers, data.suggested_mapping);
+    document.getElementById('importRowCount').textContent =
+      `${data.row_count} row${data.row_count === 1 ? '' : 's'} found. Match each field below to a column, or leave it as "not present" to skip it.`;
+    document.getElementById('importStep1').style.display = 'none';
+    document.getElementById('importStep2').style.display = 'block';
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderMappingTable(targetFields, headers, suggestedMapping) {
+  const container = document.getElementById('importMappingTable');
+  container.innerHTML = targetFields.map((f) => {
+    const options = ['<option value="">-- not present --</option>'].concat(
+      headers.map((h) => `<option value="${escapeHtml(h)}" ${h === suggestedMapping[f.key] ? 'selected' : ''}>${escapeHtml(h)}</option>`)
+    ).join('');
+    return `
+      <div class="row" style="align-items:center; margin-bottom:6px;">
+        <label style="flex:1 1 45%; font-size:14px; font-weight:${f.required ? '700' : '400'};">
+          ${escapeHtml(f.label)}${f.required ? ' *' : ''}
+        </label>
+        <select data-field="${f.key}" style="flex:1 1 50%; font-size:15px; min-height:38px;">${options}</select>
+      </div>`;
+  }).join('');
+}
+
+document.getElementById('importCommitBtn').addEventListener('click', async () => {
+  const errorEl = document.getElementById('importError');
+  hide(errorEl);
+  const fileInput = document.getElementById('importFileInput');
+  const mapping = {};
+  document.querySelectorAll('#importMappingTable select').forEach((sel) => {
+    mapping[sel.dataset.field] = sel.value || null;
+  });
+  const btn = document.getElementById('importCommitBtn');
+  btn.disabled = true;
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('mapping', JSON.stringify(mapping));
+    const data = await api('/import/commit', { method: 'POST', body: formData });
+    renderImportResults(data);
+    document.getElementById('importStep2').style.display = 'none';
+    document.getElementById('importStep3').style.display = 'block';
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderImportResults(data) {
+  document.getElementById('importSummary').textContent =
+    `${data.created_or_updated} rifle${data.created_or_updated === 1 ? '' : 's'} touched, ${data.failed} row${data.failed === 1 ? '' : 's'} failed.`;
+  document.getElementById('importResultsTable').innerHTML = data.results.map((r) => {
+    const color = r.status === 'failed' ? 'var(--error-text)' : '#2a6b2a';
+    return `<div style="padding:4px 0; border-bottom:1px solid var(--line);">
+      <strong>Row ${r.row}</strong> -- ${escapeHtml(r.rifle || '(no rifle)')}${r.load ? ' / ' + escapeHtml(r.load) : ''}
+      <span style="color:${color}; font-weight:600;"> [${r.status}]</span><br>
+      <span style="color:var(--muted); font-size:13px;">${escapeHtml(r.detail)}</span>
+    </div>`;
+  }).join('');
+}
 
 document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
   const errorEl = document.getElementById('deleteAccountError');
