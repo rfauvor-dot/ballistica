@@ -33,7 +33,7 @@ _TOKEN_RE = re.compile(r"\d+\.?\d*|[a-z]+")
 # token is required to match something.
 _QUERY_FILLER_WORDS = {
     "my", "the", "a", "an", "to", "load", "rifle", "gun", "use", "please",
-    "switch", "for",
+    "switch", "for", "with",
 }
 
 
@@ -62,6 +62,23 @@ def _tokens_match(query_tokens: list[str], target_tokens: list[str]) -> bool:
         any(t.startswith(q) or q.startswith(t) for t in target_tokens)
         for q in query_tokens
     )
+
+
+def _rifle_search_text(rifle: "Rifle") -> str:
+    """Broader net than the bare name -- caliber, barrel length, twist
+    rate, and scope make/model are exactly the details a shooter
+    naturally reaches for to describe or disambiguate a rifle out loud
+    ("the 5.7x28 with the 11 inch barrel"), so a query mentioning them
+    has to be able to match against them, not just the name. Root-caused
+    live (2026-09-05): find_rifle() used to check the name ONLY, so any
+    query that added a real, correct identifying detail beyond the name
+    made EVERY query token fail to match (since _tokens_match requires
+    all of them to), turning a disambiguating description into a hard
+    failure instead of a match -- the opposite of what it was for.
+    find_load() already casts this same wider net across name/powder/
+    notes; this is the identical fix, extended to rifles."""
+    barrel = f"{rifle.barrel_length_in:g} inch barrel" if rifle.barrel_length_in is not None else ""
+    return f"{rifle.name} {rifle.caliber} {barrel} {rifle.twist_rate} {rifle.scope_make} {rifle.scope_model}"
 
 
 @dataclass
@@ -171,7 +188,7 @@ class ProfileStore:
         if query in self.rifles:
             return self.rifles[query]
         q_tokens = _query_tokens(query)
-        matches = [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(r.name))]
+        matches = [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(_rifle_search_text(r)))]
         if len(matches) == 1:
             return matches[0]
         if not matches:

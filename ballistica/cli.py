@@ -26,7 +26,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
-from .intent import extract_intent, extract_setup_fields, generate_warm_reply
+from .intent import classify_calibration_turn, extract_intent, extract_setup_fields
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -200,6 +200,13 @@ _MAX_FAILED_ATTEMPTS = 3
 # current utterance is processed, rather than silently absorbing it.
 _SESSION_STALE_SECONDS = 300
 
+# How many recent user/assistant exchanges the open-ended conversational
+# path (extract_intent's "converse" result) carries forward as context --
+# bounds token cost per call rather than growing for the whole session;
+# ordinary ballistics commands don't touch this at all (see
+# BallisticaCLI._chat_history).
+_CHAT_HISTORY_MAX_TURNS = 6
+
 
 class _SetupSession:
     """In-progress voice interview for a new load or rifle -- nothing's
@@ -323,6 +330,13 @@ class BallisticaCLI:
         self._calibration: _CalibrationSession | None = None
         self._pending_delete: str | None = None
         self._pending_delete_at: float = 0.0
+        # Rolling short-term memory for genuine open-ended conversation
+        # (2026-09-05) -- NOT populated by ordinary ballistics commands
+        # (switch rifle, drop-at-range, etc.), only by "converse" turns,
+        # so a follow-up like "is that safe to bump up" can resolve what
+        # "that" refers to without every terse command bloating the
+        # context sent to the LLM on every single turn.
+        self._chat_history: list[dict] = []
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -388,8 +402,10 @@ class BallisticaCLI:
             raise SystemExit(0)
         # Fast, free path for the small talk that's common enough not to
         # burn an LLM call on -- everything else genuinely conversational
-        # ("rough day at the range", "you're the best") falls through to
-        # generate_warm_reply() via the no_match branch below.
+        # ("rough day at the range", "you're the best", an open question
+        # about reloading) falls through to extract_intent()'s own
+        # "converse" result (2026-09-05) rather than a separate personality
+        # call -- it's allowed to just talk, not only classify a command.
         if low in ("hi", "hello", "hey"):
             return random.choice(["Hey, Rick.", "Hey there.", "What's up?"])
         if re.search(r"\b(thanks|thank you|good job|nice work|well done)\b", low):
@@ -429,9 +445,9 @@ class BallisticaCLI:
         # deliberately distinct from "switch to <name>" above, which only
         # ever selects among loads/rifles that already exist.
         if re.search(r"\b(?:new|add|set ?up|create)\b.*\bload\b", low):
-            return self._start_setup("load")
+            return self._start_setup("load", t)
         if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b", low):
-            return self._start_setup("rifle")
+            return self._start_setup("rifle", t)
 
         if re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low):
             return self._start_calibration()
@@ -490,7 +506,7 @@ class BallisticaCLI:
         # only decides *which* command was meant and *what* the
         # parameters are -- the actual math still runs through the same
         # deterministic functions every other path above uses.
-        result = extract_intent(t)
+        result = extract_intent(t, history=self._chat_history)
         if result is None:
             return "Didn't understand that. Type 'help' for supported commands."
         return self._dispatch_intent(*result, original_text=t)
@@ -510,6 +526,14 @@ class BallisticaCLI:
                 load_query = str(args["query"])
             elif name == "switch_rifle":
                 rifle_query = str(args["query"])
+                # Load info volunteered in the same breath as the switch
+                # (see switch_rifle's own tool description in intent.py)
+                # -- stripped of its "new_load_" prefix so the keys match
+                # Load's own field names directly.
+                new_load_fields = {
+                    k[len("new_load_"):]: v for k, v in args.items()
+                    if k.startswith("new_load_") and _is_real_value(v)
+                }
             elif name == "get_minimum_spread_zero":
                 max_range_yd = float(args["max_range_yd"])
             elif name == "solve_incline_angle":
@@ -521,7 +545,7 @@ class BallisticaCLI:
                 clock_hours = float(args["clock_hours"])
             elif name == "repeat_last_solution":
                 part = str(args.get("part") or "solution")
-            elif name not in ("set_conditions", "get_status", "no_match", "update_rifle_field",
+            elif name not in ("set_conditions", "get_status", "converse", "update_rifle_field",
                                "start_load_setup", "start_rifle_setup", "start_calibration"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
@@ -532,7 +556,7 @@ class BallisticaCLI:
         if name == "switch_load":
             return self._switch_load(load_query)
         if name == "switch_rifle":
-            return self._switch_rifle(rifle_query)
+            return self._switch_rifle(rifle_query, new_load_fields)
         if name == "get_minimum_spread_zero":
             return self._minimum_spread_zero(max_range_yd)
         if name == "solve_incline_angle":
@@ -547,17 +571,31 @@ class BallisticaCLI:
         if name == "repeat_last_solution":
             return self._repeat(part if part in ("elevation", "windage") else "solution")
         if name == "start_load_setup":
-            return self._start_setup("load")
+            return self._start_setup("load", original_text)
         if name == "start_rifle_setup":
-            return self._start_setup("rifle")
+            return self._start_setup("rifle", original_text)
         if name == "start_calibration":
             return self._start_calibration()
         if name == "update_rifle_field":
             return self._update_rifle_fields(args)
-        if name == "no_match":
-            warm = generate_warm_reply(original_text)
-            return warm or "Didn't understand that. Type 'help' for supported commands."
+        if name == "converse":
+            reply = str(args.get("reply") or "").strip()
+            if not reply:
+                return "Didn't understand that. Type 'help' for supported commands."
+            self._remember_chat_turn(original_text, reply)
+            return reply
         return self._status()  # only get_status left
+
+    def _remember_chat_turn(self, user_text: str, reply: str) -> None:
+        """Appends one exchange to the rolling conversational-memory
+        buffer, trimmed to the last _CHAT_HISTORY_MAX_TURNS exchanges so
+        the context sent to the LLM on every subsequent turn stays
+        bounded rather than growing for the whole session."""
+        self._chat_history.append({"role": "user", "content": user_text})
+        self._chat_history.append({"role": "assistant", "content": reply})
+        max_messages = _CHAT_HISTORY_MAX_TURNS * 2
+        if len(self._chat_history) > max_messages:
+            self._chat_history = self._chat_history[-max_messages:]
 
     # Setup-tone helpers: switching load/rifle/wind happens at the bench,
     # between strings -- not mid-shot -- so these read as a conversational
@@ -569,10 +607,13 @@ class BallisticaCLI:
         self.store.save()
         return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
 
-    def _switch_rifle(self, query: str) -> str:
+    def _switch_rifle(self, query: str, new_load_fields: dict | None = None) -> str:
         rifle = self.store.set_active_rifle(query)
         self.store.save()
-        return f"Switched you over to the {rifle.name}."
+        switched = f"Switched you over to the {rifle.name}."
+        if new_load_fields:
+            return f"{switched} {self._begin_setup_from_fields('load', new_load_fields)}"
+        return switched
 
     def _set_wind(self, speed_mph: float, clock_hours: float) -> str:
         self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
@@ -632,10 +673,43 @@ class BallisticaCLI:
     # _SetupSession above: nothing gets written to the store until the
     # shooter explicitly confirms the read-back summary.
 
-    def _start_setup(self, kind: str) -> str:
-        self._setup = _SetupSession(kind)
+    def _start_setup(self, kind: str, original_text: str = "") -> str:
+        # Pre-fill from the SAME utterance that triggered this, e.g.
+        # "let's set up a new rifle, the 9mm PCC" or "new load, 110s at
+        # 24 grains of Lil'Gun, zero at 50" -- extract_setup_fields()
+        # already handles multi-field extraction fine (it's used every
+        # turn once the interview is running), it just never used to run
+        # on the triggering utterance itself, so anything said in that
+        # same breath beyond "start a new X" was silently discarded and
+        # asked for again a moment later. Confirmed live in testing: a
+        # rifle name stated in the trigger utterance got re-asked for.
+        fields = extract_setup_fields(original_text, kind, asking_about=None) if original_text else {}
         intro = "Alright, let's set up a new load." if kind == "load" else "Alright, let's set up a new rifle."
-        return f"{intro} {self._prompt_for(self._next_field_to_ask())}"
+        return f"{intro} {self._begin_setup_from_fields(kind, fields)}"
+
+    def _begin_setup_from_fields(self, kind: str, fields: dict) -> str:
+        """Starts a new load/rifle setup pre-filled with already-known
+        field values, and returns the first prompt for whatever's still
+        actually missing -- or the confirmation summary if nothing is.
+        Shared by _start_setup() (fields volunteered in the utterance
+        that triggered the setup) and _switch_rifle() (a plain rifle
+        switch that also describes a brand new load in the same breath,
+        e.g. "switching to the 300 blackout, first load is the 110s at
+        24 grains of Lil Gun, zero at 50" -- confirmed live that this
+        used to just switch rifles and silently drop the load info)."""
+        self._setup = _SetupSession(kind)
+        valid = {f.name for f in dataclasses.fields(Load if kind == "load" else Rifle)}
+        if fields:
+            self._setup.draft.update({k: v for k, v in fields.items() if k in valid and _is_real_value(v)})
+
+        missing = self._next_field_to_ask()
+        if missing is None:
+            self._setup.confirming = True
+            return self._setup_summary()
+        if self._setup.draft:
+            captured = [str(v) for v in self._setup.draft.values()]
+            return f"Got it -- {', '.join(captured)}. {self._prompt_for(missing)}"
+        return self._prompt_for(missing)
 
     def _next_field_to_ask(self) -> str | None:
         """Required fields first (can't be skipped), then every remaining
@@ -868,12 +942,7 @@ class BallisticaCLI:
             # "end calibration" was said a beat too early.
 
         if re.match(r"^(end calibration|that.s it|we.re done|finished?|finish( calibration)?)\b", low):
-            if not self._calibration.shots:
-                return "No shots recorded yet -- read me at least one first."
-            self._calibration.confirming = True
-            avg, spread = self._calibration_stats()
-            return (f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}. "
-                    f"Save as the new velocity for the {self._calibration.load_name}?")
+            return self._request_end_calibration()
 
         if re.search(r"\baverage\b", low):
             self._calibration.failed_attempts = 0
@@ -883,23 +952,58 @@ class BallisticaCLI:
             return f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}."
 
         if re.search(r"\b(discard|throw out|toss|scratch that|bad (reading|shot))\b", low):
-            self._calibration.failed_attempts = 0
-            if not self._calibration.shots:
-                return "No shots to discard yet."
-            removed = self._calibration.shots.pop()
-            if not self._calibration.shots:
-                return f"Tossed {removed:.0f}. No shots left."
-            avg, _ = self._calibration_stats()
-            return f"Tossed {removed:.0f}. Average {avg:.0f}."
+            return self._discard_last_shot()
 
         m = re.search(r"(\d{3,5}(?:\.\d+)?)", low)
-        if not m:
-            self._calibration.failed_attempts += 1
-            if self._calibration.failed_attempts >= _MAX_FAILED_ATTEMPTS:
-                self._calibration = None
-                return "Having trouble hearing shots -- calibration stopped. Say 'start calibration' to try again."
-            return "Didn't catch a number there -- try again?"
-        return self._record_shot(float(m.group(1)))
+        if m:
+            return self._record_shot(float(m.group(1)))
+
+        # Live-tested (2026-09-05): natural ways of signaling "done reading
+        # shots" vary far more than the anchored regex above ever will
+        # ("that's ten shots", "I think that's good", "that's enough") --
+        # every one of those used to land here and just say "didn't catch
+        # a number," identically to genuine noise/silence. Same fast-path-
+        # then-LLM-fallback pattern extract_intent() already uses elsewhere,
+        # applied to the one modal flow that didn't have it yet.
+        classification = classify_calibration_turn(text)
+        if classification == "end_calibration":
+            return self._request_end_calibration()
+        if classification == "discard_last_shot":
+            return self._discard_last_shot()
+        if classification == "cancel_calibration":
+            self._calibration = None
+            return "Calibration cancelled. Nothing saved."
+
+        # "unclear", or None on an outright API failure -- same "give up
+        # after repeated genuine failures" backstop as before.
+        self._calibration.failed_attempts += 1
+        if self._calibration.failed_attempts >= _MAX_FAILED_ATTEMPTS:
+            self._calibration = None
+            # Wording note (2026-09-05): "hearing shots" reads as acoustic
+            # gunshot detection, which doesn't exist -- this only ever
+            # means "couldn't parse what you said as a number, a control
+            # phrase, or an end-of-string signal." Reworded after Rick
+            # asked, live, whether real audio shot-detection was involved.
+            return "Having trouble understanding the shot readings -- calibration stopped. Say 'start calibration' to try again."
+        return "Didn't catch a number there -- try again?"
+
+    def _request_end_calibration(self) -> str:
+        if not self._calibration.shots:
+            return "No shots recorded yet -- read me at least one first."
+        self._calibration.confirming = True
+        avg, spread = self._calibration_stats()
+        return (f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}. "
+                f"Save as the new velocity for the {self._calibration.load_name}?")
+
+    def _discard_last_shot(self) -> str:
+        self._calibration.failed_attempts = 0
+        if not self._calibration.shots:
+            return "No shots to discard yet."
+        removed = self._calibration.shots.pop()
+        if not self._calibration.shots:
+            return f"Tossed {removed:.0f}. No shots left."
+        avg, _ = self._calibration_stats()
+        return f"Tossed {removed:.0f}. Average {avg:.0f}."
 
     def _apply_conditions_update(
         self, temp_f: float | None = None, pressure_inhg: float | None = None,

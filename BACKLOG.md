@@ -149,3 +149,255 @@ own convention.
 (The GPS/METAR weather auto-fill item logged here 2026-08-28 has been
 built — see MULTI_TENANCY_DESIGN.md and ballistica/weather.py. Moved out
 of backlog per this file's own convention.)
+
+---
+
+## Session Mode / Relaxed Mode — ambient, continuous-listening range logging
+
+**Raised:** Rick, 2026-09-05, after a real range session (six rifles, multiple
+loads, three calibers: .223 Wylde, .300 Blackout, 9mm) where Claude in voice
+mode on his phone stood in as the session logger — tracking rifle, load, and
+chronograph velocities from free-flowing narration with no command format,
+because Ballistica itself had no discoverable path to do this live.
+
+**What:** An explicit, user-selected "Session Mode"/"Relaxed Mode" (not
+always-on ambient listening) that continuously extracts rifle/load/velocity/
+corrections from natural narration during a range session, only speaking up
+for clarification or confirmation rather than replying to every utterance.
+Paired with: default behavior stays command-response (to avoid picking up
+other range-goers' conversations); a manual mute control (physical/one-tap,
+not an AI judgment call) that gates audio capture itself, not just spoken
+replies, so private side-conversation doesn't burn STT/LLM cost.
+
+**Feasibility findings (scoped 2026-09-05, Build lens, grounded in real code):**
+- There's already a close analog: the `start calibration` flow
+  (`ballistica/cli.py` `_handle_calibration_turn`) logs loose numeric shot
+  readings with no rigid per-shot phrasing, computes running average, flags
+  outliers — proving the "parse loose speech into structured data" half
+  already works, just scoped to one rifle+load at a time.
+- The real gap is **context switching**: today, moving to a new rifle or load
+  requires an exact command (`switch rifle to <name>`, `switch to <load>`)
+  before loose narration resumes. Session Mode needs that switch detected
+  from narration itself.
+- Architecture today is one blocking request/response per complete utterance
+  (phone sends finished clip → Whisper → `BallisticaCLI.handle()` classifies
+  and dispatches once → one reply). No persistent session state spans
+  multiple exchanges except the existing modal flows (setup interview,
+  calibration), which are themselves exact-turn state machines, not open
+  narration.
+- Three real pipeline changes needed: (1) continuous/streaming STT with
+  voice-activity detection instead of clip-per-utterance — no prior art in
+  the codebase for this piece; (2) a running session-state object tracking
+  current rifle/load in focus that updates from narration, extending the
+  existing LLM tool-use extraction pattern in `ballistica/intent.py` to run
+  per speech segment against accumulating context rather than per isolated
+  command; (3) a confidence-gated "worth interrupting for" policy on the
+  reply side, since Session Mode is silent-by-default rather than
+  reply-every-utterance.
+
+**Cost estimate — computed 2026-09-05 against real session numbers.** Rick
+supplied: 45-75 min mic-open time, 5 rifles fired (a 6th present but never
+fired for record), ~10 rifle/load combos across those 5, 54 total shot
+readings. Priced against confirmed current rates (Whisper STT $0.006/min,
+Claude Haiku 4.5 $1/$5 per MTok in/out, OpenAI TTS $15/M chars — the same
+three services already wired into Ballistica):
+- **STT:** $0.27-$0.45 for the whole session (45-75 min × $0.006/min) —
+  cheap enough that VAD/silence-stripping doesn't matter for *cost*, only
+  for not falsely triggering the extraction layer on noise.
+- **LLM extraction:** ~90-200 segments estimated (54 shot readings + ~30
+  setup-narration segments across 10 combos + a 30-50% buffer for
+  non-productive narration that still needs a "nothing to log" classification
+  pass) × ~$0.0017/call (~1200 in/100 out tokens) = **$0.18-$0.40**.
+- **TTS:** confirmation/clarification replies only under the silent-by-
+  default design — 40-100 short replies ≈ **$0.03-$0.30**.
+- **Total: ~$0.50-$1.20 per session** (under $1.50 with margin). Marginal
+  per-session API cost is a non-issue at this volume; the real cost of this
+  feature is the one-time engineering build (streaming STT/VAD, session-state
+  tracker, confidence-gated reply policy — see pipeline-gap analysis above),
+  not ongoing API spend.
+
+**Build-effort sizing — done 2026-09-05, corrects an error in the earlier
+pipeline-gap analysis above.** That analysis said continuous listening had
+"no prior art in the codebase" — wrong; `ballistica/web/index.html`'s
+`recordCommand()` already has a live-tuned, energy-based VAD (speech onset
+detection, silence-based end-of-utterance, min/max duration bounds) that's
+been through multiple real fixes (Addendum 14 near-empty-clip hallucination,
+Addendum 27 mid-sentence-pause truncation, Addendum 30 mic-lifecycle/
+Bluetooth-renegotiation), plus an already-working continuous background
+wake-word listener. Relative sizing per component:
+- **Continuous segmented capture — Small.** Loop the existing proven VAD
+  capture for the whole session instead of exiting after one command; no
+  wake word needed per utterance. Reuses tested code as-is.
+- **Session-state tracker + open-ended entity extraction — Medium-Large,
+  the real engineering investment and the real risk.** No existing analog:
+  today's setup-interview and calibration flows are stateful but expect a
+  fixed field in a fixed order, whereas this needs any field in any order,
+  implicit rifle/load context-switch detection from narration alone, fuzzy
+  matching against existing rifles/loads vs. flagging new ones, and generic
+  correction-handling (today's "discard that" only works for calibration
+  shots).
+- **Confidence-gated reply policy — Small.** Conditional on a confidence
+  signal the extraction layer has to produce anyway.
+- **Relaxed Mode toggle + hard mute — Small-Medium.** Mute likely reuses
+  the existing enable/disable voice mic-lifecycle code (pause without full
+  teardown) plus a UI control.
+
+No dollar figure given for engineering hours — no real basis exists here for
+pricing that, and inventing one wouldn't be an honest estimate. Grounded
+instead in this codebase's own real history: every voice feature shipped so
+far (wake-word timing, mid-sentence pauses, mic lifecycle, setup-interview
+phrasing, calibration confirmation) needed a live-range test-and-fix round
+after the initial build. Session Mode's extraction piece is structurally
+more ambiguous than any prior feature, so budget for more than one live-range
+iteration before it's reliable, not a single build-and-ship. Suggested
+sequencing: build components 1 and 3 first (small, low-risk, reuse tested
+code), then 2 (the real investment), then range-test.
+
+**Fourth item — RESOLVED, no new build needed.** The existing CSV import
+pipeline (`ballistica/import_export.py`) already fuzzy-matches the exact
+column set Rick used today (Gun Name/Rifle Name, Barrel Length, Twist Rate,
+Bullet Weight, Bullet Type, BC, Drag Model, Powder, Powder Charge, Muzzle
+Velocity, Zero Distance, Temperature) via its existing header-alias
+matching. Rick reconstructed today's freeform range notes into that
+spreadsheet format and ran it through the existing desktop import today —
+5 rifles touched, 0 rows failed. No backlog item remains here; the
+reconstructed spreadsheet stands as the reference template for converting
+future freeform-narrated sessions the same way.
+
+**Status:** Backlog — feasibility, pipeline-gap analysis, and cost estimate
+all done. Only remaining open question is whether Rick wants build-effort
+(engineering time/complexity) sized separately from the per-session running
+cost above. Import-tool ask closed — already-built infra handled it.
+
+**Owning lenses:** Build (pipeline changes, import tool), Finance (cost
+estimate once real numbers land — may warrant a RISK_REGISTER.md entry if
+continuous-listening cost turns out material, not filed there yet since no
+decision has been made and the proposed mode is explicitly opt-in/bounded).
+
+---
+
+## Open-ended conversational layer (genuine NLU, not pattern-matched phrases)
+
+**Raised:** Rick, 2026-09-05, after two live-voice Session Mode tests. Once
+natural-phrasing rifle/load switching and end-of-string detection both
+worked, the next thing that broke was Rick just talking to Ballistica the
+way he'd talk to Claude directly — a conversational question about casing
+pressure signs and whether to bump a load. Outside the app's known command
+vocabulary, it just failed. Rick's point: he doesn't need Ballistica itself
+to give reloading advice -- what he's after is that the interaction *feels*
+like talking to an assistant, not issuing commands to software, and he
+(with ChatGPT's input too) believes that conversational quality is a real
+competitive/sales differentiator (individual sales and any future
+licensing conversation, e.g. Leupold), not a nice-to-have polish item.
+
+**Feasibility (scoped 2026-09-05, Build lens, grounded in real code):**
+Layerable on top of the existing deterministic core without touching it —
+`intent.py`'s own design already separates "what did they mean" (LLM) from
+"compute the answer" (100% deterministic Python), which is exactly the
+separation this needs. The narrowness today isn't architectural, it's that
+every existing LLM call is forced to pick from a fixed tool menu
+(`tool_choice={"type": "any"}` in `extract_intent()`) — it's not that the
+model can't understand an open question, it's that it's never structurally
+allowed to just answer one.
+- **Small, foundational piece:** switch to `tool_choice: "auto"` (lets the
+  model call a tool OR respond in free text), rewrite the system prompt
+  from "classify into one of these commands" into an actual persona with
+  real domain latitude, handle the new "response was text, not a tool
+  call" case in `cli.py`'s dispatch. Rough terms: smaller than Session
+  Mode's component 1.
+- **Real, harder piece: conversational memory.** Every LLM call today is
+  stateless (no history beyond what's implicit in already-known session
+  fields) — fine for "switch to load X," not enough for "yeah but what
+  about..." follow-ups that make it feel like a real conversation. Needs a
+  rolling context buffer, a decision on how much history to carry, and how
+  it coexists with the existing setup/calibration session-state hydration
+  without becoming a second, competing memory system. Rough terms: same
+  ballpark as Session Mode's component 2 (the session-state tracker) — new
+  architecture, not a prompt tweak.
+- **Orthogonal to Session Mode, worth weighing on its own:** Session Mode
+  is about not needing the wake word every turn; this is about whether it
+  can say anything beyond a fixed menu once it's listening. This could ship
+  on top of today's wake-word-per-command flow with zero Session Mode work
+  and likely move the "feels like an assistant" perception more than
+  finishing Session Mode's session-state tracker would alone — worth
+  considering as the higher-leverage thing to build first, not just a
+  parallel track.
+
+**Safety/advice boundary — DECIDED by Rick, 2026-09-05 (this was the one
+open question gating scope, not an engineering call):** general reloading
+conversation and terminology are fine; discussing what pressure signs
+generally look like is fine. Ballistica must never state, confirm, or
+imply a specific numeric safety judgment on "is this charge weight safe"
+— always deflect to the reloading manual/reference data instead, in the
+same natural way a knowledgeable person (or Claude, in conversation)
+defers when the stakes are too high to answer from memory. Rick's own
+canonical example, to build the system prompt's tone from directly: asked
+"I don't see any pressure signs on the casings, is it possible we could
+bump this up?", the right answer is something like "Worth checking your
+reloading manual to see how close you are to max load, I don't want to
+rely on memory for something like that" — not a yes/no, not a number, but
+not a dead-end refusal either.
+
+**Implementation nuance flagged during scoping (not yet built, worth
+getting right from the start):** the guardrail has to catch *implied*
+safety judgments without any number stated, not just literal digits —
+"no pressure signs, sounds like you're in a good spot" is functionally the
+same violation as naming a charge weight, just without a number in it. A
+system prompt that only says "don't state a number" would miss this;
+needs to explicitly bar qualitative safety reassurance too, always
+redirecting to the manual regardless of phrasing.
+
+**Status: built and verified 2026-09-05** (Rick chose to sequence this
+ahead of Session Mode's remaining components). Both pieces landed
+together, since memory needs something open-ended to attach to:
+- `intent.py`'s `extract_intent()` now uses `tool_choice: "auto"` instead
+  of `"any"` — it can call a real ballistics tool or just respond in its
+  own voice, no longer forced to pick one of a fixed menu every time. The
+  old `no_match` tool and the separate `generate_warm_reply` personality
+  call are both removed — one unified path replaces them.
+- The safety boundary Rick decided is written directly into the system
+  prompt, with his own example as the canonical tone, plus the
+  implied-judgment nuance flagged above (explicitly bars qualitative
+  reassurance, not just literal numbers).
+- Conversational memory: `BallisticaCLI._chat_history`, a capped rolling
+  buffer (last 6 exchanges) populated ONLY by genuine "converse" turns —
+  ordinary ballistics commands don't touch it, so terse commands don't
+  bloat context sent to the LLM. Wired through `api.py`'s existing
+  `_hydrate_cli`/`_dehydrate_cli` round-trip so it survives across the
+  stateless multi-tenant API the same way setup/calibration state already
+  does.
+- Verified against the live API, not just stubbed: Rick's own example
+  question ("I don't see any pressure signs... is it possible we could
+  bump this up?") produces exactly the intended deflect-to-manual tone,
+  no number, no yes/no. Caught and fixed a real quality issue in the
+  process — first-pass replies used markdown formatting (bold, bullet
+  lists, line breaks) and ran multiple paragraphs, both wrong for a
+  TTS-spoken interface; tightened the prompt to plain spoken sentences,
+  2-3 max, plain ASCII punctuation (also fixed a stray non-ASCII dash
+  that slipped through initially, inconsistent with this codebase's
+  ASCII-only house style). Full suite passing (151) after the change,
+  including 3 new tests covering the converse/history/hydrate-dehydrate
+  paths and updates to existing extract_intent stubs for the new
+  `history` parameter.
+- Known limitation, not solved here: unlike the old `generate_warm_reply`
+  (which had a code-level "reject any reply containing a digit" backstop
+  since pure small talk should never have numbers), the new broader
+  conversational scope legitimately needs numbers sometimes (bullet
+  weights, cartridge names, general reloading facts) -- so the
+  charge-weight-safety boundary relies on the system prompt alone, not a
+  code-level backstop. A narrower heuristic (flag replies combining a
+  weight-shaped number with safety-adjacent language) could be added
+  later once there's real transcript data to calibrate it against,
+  rather than guessing at false-positive rates now.
+- Not yet done: real live-voice/mic testing (same caveat as every other
+  voice feature this session) -- verified directly against the API and
+  via the full test suite, not yet in front of an actual range session.
+
+**Owning lenses:** Build (tool_choice/prompt/dispatch change, then the
+harder conversational-memory piece), Marketing (the competitive-
+differentiator framing driving this is explicitly Rick's own strategic
+read, worth keeping visible to that lens), Legal-adjacent (the safety-
+boundary decision above is exactly the kind of call the liability waiver
+work already treated with real seriousness — same category of risk,
+now resolved by Rick directly rather than left to an embedded prompt
+choice).
