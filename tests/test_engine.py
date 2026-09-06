@@ -191,13 +191,46 @@ def test_find_rifle_matches_on_caliber_and_barrel_length_not_just_name(tmp_path)
     assert found.name == "PSA Rattler"
 
     # A genuinely ambiguous case (two rifles whose searchable text both
-    # satisfy every query token) must still fail honestly, asking for
-    # disambiguation, rather than silently guessing one -- not "no rifle
-    # found" (today's confusing dead end), and not a wrong silent pick.
-    store.add_rifle(Rifle(name="5.7x28", scope_height_in=2.0, caliber="5.7x28mm",
+    # satisfy every query token, and NEITHER rifle's own name is fully
+    # stated in the query -- named "Backup 5.7x28" specifically so its
+    # own name isn't a complete match either, distinct from the
+    # name-covered tiebreak added 2026-09-06 below) must still fail
+    # honestly, asking for disambiguation, rather than silently guessing
+    # one -- not "no rifle found" (today's confusing dead end), and not
+    # a wrong silent pick.
+    store.add_rifle(Rifle(name="Backup 5.7x28", scope_height_in=2.0, caliber="5.7x28mm",
                            barrel_length_in=11, click_value_mrad=0.1), make_active=False)
     with pytest.raises(KeyError, match="matches multiple rifles"):
         store.find_rifle("5.7x28 with the 11 inch barrel")
+
+
+def test_find_rifle_prefers_the_one_whose_full_name_is_stated_over_a_partial_attribute_match(tmp_path):
+    """Regression, found live (2026-09-06): saying a rifle's FULL,
+    correct stored name still triggered a disambiguation prompt among
+    several similar rifles sharing caliber. When fuzzy matching still
+    yields more than one candidate, a candidate whose own complete name
+    is covered by the query is a much stronger signal than one that
+    only matches on scattered attribute tokens (shared caliber, similar
+    scope) -- that candidate should win outright rather than being
+    listed as equally likely. Genuine ambiguity (no candidate's own name
+    is fully stated) must still surface every match, unchanged --
+    covered by the sibling test above."""
+    store = ProfileStore(tmp_path / "profiles.json")
+    store.add_rifle(Rifle(name="223 18in", scope_height_in=2.0, caliber="223 Rem",
+                           barrel_length_in=18, scope_make="Vortex"), make_active=False)
+    store.add_rifle(Rifle(name="223 20in", scope_height_in=2.0, caliber="223 Rem",
+                           barrel_length_in=20, scope_make="Vortex"), make_active=False)
+
+    # Bare caliber alone is still genuinely ambiguous.
+    with pytest.raises(KeyError, match="matches multiple rifles"):
+        store.find_rifle("223")
+
+    # The full, correct name -- even with filler words or different
+    # casing/spacing than a voice transcript would produce -- resolves
+    # directly to that one rifle, not a disambiguation prompt.
+    assert store.find_rifle("223 18in").name == "223 18in"
+    assert store.find_rifle("the 223, 18 inch").name == "223 18in"
+    assert store.find_rifle("the vortex 223 18in").name == "223 18in"
 
 
 def test_update_rifle_fields_persists_and_rejects_invalid_values_without_corrupting(tmp_path):
@@ -1450,6 +1483,42 @@ def test_hydrate_dehydrate_round_trips_chat_history(tmp_path):
     fresh = BallisticaCLI(store)
     api_module._hydrate_cli(fresh, {})
     assert fresh._chat_history == []
+
+
+def test_hydrate_dehydrate_round_trips_atmosphere_and_wind(tmp_path):
+    """Regression, found live (2026-09-06): atmosphere/wind were never
+    part of this round trip at all, so a voice "set conditions..." or
+    "set wind..." command took effect for exactly the one request that
+    set it, then silently reverted to STANDARD_ATMOSPHERE / a calm
+    WindCondition() default on the very next voice turn -- every turn
+    builds a brand new BallisticaCLI, so nothing carried it forward.
+    Matches a real live-test report of a solve reading back conditions
+    that didn't match what was just set."""
+    import ballistica.api as api_module
+    from ballistica.atmosphere import STANDARD_ATMOSPHERE, AtmosphereConditions
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+    from ballistica.trajectory import WindCondition
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    cli.atmosphere = AtmosphereConditions(temp_f=95.0, pressure_inhg=29.1, humidity_pct=20.0, altitude_ft=3200.0)
+    cli.wind = WindCondition(speed_mph=12.0, clock_deg=90.0)
+
+    state = api_module._dehydrate_cli(cli)
+
+    # Simulates the NEXT real request: a brand new CLI object, hydrated
+    # only from what the previous request persisted.
+    restored = BallisticaCLI(store)
+    api_module._hydrate_cli(restored, state)
+    assert restored.atmosphere == cli.atmosphere
+    assert restored.wind == cli.wind
+
+    # No prior state -- must fall back to the ordinary defaults, not crash.
+    fresh = BallisticaCLI(store)
+    api_module._hydrate_cli(fresh, {})
+    assert fresh.atmosphere == STANDARD_ATMOSPHERE
+    assert fresh.wind == WindCondition()
 
 
 def test_calibration_session_dict_round_trip_preserves_all_state():

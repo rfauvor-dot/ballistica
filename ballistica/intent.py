@@ -69,7 +69,17 @@ _SYSTEM_PROMPT = (
     "you haven't actually computed via a tool (yardage, elevation, MOA, "
     "mils, clicks, drop, windage, velocity, angle, temperature, pressure) "
     "-- you have no ability to compute one in conversation, and guessing "
-    "one would be dangerous. "
+    "one would be dangerous. This rule is about NEW values only -- it "
+    "never applies to stating a fact already saved in the shooter's own "
+    "rifle/load profile (bullet weight, BC, muzzle velocity, zero "
+    "distance, scope height, click value, and so on) or already-set "
+    "current conditions -- those aren't computed or guessed, they're "
+    "just read back, exactly what get_status is for. Asked 'what load "
+    "are we using' or 'what's the velocity on this load', answer "
+    "directly from get_status -- never deflect a question about "
+    "already-known saved data to a reloading manual or 'I can't give "
+    "specific data'; that deflection is only for genuinely unknown or "
+    "safety-judgment values (see the next rule). "
     "Second hard rule, no exceptions: never state, confirm, or imply a "
     "specific numeric safety judgment about whether a charge weight or "
     "load is safe -- not a yes/no, not a number, and not even a "
@@ -192,8 +202,15 @@ _TOOLS = [
     },
     {
         "name": "start_load_setup",
-        "description": "Begin a guided voice interview to add a new ammunition load "
-                        "(e.g. 'let's log a new load', 'I want to add a load').",
+        "description": "Begin a guided voice interview to add a new ammunition load. Covers both an "
+                        "explicit trigger phrase ('let's log a new load', 'I want to add a load') AND "
+                        "a fully spoken-out load description with no trigger phrase at all -- e.g. "
+                        "'Sierra Match King 77 grain, run with H335 at 23.5 grains of powder' names a "
+                        "bullet, powder, and charge in one breath and should route here just the same, "
+                        "not be treated as small talk. Whatever details were actually said get "
+                        "extracted automatically once this fires (bullet weight/type, powder, charge, "
+                        "etc.) -- only the fields still missing get asked for afterward, so this never "
+                        "throws away information that was already volunteered.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -279,7 +296,14 @@ _TOOLS = [
         "description": "Report the active rifle, load, and current conditions -- only when NO "
                         "specific distance is mentioned anywhere in the utterance. If a distance "
                         "is stated, that's always get_drop_at_range instead, even if the phrasing "
-                        "sounds like a general description of what's being shot.",
+                        "sounds like a general description of what's being shot. This is ALSO the "
+                        "right tool for any question about the currently active/saved rifle or load "
+                        "itself -- 'what load are we using', 'what load were we using on that', "
+                        "'what rifle is this', 'what's the bullet weight on this load' -- these ask "
+                        "about data already saved in the shooter's own profile, not a value to "
+                        "compute or a lookup in a reloading manual. Never deflect a question like "
+                        "this to 'check your manual' or 'I can't give specific data' -- the app "
+                        "already has and can state exactly what's saved.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]

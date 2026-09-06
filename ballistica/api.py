@@ -19,6 +19,7 @@ Interactive docs at http://127.0.0.1:8000/docs once it's running.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from datetime import datetime, timezone
@@ -973,10 +974,19 @@ def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(
 
 def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     """Reconstructs a BallisticaCLI's in-progress voice-conversation
-    state (setup/calibration/pending_delete/chat_history) from what the
-    previous request persisted -- the API is stateless per-request, so
-    this stands in for the single-tenant CLI's long-lived in-memory
-    object."""
+    state (setup/calibration/pending_delete/chat_history/atmosphere/
+    wind) from what the previous request persisted -- the API is
+    stateless per-request, so this stands in for the single-tenant
+    CLI's long-lived in-memory object.
+
+    atmosphere/wind added 2026-09-06: a real, confirmed-live bug found
+    during a deep-dive review -- these were never part of this round
+    trip at all, so "set conditions temp 90..." or "set wind 10 mph
+    from 3 o'clock" took effect for exactly one request and then
+    silently reverted to STANDARD_ATMOSPHERE / a calm WindCondition()
+    default on the very next voice turn, since every turn constructs a
+    brand new BallisticaCLI. Matches Rick's own report of a solve
+    reading back conditions that didn't match what he'd just set."""
     cli._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
     cli._calibration = (
         _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
@@ -988,6 +998,10 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
     # from_dict() round-trip needed like the session objects above.
     cli._chat_history = state.get("chat_history") or []
+    if state.get("atmosphere"):
+        cli.atmosphere = AtmosphereConditions(**state["atmosphere"])
+    if state.get("wind"):
+        cli.wind = WindCondition(**state["wind"])
 
 
 def _dehydrate_cli(cli: BallisticaCLI) -> dict:
@@ -1002,6 +1016,8 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
             if cli._pending_delete else None
         ),
         "chat_history": cli._chat_history,
+        "atmosphere": dataclasses.asdict(cli.atmosphere),
+        "wind": dataclasses.asdict(cli.wind),
     }
 
 
