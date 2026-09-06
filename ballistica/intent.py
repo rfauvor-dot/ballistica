@@ -258,6 +258,23 @@ _TOOLS = [
         },
     },
     {
+        "name": "delete_rifle",
+        "description": "Delete a saved rifle/pistol profile. Covers phrasing that doesn't lead with "
+                        "the delete verb, or that never uses the word 'rifle'/'pistol' at all -- e.g. "
+                        "'can you get rid of the 5.7x28 11 inch' or 'that Taurus in black, get rid of "
+                        "it'. Pull whatever identifying details were actually said (caliber, barrel "
+                        "length, manufacturer, color, model) into query verbatim -- the fuzzy match "
+                        "against the saved name happens downstream, not here. Leave query empty only "
+                        "if nothing identifying was said at all (e.g. bare 'delete it').",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Whatever identifying words were said, "
+                                                             "e.g. '5.7x28 11 inch' or 'the black one'"},
+            },
+        },
+    },
+    {
         "name": "get_status",
         "description": "Report the active rifle, load, and current conditions -- only when NO "
                         "specific distance is mentioned anywhere in the utterance. If a distance "
