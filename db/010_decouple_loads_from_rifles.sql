@@ -61,6 +61,18 @@ alter table public.loads drop column if exists rifle_id;
 alter table public.loads drop constraint if exists loads_name_unique_per_rifle;
 alter table public.loads add constraint loads_name_unique_per_user unique (user_id, name);
 
+-- -------------------------------------------------------- caliber field
+-- Bundled into this migration rather than a separate one, since this
+-- hasn't been run yet either (2026-09-06, Rick: a load like "77gr
+-- Sierra MatchKing" doesn't reveal its own caliber -- the same bullet
+-- loads as either .223/5.56 or .300 Blackout -- so it can't be inferred
+-- automatically; Rick will backfill this himself on existing loads once
+-- the field exists). Open text, blank by default, same as every other
+-- optional load/rifle field -- not a constrained enum, since real
+-- calibers get written inconsistently ("5.56", "5.56 NATO", ".223").
+
+alter table public.loads add column if not exists caliber text not null default '';
+
 -- ------------------------------------------------ restore simple RLS
 -- Back to the original, pre-003 shape for both tables -- a plain
 -- user_id = auth.uid() check is sufficient again now that neither

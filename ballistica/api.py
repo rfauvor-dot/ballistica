@@ -261,6 +261,11 @@ class LoadIn(BaseModel):
     powder: str = ""
     powder_charge_gr: float | None = None
     notes: str = ""
+    caliber: str = Field(
+        "", description="Open text, e.g. '.223/5.56' or '.300 BLK' -- not inferred from the "
+                         "bullet/load name, since the same bullet can load into more than one "
+                         "cartridge. Blank until the shooter sets it.",
+    )
 
 
 class LoadOut(LoadIn):

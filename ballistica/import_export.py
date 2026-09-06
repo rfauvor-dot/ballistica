@@ -75,6 +75,16 @@ TARGET_FIELDS: tuple[TargetField, ...] = (
     # + powder (or bullet_weight_gr + bullet_type) when this isn't mapped,
     # rather than failing every row over a field most files won't have.
     TargetField("load_name", "Load Name", False, ("load", "load name")),
+    # Distinct key from the rifle-level "caliber" above -- open text, not
+    # inferred from bullet_type (2026-09-06: the same bullet can load
+    # into more than one cartridge, e.g. a 77gr SMK in either .223/5.56
+    # or .300 Blackout), so this only ever gets set from an explicit
+    # column or the shooter's own later edit, never guessed at import.
+    # Deliberately no bare "cartridge"/"chambering" alias -- those
+    # already belong to the rifle-level "caliber" field above (same
+    # reasoning as scope_model's alias note below: a shared generic word
+    # would make the fuzzy match pick one arbitrarily).
+    TargetField("load_caliber", "Load Caliber", False, ("load caliber",)),
     TargetField("bullet_type", "Bullet Type", False, ("bullet", "bullet type", "projectile")),
     TargetField("bullet_weight_gr", "Bullet Weight (gr)", False, ("bullet weight", "weight", "grains", "gr", "bullet weight gr")),
     # Required per-row -- the solver hard-requires bc > 0 (see profiles.py's
@@ -362,6 +372,7 @@ def apply_mapping(
                 powder=powder,
                 powder_charge_gr=powder_charge_gr,
                 notes=_extract(row, mapping, "notes"),
+                caliber=_extract(row, mapping, "load_caliber"),
             )
         except ValueError as exc:
             results.append(RowResult(i, rifle_name or None, load_name, "failed", f"Load data invalid: {exc}"))
@@ -426,14 +437,14 @@ def generate_export_csv(rifles: list[Rifle], loads: list[Load]) -> bytes:
 
     def load_cells(load: Load) -> list[str]:
         return [
-            _csv_safe(load.name), _csv_safe(load.bullet_type), _csv_safe(load.bullet_weight_gr),
-            _csv_safe(load.bc), _csv_safe(load.drag_model), _csv_safe(load.muzzle_velocity_fps),
-            _csv_safe(load.zero_distance_yd), _csv_safe(load.powder), _csv_safe(load.powder_charge_gr),
-            _csv_safe(load.notes),
+            _csv_safe(load.name), _csv_safe(load.caliber), _csv_safe(load.bullet_type),
+            _csv_safe(load.bullet_weight_gr), _csv_safe(load.bc), _csv_safe(load.drag_model),
+            _csv_safe(load.muzzle_velocity_fps), _csv_safe(load.zero_distance_yd),
+            _csv_safe(load.powder), _csv_safe(load.powder_charge_gr), _csv_safe(load.notes),
         ]
 
     blank_rifle = [""] * 17  # matches rifle_cells()'s own column count
-    blank_load = [""] * 10   # matches load_cells()'s own column count
+    blank_load = [""] * 11   # matches load_cells()'s own column count
 
     for rifle in rifles:
         writer.writerow(rifle_cells(rifle) + blank_load)

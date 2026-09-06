@@ -51,6 +51,7 @@ _RIFLE_COLUMNS = (
 _LOAD_COLUMNS = (
     "name", "bullet_weight_gr", "bc", "drag_model", "muzzle_velocity_fps",
     "zero_distance_yd", "bullet_type", "powder", "powder_charge_gr", "notes",
+    "caliber",
 )
 
 

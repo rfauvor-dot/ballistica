@@ -258,6 +258,35 @@ _TOOLS = [
         },
     },
     {
+        "name": "update_load_field",
+        "description": "Change one or more fields on the ACTIVE load's existing saved profile -- "
+                        "e.g. 'the powder charge is actually 24.5 grains', 'set caliber to 300 "
+                        "Blackout', 'this load's zero is 100 yards'. Only for editing a load that's "
+                        "already saved -- use start_load_setup instead for adding a brand new load. "
+                        "Same shape as update_rifle_field, added specifically so caliber (2026-09-06, "
+                        "a new field) can be backfilled by voice on loads saved before it existed, "
+                        "not just set during a fresh setup interview.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bullet_weight_gr": {"type": "number"},
+                "bc": {"type": "number"},
+                "drag_model": {"type": "string", "enum": ["G1", "G7"]},
+                "muzzle_velocity_fps": {"type": "number"},
+                "zero_distance_yd": {"type": "number"},
+                "bullet_type": {"type": "string"},
+                "powder": {"type": "string"},
+                "powder_charge_gr": {"type": "number"},
+                "caliber": {"type": "string", "description": "The cartridge this load is for, e.g. "
+                                                               "'.223/5.56' or '.300 Blackout'. NEVER "
+                                                               "infer this from bullet_type -- the same "
+                                                               "bullet can load into more than one "
+                                                               "cartridge."},
+                "notes": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "delete_rifle",
         "description": "Delete a saved rifle/pistol profile. Covers phrasing that doesn't lead with "
                         "the delete verb, or that never uses the word 'rifle'/'pistol' at all -- e.g. "
@@ -471,6 +500,14 @@ _LOAD_SETUP_TOOL = {
             "bullet_type": {"type": "string", "description": "e.g. '77gr Sierra MatchKing'"},
             "powder": {"type": "string"},
             "powder_charge_gr": {"type": "number"},
+            "caliber": {"type": "string", "description": "The cartridge this load is for, e.g. "
+                                                           "'.223/5.56' or '.300 Blackout' -- only if "
+                                                           "actually stated. NEVER infer this from "
+                                                           "bullet_type: the same bullet can be loaded "
+                                                           "into more than one cartridge (a 77gr SMK is "
+                                                           "loaded as both .223/5.56 and .300 Blackout), "
+                                                           "so a bullet name alone is not evidence of "
+                                                           "caliber."},
             "notes": {"type": "string"},
         },
     },

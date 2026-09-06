@@ -74,6 +74,14 @@ def _tokens_match(query_tokens: list[str], target_tokens: list[str]) -> bool:
     )
 
 
+def _load_search_text(load: "Load") -> str:
+    """Same idea as _rifle_search_text() below -- caliber included
+    (2026-09-06) so a query like "my 300 blackout loads" or "the 5.7x28
+    load" can find/browse loads by caliber now that it's a real field,
+    not just by name/powder/notes."""
+    return f"{load.name} {load.powder} {load.notes} {load.caliber}"
+
+
 def _rifle_search_text(rifle: "Rifle") -> str:
     """Broader net than the bare name -- caliber, barrel length, twist
     rate, and scope make/model are exactly the details a shooter
@@ -103,6 +111,19 @@ class Load:
     powder: str = ""
     powder_charge_gr: float | None = None
     notes: str = ""
+    # Open text, not auto-inferred from the bullet/load name (2026-09-06,
+    # Rick's explicit correction: a "77gr Sierra MatchKing" load could be
+    # loaded as either .223/5.56 or .300 Blackout -- the bullet doesn't
+    # tell you the cartridge, so guessing would be actively wrong). Blank
+    # by default; Rick backfills this himself on existing loads once the
+    # field exists, same pattern as every other optional field here. Once
+    # set, this is what makes a load findable/browsable by caliber (see
+    # find_load()'s search text below) -- loads are already an
+    # independent pool matched against ANY rifle (§28), not scoped to
+    # one, so this field's job is letting a shooter say "my 300 blackout
+    # loads" out loud, not enabling cross-rifle matching that already
+    # works structurally.
+    caliber: str = ""
 
     def __post_init__(self) -> None:
         if self.drag_model not in ("G1", "G7"):
@@ -232,14 +253,14 @@ class ProfileStore:
     def find_load(self, query: str) -> Load:
         """Fuzzy, voice-friendly lookup across the whole independent load
         pool: exact name, then case-insensitive substring match against
-        name/powder/notes. Same matching logic find_rifle() uses, no
-        longer scoped to any one rifle's own loads (2026-09-05, §28)."""
+        name/powder/notes/caliber. Same matching logic find_rifle() uses,
+        no longer scoped to any one rifle's own loads (2026-09-05, §28)."""
         if query in self.loads:
             return self.loads[query]
         q_tokens = _query_tokens(query)
         matches = [
             load for load in self.loads.values()
-            if _tokens_match(q_tokens, _tokens(f"{load.name} {load.powder} {load.notes}"))
+            if _tokens_match(q_tokens, _tokens(_load_search_text(load)))
         ]
         if len(matches) == 1:
             return matches[0]

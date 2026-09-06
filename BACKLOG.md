@@ -440,7 +440,74 @@ combined "rifle + load" selector that composes the two? something else),
 which is a real product decision, not just an implementation detail — still
 open, still Rick's to make, not resolved with a default.
 
+**Confirmed independently, 2026-09-06:** Rick hit the exact bug this
+migration fixes during live testing on the still-unmigrated production
+model ("no load matching X on rifle Y" when trying to use one .300
+Blackout load across three different .300 Blackout rifles) and separately
+asked for "loads should resolve against any rifle sharing a caliber" —
+which is precisely what the independent-pool model already does once
+db/010 runs (there's no rifle-scoping left in load lookup at all). Also
+added, same session: an explicit `caliber` field on `Load` itself (open
+text, blank by default, never auto-inferred from bullet_type since the
+same bullet can load into more than one cartridge — Rick's own example,
+a 77gr SMK in both .223/5.56 and .300 Blackout) so loads are
+browsable/settable by caliber, plus a new `update_load_field` voice
+command (mirrors the existing `update_rifle_field`) specifically so Rick
+can backfill caliber on his existing loads by voice, not just during a
+fresh setup interview.
+
 **Owning lenses:** Build (schema/API/CLI rewrite, now code-complete pending
 the SQL migration in db/010_decouple_loads_from_rifles.sql, which only Rick
 can run), Chief of Staff (tracking that decision 2 stays genuinely open,
 not quietly defaulted).
+
+---
+
+## Shooting-first default flow — setup as a detour, not the landing state
+
+**Raised:** Rick, 2026-09-06, after several rounds of live testing today.
+Explicit framing: "worth Rick and DT discussing sequencing" — flagged here
+rather than implemented, since Rick asked for the discussion, not a default.
+
+**The complaint:** opening Ballistica currently leads with setup/
+configuration as if that's the primary task. The app's actual job is a fast
+firing solution in the field — setup should be the occasional side-trip.
+
+**Requested shape:**
+1. Default/home state is shooting-ready: "load this rifle," "load this
+   ammo," "distance is X" should go straight through to elevation/windage
+   with no detour through configuration.
+2. "New rifle" / "new load" become explicit, named detours: saying it
+   switches into a dedicated setup interview, and completing (or
+   cancelling) it returns to the main shooting flow.
+
+**Why this is a real design question, not just a bug:** the guided setup
+interview (_SetupSession) already exists as a genuinely separate modal
+mode from ordinary command handling — cli.py's top-level-intent-interrupt
+work (2026-09-05) was built specifically so a clearly-stated request for a
+different task breaks OUT of whatever's running, setup included. So the
+underlying state machine mostly already matches "setup is a detour, not
+the default" — the open question is really about what the WEB UI shows by
+default when the app first opens (right now: the rifle/load picker and
+setup panels are the visible landing surface, not a "ready to shoot"
+view), and about voice-mode's own greeting/first-turn framing. That's a
+first-screen/UX layout decision layered on top of already-decoupled logic,
+not a rewrite of the command-handling core.
+
+**Sequencing note:** this sits behind the load/rifle decoupling migration
+(db/010) landing and the web UI's phase-3 redesign (also Rick's own call,
+see the entry above) — a shooting-first landing screen and the rifle+load
+picker redesign are close enough in scope that doing them as one pass,
+after the migration is live, is probably more efficient than sequencing
+them separately. Recommended default if Rick doesn't want to spec this in
+detail: redesign the web UI's default view as "distance + go" (rifle/load
+already selected via voice or the picker, one field for range, one button)
+with rifle/load setup moved behind an explicit "New rifle"/"New load"
+affordance rather than always-visible panels — but this is exactly the
+kind of product-feel decision flagged for Rick's own input, not defaulted
+on unilaterally.
+
+**Owning lenses:** Build (once scoped), Chief of Staff (sequencing against
+the two other pending web-UI-shaped decisions above), Marketing (the
+"shooting-first" framing is itself a positioning question worth Rick's own
+read — it's part of what the app IS, not just how it looks).

@@ -423,7 +423,9 @@ def test_update_rifle_fields_command_edits_the_active_rifle(tmp_path):
 
     reply = cli._update_rifle_fields({"twist_rate": "1:8", "reticle_unit": "MOA"})
     assert "twist rate 1:8" in reply
-    assert "reticle unit MOA" in reply
+    # "MOA reticle", not "reticle unit MOA" -- _speak_field() (2026-09-06)
+    # frames this more naturally for a spoken confirmation.
+    assert "MOA reticle" in reply
     rifle = store.get_active_rifle()
     assert rifle.twist_rate == "1:8"
     assert rifle.reticle_unit == "MOA"
@@ -590,13 +592,13 @@ def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp
     assert "muzzle velocity" in cli.handle("75 grains, point three seven, G1").lower()
 
     # All required fields are in now -- next it should walk through the
-    # optional ones (bullet_type, powder, powder_charge_gr, notes) rather
-    # than jumping straight to the summary.
+    # optional ones (bullet_type, powder, powder_charge_gr, caliber,
+    # notes) rather than jumping straight to the summary.
     next_prompt = cli.handle("2900 feet per second, zeroed at 100 yards")
     assert "bullet" in next_prompt.lower()
     assert "sound right" not in next_prompt.lower()
 
-    for _ in range(3):
+    for _ in range(4):
         skip_reply = cli.handle("skip")
         assert "sound right" not in skip_reply.lower()
     summary = cli.handle("skip")
@@ -896,7 +898,7 @@ def test_setup_correction_overwriting_existing_field_resets_failure_counter(monk
     cli.handle("call it 25gr Varget")
     cli.handle("75 grains, point three seven, G1")
     cli.handle("2900 feet per second, zeroed at 100 yards")
-    for _ in range(4):
+    for _ in range(5):
         cli.handle("skip")
 
     # Two "no progress" turns, then a same-key-overwrite correction --
