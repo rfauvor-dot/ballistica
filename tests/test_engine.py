@@ -1046,7 +1046,12 @@ def test_setup_prefills_fields_volunteered_in_the_trigger_utterance(monkeypatch,
     cli._setup = None  # reset for the next entry point, independent of this one
 
     # LLM-dispatch path: extract_intent routes to start_load_setup,
-    # separately from extract_setup_fields doing the field pre-fill.
+    # separately from extract_setup_fields doing the field pre-fill. Now
+    # a two-turn exchange (2026-09-06: this path is confirmation-gated,
+    # same as start_calibration -- see _request_start_setup()) --
+    # confirming defers extraction to the "yes" turn, not the original
+    # one, but the trigger text is stashed so pre-fill still happens
+    # exactly as it did in a single turn before this gate existed.
     monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None: ("start_load_setup", {}))
     monkeypatch.setattr(
         cli_module, "extract_setup_fields",
@@ -1056,10 +1061,13 @@ def test_setup_prefills_fields_volunteered_in_the_trigger_utterance(monkeypatch,
             "powder_charge_gr": 24, "zero_distance_yd": 50,
         },
     )
-    reply2 = cli.handle(
+    ask_reply = cli.handle(
         "let's log a new one, 110 grain, BC point three, G1, muzzle velocity 1150, "
         "24 grains of Lil Gun, zero at 50",
     )
+    assert "say yes to begin" in ask_reply.lower()
+    assert cli._setup is None  # nothing started yet, only asked
+    reply2 = cli.handle("yes")
     assert "bullet weight" not in reply2.lower()
     assert "call this load" in reply2.lower()  # only the genuinely-missing field is asked
     assert cli._setup.draft.get("zero_distance_yd") == 50
