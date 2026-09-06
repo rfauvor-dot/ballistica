@@ -401,3 +401,43 @@ boundary decision above is exactly the kind of call the liability waiver
 work already treated with real seriousness — same category of risk,
 now resolved by Rick directly rather than left to an embedded prompt
 choice).
+
+---
+
+## Wind clock direction needs a firing-direction reference
+
+**Raised:** Rick, range retest 2026-09-06 (afternoon session).
+
+**What:** A spoken wind direction ("three o'clock", "nine o'clock") is
+currently treated as if it means the same thing regardless of which way
+the shooter is actually facing down range — it isn't. The same literal
+wind (say, a west wind) is a headwind for someone shooting west and a
+pure crosswind for someone shooting north; "three o'clock" only means
+anything once you know which direction the shooter's own twelve o'clock
+(down range) is pointed. The app has no concept of firing-direction
+today, so a manually spoken clock position is being taken as if it
+already had that reference, when it doesn't.
+
+**Why this is separate from the wind-override bug it was found
+alongside:** the override-not-applying bug (fixed same day — see
+`intent.py`'s third hard rule and the widened wind persistence work) was
+about a stated wind value failing to reach the solver at all. This is
+different: even once a stated wind value *does* reach the solver
+correctly, "three o'clock" is still ambiguous without a firing-direction
+reference — fixing the override bug doesn't fix this, and this isn't
+fixable as a quick toggle on top of it.
+
+**Not scoped yet.** Real options worth weighing before building anything:
+a one-time compass heading captured at rifle/range setup (phone compass
+API); a spoken firing-direction question folded into calibration/setup
+("which way are you facing — give me a compass heading or a landmark");
+or accepting wind purely as a relative headwind/crosswind/tailwind
+percentage spoken directly by the shooter (sidesteps needing an absolute
+reference at all, at the cost of asking Rick to do that mental
+conversion himself instead of the app doing it). GPS alone (already used
+for "use my location" weather autofill) cannot supply this — it gives
+position, not heading.
+
+**Owning lenses:** Build (once an approach is picked), Chief of Staff
+(worth Rick's own call on which UX tradeoff he actually wants at the
+line, before this gets scoped).
