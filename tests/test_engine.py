@@ -464,6 +464,76 @@ def test_delete_rifle_voice_flow_requires_explicit_confirmation(tmp_path):
     assert cli._pending_delete is None
 
 
+def test_top_level_intent_interrupts_a_stuck_modal_session(tmp_path):
+    """Regression, found live (2026-09-05), deployed to main 2026-09-06
+    after being confirmed still live-broken in production despite having
+    been built earlier: once a modal session (setup or calibration) was
+    running, EVERY utterance got swallowed by it -- only a tiny fixed set
+    of exact cancel phrases could ever escape. Rick's own diagnosis: a
+    clearly-stated request for a different top-level task should always
+    interrupt whatever's currently running, not require guessing the one
+    phrase that "unlocks" it. This is pure regex
+    (_requests_different_top_level_task), no LLM call, so fully
+    deterministic here -- verified separately against the live API that
+    the fall-through dispatch (get_drop_at_range et al.) still resolves
+    real natural phrasing correctly once the interrupt fires."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    # Mid-calibration, an explicit solution request must interrupt and
+    # actually compute a solution, not get treated as a shot reading.
+    cli.handle("start calibration")
+    cli.handle("2780")
+    reply = cli.handle("give me a solution at 400 yards")
+    assert "400 yards" in reply
+    assert cli._calibration is None
+
+    # Mid-load-setup, "add a new rifle" must abandon the load draft and
+    # start a rifle setup instead -- a different top-level task entirely.
+    cli.handle("let's set up a new load")
+    cli.handle("call it Test Load")
+    reply2 = cli.handle("actually add a new rifle")
+    assert "call this rifle" in reply2.lower()
+    assert cli._setup.kind == "rifle"
+
+    # Mid-rifle-setup, switching to a different rifle must interrupt too.
+    reply3 = cli.handle("actually just switch rifle to the AR-15 20in Faxon")
+    assert "switched" in reply3.lower()
+    assert cli._setup is None
+    assert store.active_rifle_name == "AR-15 20in Faxon"
+
+
+def test_bare_distance_mid_setup_is_not_mistaken_for_a_solution_request(tmp_path):
+    """The collision risk the interrupt-check has to avoid: a bare
+    "100 yards" is a completely normal answer to "what yardage is it
+    zeroed at?" mid-setup, not a solution request. Only an explicit
+    trigger word (solution/shoot) should ever interrupt -- distance
+    alone must not, or every zero-distance answer during setup would
+    get hijacked into a mid-setup solution readout instead of recorded."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("let's set up a new load")
+    cli.handle("call it Test Load")
+    cli.handle("75 grains point four oh two G1")
+    cli.handle("2800 feet per second")
+    reply = cli.handle("100 yards")
+    assert cli._setup is not None  # still mid-setup, not interrupted
+    assert cli._setup.draft.get("zero_distance_yd") == 100
+
+    # Also guarded against re-triggering "new load" as a false interrupt
+    # while a load answer legitimately mentions the word "load".
+    still_setup = cli.handle("it's a new load I just made up")
+    assert cli._setup is not None
+    assert cli._setup.kind == "load"
+
+
 def test_setup_confirmation_recognizes_natural_phrasing(monkeypatch, tmp_path):
     """Regression (Addendum 28): "that is correct" -- a completely
     natural confirmation -- matched none of the old patterns (only
