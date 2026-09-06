@@ -1,13 +1,19 @@
 """LLM-based fallback for understanding voice commands that don't match
 one of the fast, free, deterministic regex patterns in cli.py.
 
-Important boundary: this module only ever decides *which* command was
-meant and *what* the parameters are (e.g. "switch to my heavier load"
--> switch_load(query="heavier")). It never computes a ballistic answer
-itself -- extracted parameters get handed to the exact same
-deterministic Python functions the regex path already calls. The
-physics stays 100% deterministic regardless of how the intent was
-recognized; only "what did they actually ask for" gets smarter.
+Important boundary: this module never computes a ballistic answer
+itself, and never states a specific numeric safety judgment on a
+reloading question (see extract_intent's system prompt for the exact
+rule Rick decided on 2026-09-05) -- extracted parameters for a real
+command get handed to the exact same deterministic Python functions the
+regex path already calls, and the physics stays 100% deterministic
+regardless of how the intent was recognized. As of 2026-09-05,
+extract_intent() ALSO covers genuine open-ended conversation (tool_choice
+"auto", not "any" -- see its own docstring): it's no longer only a
+classifier forced to pick one of a fixed set of commands, it can just
+talk when nothing tool-shaped was actually meant. That's the "what did
+they actually ask for, or did they just want to talk" layer; the answer
+to any real command still comes from deterministic code either way.
 
 Runs on Claude (via the Messages API's tool use), not OpenAI -- swapped
 from gpt-4o-mini after Rick found it too literal on loose, natural
@@ -18,7 +24,6 @@ OpenAI; only the "what did they mean" layer moved.
 from __future__ import annotations
 
 import logging
-import re
 
 import anthropic
 
@@ -36,19 +41,52 @@ _MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS = 1024
 
 _SYSTEM_PROMPT = (
-    "You are the command-understanding layer for Ballistica, a voice-driven "
-    "ballistic calculator used hands-free at a shooting range. The user's "
-    "speech has already been transcribed (it may contain transcription errors, "
-    "informal phrasing, or filler words) and none of it matched a fast exact-"
-    "phrase pattern, so it's being routed to you as a fallback. "
-    "Use exactly one tool that best matches what the shooter is asking for. "
-    "If the utterance doesn't correspond to any available command -- small "
-    "talk, an unrelated question, or something genuinely unclear -- use "
-    "no_match rather than guessing at a ballistics command. "
+    "You are Ballistica's voice assistant at a shooting range or reloading "
+    "bench -- not just a command parser. The shooter's speech has already "
+    "been transcribed (it may contain transcription errors, informal "
+    "phrasing, or filler words) and didn't match a fast exact-phrase "
+    "pattern, so it's routed to you. "
+    "If it's a real ballistics/rifle/load/conditions request, use exactly "
+    "one matching tool -- only fill in parameters actually stated or "
+    "clearly implied, leave everything else out. "
+    "Otherwise -- small talk, a genuine question, reloading/shooting "
+    "conversation, anything that isn't a command -- don't force it into a "
+    "tool. Just respond in your own natural voice, like a knowledgeable "
+    "range partner. This is spoken aloud by text-to-speech, not read on a "
+    "screen: 2-3 short sentences MAX, like you'd actually say out loud "
+    "standing at the bench -- never a list, never multiple paragraphs, "
+    "never markdown formatting of any kind (no asterisks, no headers, no "
+    "bullet points, no literal line breaks). Plain spoken sentences only, "
+    "plain ASCII punctuation (a plain hyphen if you need one, never an "
+    "em-dash or curly quotes). Warm, capable, a little dry humor is fine, "
+    "never corny or over-the-top. General reloading/shooting conversation "
+    "and terminology are fine to discuss -- what pressure signs typically "
+    "look like, how load development generally works, and so on -- but "
+    "keep even that to the length of one real spoken turn, not a briefing; "
+    "say the single most useful thing, not everything you know. "
+    "Hard rule, no exceptions, for both tool use and free conversation: "
+    "never state, estimate, or imply a specific numeric ballistics value "
+    "you haven't actually computed via a tool (yardage, elevation, MOA, "
+    "mils, clicks, drop, windage, velocity, angle, temperature, pressure) "
+    "-- you have no ability to compute one in conversation, and guessing "
+    "one would be dangerous. "
+    "Second hard rule, no exceptions: never state, confirm, or imply a "
+    "specific numeric safety judgment about whether a charge weight or "
+    "load is safe -- not a yes/no, not a number, and not even a "
+    "qualitative reassurance like 'that sounds fine' or 'you're probably "
+    "okay' (that's just the same judgment without a digit in it). Always "
+    "redirect to the shooter's own reloading manual or published "
+    "reference data as the source of truth for anything safety-critical, "
+    "the way a knowledgeable person naturally defers when the stakes are "
+    "too high to answer from memory -- an honest redirect, not a dead-end "
+    "refusal. Example: asked 'I don't see any pressure signs, is it "
+    "possible we could bump this up?', a good reply is close to 'Worth "
+    "checking your reloading manual to see how close you are to max "
+    "load -- I don't want to rely on memory for something like that,' "
+    "not a yes/no and not a number. "
     "Range talk uses yards, mils/MRAD, MOA, clicks, wind speed/direction "
-    "(o'clock), temperature (F), humidity (%), altitude (ft), and barometric "
-    "pressure (inHg). Only fill in parameters actually stated or clearly "
-    "implied; leave everything else out."
+    "(o'clock), temperature (F), humidity (%), altitude (ft), and "
+    "barometric pressure (inHg)."
 )
 
 _TOOLS = [
@@ -72,10 +110,26 @@ _TOOLS = [
     },
     {
         "name": "switch_rifle",
-        "description": "Switch the active rifle.",
+        "description": "Switch the active rifle. If the SAME utterance also volunteers details for "
+                        "a NEW load on that rifle (not just switching to one that's already saved --"
+                        "e.g. 'switching to the 300 blackout, first load is the 110s at 24 grains of "
+                        "Lil Gun, zero at 50'), also fill in the matching new_load_* fields so that "
+                        "information isn't lost just because it rode along with a rifle switch. Leave "
+                        "every new_load_* field out entirely if no new load info was actually stated.",
         "input_schema": {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "Fuzzy name of the rifle"}},
+            "properties": {
+                "query": {"type": "string", "description": "Fuzzy name of the rifle"},
+                "new_load_name": {"type": "string"},
+                "new_load_bullet_weight_gr": {"type": "number"},
+                "new_load_bullet_type": {"type": "string"},
+                "new_load_bc": {"type": "number"},
+                "new_load_drag_model": {"type": "string", "description": "G1 or G7"},
+                "new_load_muzzle_velocity_fps": {"type": "number"},
+                "new_load_zero_distance_yd": {"type": "number"},
+                "new_load_powder": {"type": "string"},
+                "new_load_powder_charge_gr": {"type": "number"},
+            },
             "required": ["query"],
         },
     },
@@ -202,11 +256,6 @@ _TOOLS = [
         "description": "Report the active rifle, load, and current conditions.",
         "input_schema": {"type": "object", "properties": {}},
     },
-    {
-        "name": "no_match",
-        "description": "The utterance doesn't correspond to any available ballistics command.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
 ]
 
 
@@ -221,22 +270,38 @@ def _first_tool_use(response):
     raise IndexError("no tool_use block in response")
 
 
-def extract_intent(text: str) -> tuple[str, dict] | None:
+def extract_intent(text: str, history: list[dict] | None = None) -> tuple[str, dict] | None:
     """Returns (tool_name, arguments) for the best-matching command, or
-    None if the call failed outright (network/API error -- distinct from
-    a clean "no_match", which is returned as ("no_match", {})."""
+    ("converse", {"reply": <text>}) if the model responded in its own
+    conversational voice instead of calling a tool -- tool_choice is
+    "auto" here, not "any" like every other extraction in this module,
+    specifically so it's ALLOWED to just talk when nothing tool-shaped was
+    actually meant (2026-09-05, replacing the old no_match tool + a
+    separate generate_warm_reply personality call with one unified path).
+    Returns None only if the call failed outright (network/API error).
+
+    history: recent conversational exchanges (BallisticaCLI._chat_history)
+    to include as prior turns -- lets a follow-up like "is that safe to
+    bump up" resolve what "that" refers to. Omit/empty for a fresh
+    conversation; ordinary ballistics commands don't populate this."""
     try:
         client = get_anthropic_client()
+        messages = list(history or []) + [{"role": "user", "content": text}]
         response = client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": text}],
+            messages=messages,
             tools=_TOOLS,
-            tool_choice={"type": "any"},
+            tool_choice={"type": "auto"},
         )
-        block = _first_tool_use(response)
-        return block.name, dict(block.input)
+        for block in response.content:
+            if block.type == "tool_use":
+                return block.name, dict(block.input)
+        # No tool call -- tool_choice="auto" let the model just respond
+        # conversationally instead of forcing it into one of the tools.
+        reply = "".join(b.text for b in response.content if b.type == "text").strip()
+        return ("converse", {"reply": reply}) if reply else None
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):
         # TypeError (not an AnthropicError subclass) is what the SDK
         # actually raises for a missing/misconfigured ANTHROPIC_API_KEY --
@@ -249,78 +314,76 @@ def extract_intent(text: str) -> tuple[str, dict] | None:
         return None
 
 
-# --- Personality layer -------------------------------------------------
+# --- Calibration turn fallback ------------------------------------------
 #
-# Only called after extract_intent() already came back no_match, i.e. the
-# utterance didn't fit any real ballistics command. A separate call (not
-# folded into extract_intent's own no_match branch) so this narrower,
-# safety-sensitive prompt -- and its guardrail -- can be reasoned about and
-# tightened on its own, without touching the real command tools above.
+# Live-tested (2026-09-05, Rick's first real-voice Session Mode run): after
+# reading off ~10 shots, natural ways of signaling "I'm done" -- "that's
+# ten shots", "I think that's good", "that's enough", "okay stop there" --
+# all missed cli.py's anchored end-calibration regex and came back
+# "Didn't catch a number there," even though a person would obviously
+# understand every one of them. That regex was the ONE modal flow in this
+# app that never got a fast-path-then-LLM-fallback treatment (setup fields,
+# confirmations, and general intent all already have one) -- this closes
+# that gap the same way, only invoked when cli.py's own fast, free regex
+# checks (cancel/confirm/end-phrase/average/discard/a bare number) all miss.
 
-_PERSONALITY_SYSTEM_PROMPT = (
-    "You are Ballistica's warm, off-duty voice -- used only when the shooter "
-    "said something that didn't match any ballistics command: a greeting, "
-    "small talk, thanks, a personal remark, banter. "
-    "Decide: is this genuine small talk, or does it actually sound like an "
-    "attempt at a ballistics/rifle/load/conditions request that just didn't "
-    "come through clearly? "
-    "If it's small talk, use warm_reply with a short (under 20 words), "
-    "natural, spoken-style reply in character -- friendly, capable, a little "
-    "dry humor is fine, never corny or over-the-top. "
-    "If it sounds like an unclear ballistics request, or you're genuinely "
-    "unsure, use not_smalltalk instead so the caller can ask them to "
-    "rephrase. "
-    "Hard rule, no exceptions: never state, estimate, or imply any numeric "
-    "ballistics value (yardage, elevation, MOA, mils, clicks, drop, "
-    "windage, velocity, angle, temperature, pressure) in warm_reply -- you "
-    "have no ability to compute one here, and guessing one would be "
-    "dangerous."
+_CALIBRATION_SYSTEM_PROMPT = (
+    "The shooter is in the middle of reading chronograph shot velocities out "
+    "loud to log a load's muzzle velocity. Their last utterance didn't "
+    "contain a number and didn't match any of the app's known control "
+    "phrases, so it's being routed to you as a fallback. Classify it as "
+    "exactly one of: they're signaling they're done reading shots and want "
+    "the average/to wrap up (e.g. 'that's ten shots', 'I think that's "
+    "good', 'that's enough', 'stop there', 'go ahead and save it'); they "
+    "want to throw out the last shot; they want to abandon calibration "
+    "entirely without saving; or none of the above (small talk, unrelated "
+    "question, genuinely unclear noise/mistranscription)."
 )
 
-_PERSONALITY_TOOLS = [
+_CALIBRATION_TOOLS = [
     {
-        "name": "warm_reply",
-        "description": "Genuine small talk -- respond warmly and briefly, with no ballistics numbers.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"reply": {"type": "string"}},
-            "required": ["reply"],
-        },
+        "name": "end_calibration",
+        "description": "Shooter is done reading shots for this string and wants to see the "
+                        "average or move on -- any natural way of signaling that, not just an "
+                        "exact phrase.",
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
-        "name": "not_smalltalk",
-        "description": "This sounds like an unclear or unsupported ballistics request, not small talk.",
+        "name": "discard_last_shot",
+        "description": "Shooter wants to throw out the most recently read shot.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "cancel_calibration",
+        "description": "Shooter wants to abandon this calibration session entirely, nothing saved.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "unclear",
+        "description": "Doesn't match any of the above and isn't a shot number either.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
 
 
-def generate_warm_reply(text: str) -> str | None:
-    """Returns a short warm reply for genuine small talk, or None if this
-    wasn't small talk, the call failed, or the model's reply slipped past
-    the prompt's own guardrail and still contains a digit -- checked here
-    directly rather than trusting the prompt alone, since a fabricated
-    number read aloud as a real ballistics value is a safety issue, not
-    just a tone miss."""
+def classify_calibration_turn(text: str) -> str | None:
+    """Returns one of "end_calibration"/"discard_last_shot"/
+    "cancel_calibration"/"unclear", or None on an outright API failure
+    (network/auth) -- distinct from a clean "unclear", same distinction
+    extract_intent() makes for the same reason."""
     try:
         client = get_anthropic_client()
         response = client.messages.create(
             model=_MODEL,
-            max_tokens=_MAX_TOKENS,
-            system=_PERSONALITY_SYSTEM_PROMPT,
+            max_tokens=64,
+            system=_CALIBRATION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": text}],
-            tools=_PERSONALITY_TOOLS,
+            tools=_CALIBRATION_TOOLS,
             tool_choice={"type": "any"},
         )
-        block = _first_tool_use(response)
-        if block.name != "warm_reply":
-            return None
-        reply = str(block.input.get("reply") or "").strip()
-        if not reply or re.search(r"\d", reply):
-            return None
-        return reply
+        return _first_tool_use(response).name
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):
-        logger.exception("generate_warm_reply failed for %r", text)
+        logger.exception("classify_calibration_turn failed for %r", text)
         return None
 
 

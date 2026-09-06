@@ -166,6 +166,40 @@ def test_profile_store_roundtrip_and_fuzzy_switching(tmp_path):
     assert reloaded_again.find_rifle("faxon").find_load("21.0").muzzle_velocity_fps == 2450
 
 
+def test_find_rifle_matches_on_caliber_and_barrel_length_not_just_name(tmp_path):
+    """Regression, found live (2026-09-05): find_rifle() used to match
+    against the bare name only. A real, correct disambiguating
+    description -- "the 5.7x28 with the 11 inch barrel", said specifically
+    BECAUSE two similarly-named rifles existed -- added query tokens
+    ("11", "inch", "barrel") that don't appear in either rifle's name at
+    all. Since _tokens_match requires every query token to match
+    something, that legitimate extra detail made the match fail
+    completely (zero matches) instead of helping pick the right one --
+    the opposite of what describing a rifle in more detail should do.
+    find_load() already casts this same wider net across name/powder/
+    notes; this pins the identical fix extended to rifles (caliber,
+    barrel length, twist, scope make/model)."""
+    store = ProfileStore(tmp_path / "profiles.json")
+    target = Rifle(name="PSA Rattler", scope_height_in=2.0, caliber="5.7x28mm",
+                    barrel_length_in=11, click_value_mrad=0.1)
+    store.add_rifle(target)
+    decoy = Rifle(name="AR-15", scope_height_in=2.5, caliber=".223 Wylde",
+                   barrel_length_in=18, click_value_mrad=0.1)
+    store.add_rifle(decoy, make_active=False)
+
+    found = store.find_rifle("5.7x28 with the 11 inch barrel")
+    assert found.name == "PSA Rattler"
+
+    # A genuinely ambiguous case (two rifles whose searchable text both
+    # satisfy every query token) must still fail honestly, asking for
+    # disambiguation, rather than silently guessing one -- not "no rifle
+    # found" (today's confusing dead end), and not a wrong silent pick.
+    store.add_rifle(Rifle(name="5.7x28", scope_height_in=2.0, caliber="5.7x28mm",
+                           barrel_length_in=11, click_value_mrad=0.1), make_active=False)
+    with pytest.raises(KeyError, match="matches multiple rifles"):
+        store.find_rifle("5.7x28 with the 11 inch barrel")
+
+
 def test_update_rifle_fields_persists_and_rejects_invalid_values_without_corrupting(tmp_path):
     """Addendum 29: confirmed live that the raw save mechanism itself
     works (a PUT persisted correctly through a fresh, separate GET) --
@@ -524,6 +558,7 @@ def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
     responses = iter([
+        {},  # nothing extra volunteered in the trigger utterance itself
         {"name": "25gr Varget"},
         {"bullet_weight_gr": 75, "bc": 0.37, "drag_model": "G1"},
         {"muzzle_velocity_fps": 2900, "zero_distance_yd": 100},
@@ -587,6 +622,7 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
     responses = iter([
+        {},  # nothing extra volunteered in the trigger utterance itself
         {"name": "Creedmoor bolt gun", "caliber": "6.5 Creedmoor"},
         {"scope_height_in": 2.0},
         {"optic_type": "scope"},
@@ -635,6 +671,7 @@ def test_rifle_setup_red_dot_skips_magnification_and_focal_plane(monkeypatch, tm
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
     responses = iter([
+        {},  # nothing extra volunteered in the trigger utterance itself
         {"name": "red dot AR"},
         {"scope_height_in": 2.6},
         {"optic_type": "red_dot", "scope_make": "Holosun", "scope_model": "510C"},
@@ -701,7 +738,10 @@ def test_setup_extraction_told_which_field_is_being_asked(monkeypatch, tmp_path)
 
     def fake_extract(text, kind, asking_about=None):
         captured_calls.append((text, kind, asking_about))
-        return {"caliber": "9mm"}
+        # Only the real answer utterance mentions anything -- the bare
+        # trigger utterance ("set up a new rifle") extracts nothing,
+        # same as a real model would return for it.
+        return {"caliber": "9mm"} if "pistol" in text else {}
 
     monkeypatch.setattr(cli_module, "extract_setup_fields", fake_extract)
 
@@ -712,7 +752,10 @@ def test_setup_extraction_told_which_field_is_being_asked(monkeypatch, tmp_path)
     cli.handle("set up a new rifle")
     cli.handle("pistol caliber carbine, nine millimeter")
 
-    assert captured_calls[0] == ("pistol caliber carbine, nine millimeter", "rifle", "name")
+    # captured_calls[0] is the trigger-utterance pre-fill call added for
+    # same-breath setup info; the field-being-asked pin this test is
+    # actually about is the *second* call, once the interview is running.
+    assert captured_calls[1] == ("pistol caliber carbine, nine millimeter", "rifle", "name")
 
 
 def test_setup_acknowledges_progress_when_asked_field_still_unfilled(monkeypatch, tmp_path):
@@ -725,7 +768,7 @@ def test_setup_acknowledges_progress_when_asked_field_still_unfilled(monkeypatch
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
     monkeypatch.setattr(cli_module, "extract_setup_fields",
-                         lambda text, kind, asking_about=None: {"caliber": "9mm"})
+                         lambda text, kind, asking_about=None: {"caliber": "9mm"} if "pistol" in text else {})
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
@@ -798,7 +841,8 @@ def test_setup_gives_up_after_repeated_failures_to_understand(monkeypatch, tmp_p
     bootstrap_default_profile(store)
     cli = BallisticaCLI(store)
 
-    monkeypatch.setattr(cli_module, "extract_setup_fields", lambda text, kind, asking_about=None: {"name": "AR-15"})
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"name": "AR-15"} if "AR-15" in text else {})
     cli.handle("let's set up a new rifle")
     cli.handle("call it the AR-15")  # real progress -- resets the counter
 
@@ -834,6 +878,7 @@ def test_setup_correction_overwriting_existing_field_resets_failure_counter(monk
     cli = BallisticaCLI(store)
 
     responses = iter([
+        {},  # nothing extra volunteered in the trigger utterance itself
         {"name": "25gr Varget"},
         {"bullet_weight_gr": 75, "bc": 0.37, "drag_model": "G1"},
         {"muzzle_velocity_fps": 2900, "zero_distance_yd": 100},
@@ -863,6 +908,110 @@ def test_setup_correction_overwriting_existing_field_resets_failure_counter(monk
     still_open = cli.handle("uh")
     assert "didn't catch" in still_open.lower()
     assert cli._setup is not None
+
+
+def test_setup_prefills_fields_volunteered_in_the_trigger_utterance(monkeypatch, tmp_path):
+    """Regression, found live while scoping Session Mode (2026-09-05):
+    "now let's go to a new rifle, the 9mm PCC" used to start the
+    interview and then ask "what do you want to call this rifle?" anyway
+    -- the name stated in that same breath was silently discarded,
+    because _start_setup() never ran extraction on the utterance that
+    triggered it, only on turns after the interview was already running.
+    Same bug, two different entry points: the fast regex path in
+    handle() (a rich utterance can still match the loose "new...rifle"
+    pattern) and the LLM-dispatch path (start_rifle_setup/
+    start_load_setup via extract_intent). Both must pre-fill from the
+    trigger text and skip straight to whatever's still actually
+    missing."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    # Fast regex path: "new...rifle" matches even though real content
+    # (the name) follows in the same breath.
+    monkeypatch.setattr(cli_module, "extract_setup_fields",
+                         lambda text, kind, asking_about=None: {"name": "9mm PCC"})
+    reply = cli.handle("now let's go to a new rifle, the 9mm PCC")
+    assert "call this rifle" not in reply.lower()
+    assert "scope height" in reply.lower()
+    assert cli._setup.draft.get("name") == "9mm PCC"
+    cli._setup = None  # reset for the next entry point, independent of this one
+
+    # LLM-dispatch path: extract_intent routes to start_load_setup,
+    # separately from extract_setup_fields doing the field pre-fill.
+    monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None: ("start_load_setup", {}))
+    monkeypatch.setattr(
+        cli_module, "extract_setup_fields",
+        lambda text, kind, asking_about=None: {
+            "bullet_weight_gr": 110, "bc": 0.3, "drag_model": "G1",
+            "muzzle_velocity_fps": 1150, "powder": "Lil Gun",
+            "powder_charge_gr": 24, "zero_distance_yd": 50,
+        },
+    )
+    reply2 = cli.handle(
+        "let's log a new one, 110 grain, BC point three, G1, muzzle velocity 1150, "
+        "24 grains of Lil Gun, zero at 50",
+    )
+    assert "bullet weight" not in reply2.lower()
+    assert "call this load" in reply2.lower()  # only the genuinely-missing field is asked
+    assert cli._setup.draft.get("zero_distance_yd") == 50
+
+
+def test_switch_rifle_with_new_load_volunteered_in_the_same_breath(monkeypatch, tmp_path):
+    """Regression, found live while scoping Session Mode component 2
+    (2026-09-05): "switching to the 300 blackout, first load is the 110s
+    at 24 grains of Lil Gun, zero at 50" used to switch the rifle and
+    silently discard every bit of load info in the same utterance --
+    there was no path from a plain switch_rifle intent into a load
+    setup at all. switch_rifle's tool schema now carries optional
+    new_load_* fields for exactly this case, dispatched into the same
+    pre-fill machinery start_rifle_setup/start_load_setup already use
+    (_begin_setup_from_fields), so the switch and the new load both
+    register instead of only the switch. A plain switch with no load
+    info volunteered must behave exactly as before -- no regression."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    ar15 = Rifle(name="AR-15", scope_height_in=2.5, click_value_mrad=0.1)
+    ar15.add_load(Load(name="75gr ELD", bullet_weight_gr=75, bc=0.402, drag_model="G1",
+                        muzzle_velocity_fps=2787, zero_distance_yd=100))
+    store.add_rifle(ar15)
+    blackout = Rifle(name="300 Blackout SBR", scope_height_in=2.2, click_value_mrad=0.1)
+    store.add_rifle(blackout, make_active=False)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None: (
+        "switch_rifle", {
+            "query": "300 blackout",
+            "new_load_bullet_weight_gr": 110, "new_load_powder": "Lil Gun",
+            "new_load_powder_charge_gr": 24, "new_load_zero_distance_yd": 50,
+        },
+    ))
+    reply = cli.handle(
+        "switching to the 300 blackout, first load is the 110s at 24 grains of Lil Gun, zero at 50",
+    )
+    assert store.active_rifle_name == "300 Blackout SBR"
+    assert "switched" in reply.lower()
+    assert cli._setup is not None
+    assert cli._setup.kind == "load"
+    assert cli._setup.draft.get("bullet_weight_gr") == 110
+    assert cli._setup.draft.get("powder") == "Lil Gun"
+    assert cli._setup.draft.get("zero_distance_yd") == 50
+    # Neither name nor BC were stated -- name is first in _LOAD_REQUIRED,
+    # so that's what must still be asked for, not silently defaulted.
+    assert "call this load" in reply.lower()
+
+    # A plain switch with nothing extra volunteered must NOT start a setup.
+    cli._setup = None  # reset -- otherwise handle() would route into the still-open load setup above
+    monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None: ("switch_rifle", {"query": "AR-15"}))
+    plain_reply = cli.handle("switch back to the AR-15")
+    assert store.active_rifle_name == "AR-15"
+    assert cli._setup is None
+    assert "switched" in plain_reply.lower()
 
 
 def test_setup_cancel_discards_draft_without_saving(monkeypatch, tmp_path):
@@ -1053,10 +1202,54 @@ def test_calibration_gives_up_after_repeated_unparseable_shots(tmp_path):
     assert cli._calibration is not None
 
     gave_up = cli.handle("still nothing")
-    assert "trouble hearing" in gave_up.lower()
+    assert "trouble understanding" in gave_up.lower()
     assert cli._calibration is None
 
     assert "yards" in cli.handle("drop at 300 yards").lower()
+
+
+def test_calibration_end_of_string_natural_phrasing_falls_back_to_llm(monkeypatch, tmp_path):
+    """Regression, found live (2026-09-05, Rick's first real-voice Session
+    Mode test): after reading off ~10 shots, natural ways of signaling
+    "I'm done" -- "that's ten shots", "I think that's good", "that's
+    enough" -- all missed the anchored end-calibration regex and came
+    back "Didn't catch a number there," identically to genuine silence/
+    noise. This was the calibration flow's own missing fast-path-then-
+    LLM-fallback (every other modal flow already has one). Pins that an
+    utterance the regex misses but the fallback classifies as
+    end_calibration reaches the same save-prompt the exact anchored
+    phrase does, and that a genuinely unclear utterance still falls back
+    to the ordinary retry/give-up counter rather than false-triggering
+    an end."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("start calibration")
+    cli.handle("2780")
+    cli.handle("2795")
+
+    monkeypatch.setattr(cli_module, "classify_calibration_turn", lambda text: "end_calibration")
+    summary = cli.handle("I think that's good")
+    assert "save as the new velocity" in summary.lower()
+    assert cli._calibration.confirming is True
+
+    saved = cli.handle("yes")
+    assert "saved" in saved.lower()
+    assert cli._calibration is None
+
+    # A genuinely unclear utterance must NOT false-trigger an end -- falls
+    # back to the same retry/give-up counter as any other unparseable turn.
+    cli.handle("start calibration")
+    cli.handle("2900")
+    monkeypatch.setattr(cli_module, "classify_calibration_turn", lambda text: "unclear")
+    reply = cli.handle("mumble mumble")
+    assert "didn't catch" in reply.lower()
+    assert cli._calibration is not None
+    assert cli._calibration.failed_attempts == 1
 
 
 def test_setup_session_dict_round_trip_preserves_all_state():
@@ -1080,6 +1273,111 @@ def test_setup_session_dict_round_trip_preserves_all_state():
     assert restored.confirming is True
     assert restored.failed_attempts == 2
     assert restored.last_activity == original.last_activity
+
+
+def test_converse_reply_gets_spoken_and_remembered(monkeypatch, tmp_path):
+    """Open-ended conversation (2026-09-05): when extract_intent() returns
+    a "converse" result instead of a real command -- tool_choice is
+    "auto", so the model can just talk -- the reply is spoken back
+    directly (no _dispatch_intent tool routing) and the exchange is
+    appended to _chat_history for later turns to use as context. An
+    ordinary ballistics command must NOT touch _chat_history at all --
+    only genuine conversation does, so terse commands don't bloat the
+    context sent to the LLM on every turn."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(
+        cli_module, "extract_intent",
+        lambda text, history=None: ("converse", {"reply": "Worth checking your manual for that one."}),
+    )
+    reply = cli.handle("is it safe to bump this load up")
+    assert reply == "Worth checking your manual for that one."
+    assert cli._chat_history == [
+        {"role": "user", "content": "is it safe to bump this load up"},
+        {"role": "assistant", "content": "Worth checking your manual for that one."},
+    ]
+
+    # A real command (fast regex path, no LLM call at all) must not add
+    # anything to the conversational-memory buffer.
+    cli.handle("switch to 21.0gr")
+    assert len(cli._chat_history) == 2
+
+
+def test_chat_history_passed_to_extract_intent_and_capped(monkeypatch, tmp_path):
+    """Recent conversational turns are handed to extract_intent() as
+    history (so a follow-up like "is that safe" can resolve what "that"
+    refers to), and the buffer is capped at _CHAT_HISTORY_MAX_TURNS
+    exchanges rather than growing for the whole session."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    seen_history = []
+
+    def fake_extract_intent(text, history=None):
+        seen_history.append(list(history or []))
+        return ("converse", {"reply": f"reply to {text}"})
+
+    monkeypatch.setattr(cli_module, "extract_intent", fake_extract_intent)
+
+    cli.handle("question one")
+    assert seen_history[0] == []  # nothing yet on the very first turn
+
+    cli.handle("question two")
+    assert seen_history[1] == [
+        {"role": "user", "content": "question one"},
+        {"role": "assistant", "content": "reply to question one"},
+    ]
+
+    # Push well past the cap and confirm the buffer stays bounded --
+    # oldest exchanges evicted first, not newest. With the cap at 6
+    # exchanges, after "question 19" the surviving user turns must be
+    # exactly questions 14-19; anything older must be gone.
+    for i in range(3, 20):
+        cli.handle(f"question {i}")
+    assert len(cli._chat_history) == cli_module._CHAT_HISTORY_MAX_TURNS * 2
+    user_turns = [m["content"] for m in cli._chat_history if m["role"] == "user"]
+    assert user_turns == [f"question {i}" for i in range(14, 20)]
+
+
+def test_hydrate_dehydrate_round_trips_chat_history(tmp_path):
+    """The multi-tenant /v2/voice/query endpoint hydrates a fresh
+    BallisticaCLI's conversational memory from what the previous request
+    persisted, same as setup/calibration/pending_delete -- without this,
+    every request would start a brand new conversation with no memory of
+    what was just discussed."""
+    import ballistica.api as api_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    cli._chat_history = [
+        {"role": "user", "content": "is it safe to bump this up"},
+        {"role": "assistant", "content": "Worth checking your manual for that one."},
+    ]
+
+    state = api_module._dehydrate_cli(cli)
+    assert state["chat_history"] == cli._chat_history
+
+    restored = BallisticaCLI(store)
+    api_module._hydrate_cli(restored, state)
+    assert restored._chat_history == cli._chat_history
+
+    # A request with no prior conversational state must not crash --
+    # ordinary "brand new conversation" case (also today's setup/
+    # calibration/pending_delete convention: missing key -> empty/None).
+    fresh = BallisticaCLI(store)
+    api_module._hydrate_cli(fresh, {})
+    assert fresh._chat_history == []
 
 
 def test_calibration_session_dict_round_trip_preserves_all_state():

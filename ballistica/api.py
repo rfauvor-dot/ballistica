@@ -396,9 +396,13 @@ class VoiceSpeakIn(BaseModel):
                                 "not a guess, don't second-guess it without asking first.",
     )
     speed: float = Field(
-        0.9, ge=0.25, le=4.0,
-        description="OpenAI TTS speed multiplier. Default slowed from the API's own 1.0 default "
-                    "after live feedback that full-speed replies were hard to follow at the range.",
+        0.75, ge=0.25, le=4.0,
+        description="OpenAI TTS speed multiplier. Slowed once already (1.0 -> 0.9) after live "
+                    "feedback that full-speed replies were hard to follow at the range; slowed "
+                    "again here (2026-09-05) after live feedback that 0.9 was still fast enough to "
+                    "clip whole words out of numeric readouts (drop/MOA/MRAD values), not just "
+                    "'a bit quick' -- this needs another live-fire round to confirm 0.75 actually "
+                    "lands, not assumed correct just because it's slower.",
     )
 
 
@@ -953,9 +957,10 @@ def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(
 
 def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     """Reconstructs a BallisticaCLI's in-progress voice-conversation
-    state (setup/calibration/pending_delete) from what the previous
-    request persisted -- the API is stateless per-request, so this
-    stands in for the single-tenant CLI's long-lived in-memory object."""
+    state (setup/calibration/pending_delete/chat_history) from what the
+    previous request persisted -- the API is stateless per-request, so
+    this stands in for the single-tenant CLI's long-lived in-memory
+    object."""
     cli._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
     cli._calibration = (
         _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
@@ -963,6 +968,10 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     pending_delete = state.get("pending_delete")
     cli._pending_delete = pending_delete["rifle_name"] if pending_delete else None
     cli._pending_delete_at = pending_delete["at"] if pending_delete else 0.0
+    # Open-ended conversational memory (2026-09-05) -- plain list of
+    # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
+    # from_dict() round-trip needed like the session objects above.
+    cli._chat_history = state.get("chat_history") or []
 
 
 def _dehydrate_cli(cli: BallisticaCLI) -> dict:
@@ -976,6 +985,7 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
             {"rifle_name": cli._pending_delete, "at": cli._pending_delete_at}
             if cli._pending_delete else None
         ),
+        "chat_history": cli._chat_history,
     }
 
 

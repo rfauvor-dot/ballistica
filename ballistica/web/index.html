@@ -178,6 +178,7 @@
   .voice-panel .state-line.hot { color: var(--accent); }
   .voice-panel .heard-line { font-size: 14px; color: var(--muted); font-style: italic; min-height: 18px; margin-top: 2px; }
   #enableVoiceBtn { margin-top: 8px; }
+  #sessionModeBtn { margin-top: 8px; margin-left: 8px; }
   #voiceUnsupported { display: none; color: var(--error-text); font-size: 13px; margin-top: 6px; }
 </style>
 </head>
@@ -274,6 +275,7 @@
     <div class="state-line" id="voiceState">Voice: off</div>
     <div class="heard-line" id="voiceHeard"></div>
     <button id="enableVoiceBtn" class="primary">Enable voice ("Ballistica")</button>
+    <button id="sessionModeBtn" disabled>Start session mode</button>
     <div id="voiceUnsupported">This browser doesn't support wake-word listening (needs Chrome). Use the manual controls below instead.</div>
   </div>
 
@@ -1405,14 +1407,39 @@ const SIGNOFF_PHRASES = [
   "That's a wrap. I'm here when you need me.",
 ];
 
+// Session Mode: continuous listening for a whole range session with no
+// wake word needed between commands -- an explicit, separate opt-in from
+// plain "Enable voice" (per Rick's design: default behavior stays
+// command-response so Ballistica doesn't pick up other range-goers'
+// conversations; this is deliberately for solo/low-crowd sessions).
+const SESSION_MODE_ON_PHRASES = [
+  "Session mode on. Just talk normally, I'm listening.",
+  "Alright, session mode -- go ahead, I'm following along.",
+  "Session mode active. Talk me through it.",
+];
+const SESSION_MODE_OFF_PHRASES = [
+  "Session mode off.",
+  "Alright, stepping back to normal mode.",
+  "Session mode ended.",
+];
+// Ends Session Mode on a spoken phrase, not just the on-screen button --
+// checked client-side against the transcribed text before it's sent to
+// the backend, since Session Mode itself is a frontend-only concept (the
+// backend /v2/voice/query has no idea whether it's being called from a
+// wake-word turn or a Session Mode turn).
+const SESSION_MODE_END_RE =
+  /\b(end session|that'?s it for (today|now)|stop listening|session'?s? over|we'?re done( for)? (today|now))\b/i;
+
 let voiceEnabled = false;
 let voiceState = 'off'; // off | idle | acknowledging | listening | processing | speaking
 let wakeRecognition = null;
 let sessionWakeCount = 0;
+let sessionModeEnabled = false;
 
 const voiceStateEl = document.getElementById('voiceState');
 const voiceHeardEl = document.getElementById('voiceHeard');
 const enableVoiceBtn = document.getElementById('enableVoiceBtn');
+const sessionModeBtn = document.getElementById('sessionModeBtn');
 const voiceUnsupportedEl = document.getElementById('voiceUnsupported');
 
 function setVoiceState(text, hot) {
@@ -1531,7 +1558,20 @@ async function recordCommand() {
   // on *any* pause once speech has already begun, not just a lead-in
   // pause. Widened to give a deliberate speaker room to compose a full
   // sentence without being cut off mid-thought.
-  const SILENCE_MS = 2200;
+  //
+  // Widened again (2026-09-05): even 2200ms wasn't enough for deliberate,
+  // clause-separated command phrasing ("distance, [pause] four hundred
+  // yards, [pause] get solution") -- confirmed live as the likely cause
+  // of a sentence fragmenting into multiple separate recordings, each one
+  // sent as its own utterance, so only the LAST fragment's transcript
+  // ever showed as "heard" (an isolated word like "distance" landing on
+  // its own utterance is exactly the kind of thing the open-conversation
+  // layer would reasonably ask a clarifying follow-up about, which reads
+  // like the app entering some other state rather than a dropped
+  // sentence). Command-style phrasing paradoxically tends toward LONGER
+  // inter-clause pauses than natural continuous speech, not shorter, so
+  // this needs more room than conversational speech turned out to need.
+  const SILENCE_MS = 3200;
   const MIN_RECORD_MS = 500;
   const MAX_RECORD_MS = 12000;
   // Consecutive above-threshold frames (~60/sec via requestAnimationFrame)
@@ -1549,8 +1589,18 @@ async function recordCommand() {
     // shared across the whole voice-enabled session (see ensureMicStream/
     // releaseMicStream above), only the per-recording MediaRecorder and
     // its chunks are single-use.
+    //
+    // Resolves {blob, hadSpeech} rather than a bare Blob -- Session Mode
+    // (continuous capture with no wake word between commands) needs to
+    // tell "genuine silence, just keep listening" apart from "something
+    // was said," since it calls this in a tight loop for the whole
+    // session rather than once per wake-word trigger. Without hadSpeech,
+    // a quiet stretch (walking to the target, reloading) would hit
+    // MAX_RECORD_MS repeatedly and send an empty clip to Whisper every
+    // time -- wasted cost, and exactly the near-empty-clip hallucination
+    // Addendum 14 already fixed once for the single-command path.
     recorder.onstop = () => {
-      resolve(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+      resolve({ blob: new Blob(chunks, { type: mimeType || 'audio/webm' }), hadSpeech: hasSpokenYet });
     };
     recorder.start();
 
@@ -1638,22 +1688,49 @@ function startWakeListening() {
   wakeRecognition.start();
 }
 
-// One record -> transcribe -> query -> speak cycle. Returns true if the
+// One record -> transcribe -> query -> speak cycle. Returns
+// {continueConversation, hadSpeech}: continueConversation is true if the
 // backend says we're mid-conversation (guided load/rifle setup, chrono
 // calibration) and should keep listening for the next answer without
-// requiring the wake word again -- false to drop back to sleep. A silent/
-// failed turn also returns false rather than looping blindly forever; the
-// backend session itself (e.g. an in-progress setup) is untouched by a
-// frontend hiccup like this, so saying "Ballistica" again just resumes it.
-async function runConversationTurn() {
+// requiring the wake word again -- false to drop back to sleep (or, in
+// Session Mode, to just keep looping -- see runSessionModeTurn() below).
+// hadSpeech is false only for genuine silence (nothing crossed the VAD's
+// speech-onset threshold at all); a failed/errored turn that DID have
+// real speech still reports hadSpeech: true, since Session Mode uses this
+// distinction to decide whether "didn't catch that" is worth speaking at
+// all -- silence itself should never be worth a spoken reply, only a
+// garbled or failed attempt at a real utterance.
+//
+// speakOnSilence controls whether a silent recording gets an audible
+// "Didn't catch that" -- true for the normal wake-word path (the shooter
+// was just acknowledged and is expected to say something right away, so
+// silence is worth prompting about), false for Session Mode (silence is
+// just the shooter not talking at that moment, not a failed command).
+async function runConversationTurn({ speakOnSilence = true } = {}) {
   voiceState = 'listening';
   setVoiceState('Listening...', true);
-  let blob;
+  let blob, hadSpeech;
   try {
-    blob = await recordCommand();
+    ({ blob, hadSpeech } = await recordCommand());
   } catch (e) {
     setVoiceState('Voice: microphone error');
-    return false;
+    return { continueConversation: false, hadSpeech: false };
+  }
+
+  if (!hadSpeech) {
+    // Skips the network round-trip entirely (nothing was said, so there's
+    // nothing to transcribe) -- but must still respect speakOnSilence:
+    // the ordinary wake-word path expects a spoken nudge here (this is
+    // the same case the old code reached via an empty Whisper transcript
+    // instead), Session Mode explicitly doesn't want one for every quiet
+    // stretch between shots.
+    if (speakOnSilence) {
+      voiceState = 'speaking';
+      await speak("Didn't catch that. Say again.");
+    } else {
+      setVoiceState(voiceEnabled ? 'Listening...' : 'Voice: off', true);
+    }
+    return { continueConversation: false, hadSpeech: false };
   }
 
   voiceState = 'processing';
@@ -1668,16 +1745,18 @@ async function runConversationTurn() {
     voiceHeardEl.textContent = heardText ? `Heard: "${heardText}"` : '';
 
     if (!heardText) {
-      voiceState = 'speaking';
-      await speak("Didn't catch that. Say again.");
-      return false;
+      if (speakOnSilence) {
+        voiceState = 'speaking';
+        await speak("Didn't catch that. Say again.");
+      }
+      return { continueConversation: false, hadSpeech: true, heardText: '' };
     }
 
     const token = await getValidAccessToken();
     if (!token) {
       showAuthPanel();
       setVoiceState('Voice: signed out');
-      return false;
+      return { continueConversation: false, hadSpeech: true, heardText };
     }
     const queryRes = await fetch('/v2/voice/query', {
       method: 'POST',
@@ -1688,10 +1767,10 @@ async function runConversationTurn() {
     voiceState = 'speaking';
     setVoiceState('Speaking...', true);
     await speak(queryData.reply || "Didn't catch that.");
-    return !!queryData.awaiting_response;
+    return { continueConversation: !!queryData.awaiting_response, hadSpeech: true, heardText };
   } catch (e) {
     setVoiceState('Voice: error handling that command');
-    return false;
+    return { continueConversation: false, hadSpeech: true, heardText: '' };
   }
 }
 
@@ -1718,7 +1797,7 @@ async function handleWakeWord() {
   let turns = 0;
   const MAX_TURNS = 20;
   while (keepGoing && voiceEnabled && turns < MAX_TURNS) {
-    keepGoing = await runConversationTurn();
+    ({ continueConversation: keepGoing } = await runConversationTurn());
     turns++;
   }
 
@@ -1746,6 +1825,58 @@ async function handleWakeWord() {
   releaseMicStream();
   voiceState = 'idle';
   if (voiceEnabled) startWakeListening();
+}
+
+// Session Mode: continuous listening for a whole range session, no wake
+// word between commands. Reuses the exact same record -> transcribe ->
+// query -> speak turn as the wake-word path (runConversationTurn) --
+// this is deliberately ONLY the continuous-capture piece (Session Mode
+// build component 1). It does not add any session-wide entity tracking
+// or a confidence-gated speak policy (components 2/3): every recognized
+// utterance still gets dispatched and replied to exactly as it would via
+// a one-off wake-word command, just without needing "Ballistica" said
+// before each one, and without an audible nudge for ordinary silence.
+async function runSessionModeLoop() {
+  // Session Mode holds the raw mic stream itself for the whole session
+  // (via ensureMicStream inside recordCommand), so the separate
+  // wake-word SpeechRecognition has to stand down first -- two APIs
+  // holding the mic at once is the exact bug already fixed once for the
+  // ordinary wake-word turn (see ensureMicStream's own comment above).
+  if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
+
+  voiceState = 'acknowledging';
+  setVoiceState('Session mode -- starting', true);
+  await speak(SESSION_MODE_ON_PHRASES[Math.floor(Math.random() * SESSION_MODE_ON_PHRASES.length)]);
+
+  let endedBySpeech = false;
+  while (sessionModeEnabled && voiceEnabled) {
+    const { hadSpeech, heardText } = await runConversationTurn({ speakOnSilence: false });
+    if (hadSpeech && SESSION_MODE_END_RE.test(heardText)) {
+      endedBySpeech = true;
+      break;
+    }
+  }
+
+  try {
+    await loadRifles();
+  } catch (e) {}
+
+  releaseMicStream();
+  sessionModeEnabled = false;
+  sessionModeBtn.textContent = 'Start session mode';
+
+  // voiceEnabled going false already has its own sign-off (the disable
+  // button's own handler) -- don't speak a second one on top of it here.
+  if (voiceEnabled) {
+    voiceState = 'idle';
+    setVoiceState('Voice: on');
+    await speak(SESSION_MODE_OFF_PHRASES[Math.floor(Math.random() * SESSION_MODE_OFF_PHRASES.length)]);
+    // Session Mode ending (by button or by spoken phrase) drops back to
+    // ordinary wake-word listening rather than voice going fully off --
+    // matches "end session" reading as "stop the continuous listening,"
+    // not "disable voice entirely."
+    startWakeListening();
+  }
 }
 
 // Keeps the screen from locking/sleeping while voice is on -- otherwise
@@ -1783,6 +1914,7 @@ enableVoiceBtn.addEventListener('click', async () => {
   if (voiceEnabled) {
     const hadSession = sessionWakeCount > 0;
     voiceEnabled = false;
+    sessionModeEnabled = false; // lets runSessionModeLoop's while condition exit on its own
     voiceState = 'off';
     if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
     releaseWakeLock();
@@ -1790,6 +1922,8 @@ enableVoiceBtn.addEventListener('click', async () => {
     setVoiceState('Voice: off');
     voiceHeardEl.textContent = '';
     enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
+    sessionModeBtn.disabled = true;
+    sessionModeBtn.textContent = 'Start session mode';
     // Fire-and-forget: the toggle and mic should go quiet right away,
     // the sign-off just plays out over it rather than blocking the UI.
     if (hadSession) {
@@ -1800,6 +1934,7 @@ enableVoiceBtn.addEventListener('click', async () => {
   voiceEnabled = true;
   sessionWakeCount = 0;
   enableVoiceBtn.textContent = 'Disable voice';
+  sessionModeBtn.disabled = false;
   // Root-caused live (three rounds on this exact code path -- see the
   // git history for the two earlier fixes this one supersedes):
   // acquiring the raw mic stream (getUserMedia) here, at enable time,
@@ -1818,6 +1953,21 @@ enableVoiceBtn.addEventListener('click', async () => {
   unlockAudioPlayback();
   acquireWakeLock();
   startWakeListening();
+});
+
+sessionModeBtn.addEventListener('click', () => {
+  if (!voiceEnabled) return; // shouldn't be reachable -- button is disabled until voice is on
+  if (sessionModeEnabled) {
+    // Just flips the flag -- runSessionModeLoop's own while-loop check
+    // notices on its next iteration and does all the real cleanup
+    // (mic release, rifle-list refresh, sign-off, resuming wake-word
+    // listening) itself, same pattern as disabling voice mid-conversation.
+    sessionModeEnabled = false;
+    return;
+  }
+  sessionModeEnabled = true;
+  sessionModeBtn.textContent = 'End session mode';
+  runSessionModeLoop();
 });
 
 const authEmailInput = document.getElementById('authEmail');
