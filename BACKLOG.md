@@ -401,3 +401,46 @@ boundary decision above is exactly the kind of call the liability waiver
 work already treated with real seriousness — same category of risk,
 now resolved by Rick directly rather than left to an embedded prompt
 choice).
+
+---
+
+## Load/rifle decoupling (§28) — two decisions resolved with a default, not asked
+
+**Raised:** me, 2026-09-05, mid-implementation of MULTI_TENANCY_DESIGN.md §28
+(loads and rifles as independent pools, combined only at use-time — Rick's
+own .300 Blackout subsonic/supersonic-barrel example). Per the standing
+autonomy directive, logging these here with reasoning + chosen default and
+proceeding, rather than stopping to ask, since both are genuinely ambiguous
+but bounded, reversible implementation decisions.
+
+**Decision 1 — `contribute_load`'s rifle context.** `contribute_load(rifle,
+load, access_token)` (ballistica/aggregate_pool.py) requires a non-optional
+`Rifle` to pull caliber/barrel_length_in/twist_rate into the anonymized
+aggregate-pool payload. Once loads save via a top-level `POST /v2/loads` /
+`PUT /v2/loads/{name}` with no rifle in the URL at all, there's no rifle
+naturally in context anymore. Chosen default: contribute using whichever
+rifle is the user's CURRENTLY ACTIVE rifle at save time (best-effort, same
+philosophy contribute_load already has); if no rifle is active at all, skip
+contribution for that save rather than sending a payload with blank/invented
+rifle specs. Implemented as `_contribute_load_best_effort()` in api.py.
+Rejected alternative: moving contribution to fire only when a rifle+load
+pair is actually exercised together (a solve or calibration) instead of at
+save time — more semantically "correct" (the aggregate row would reflect a
+real pairing, not just "whatever was active"), but a materially bigger
+change (contribution logic would have to move out of the REST layer into
+cli.py's solver()/calibration-finalize paths), deferred rather than bundled
+into this pass.
+
+**Decision 2 — web UI rifle/load picker layout.** Originally scoped (this
+session, before the autonomy directive) as explicitly reserved for Rick's
+own UX call, not something to default on unilaterally. Re-affirming that
+reservation here rather than overriding it: this one meaningfully shapes how
+the product feels to the shooter mid-session (two separate pickers? one
+combined "rifle + load" selector that composes the two? something else),
+which is a real product decision, not just an implementation detail — still
+open, still Rick's to make, not resolved with a default.
+
+**Owning lenses:** Build (schema/API/CLI rewrite, now code-complete pending
+the SQL migration in db/010_decouple_loads_from_rifles.sql, which only Rick
+can run), Chief of Staff (tracking that decision 2 stays genuinely open,
+not quietly defaulted).

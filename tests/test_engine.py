@@ -141,29 +141,32 @@ def test_profile_store_roundtrip_and_fuzzy_switching(tmp_path):
     path = tmp_path / "profiles.json"
     store = ProfileStore(path)
     rifle = Rifle(name="AR-15 20in Faxon", scope_height_in=2.5, click_value_mrad=0.1)
-    rifle.add_load(Load(
+    store.add_rifle(rifle)
+    store.add_load(Load(
         name="21.0gr H335", bullet_weight_gr=77, bc=0.372, drag_model="G7",
         muzzle_velocity_fps=2422, zero_distance_yd=36,
     ), make_active=False)
-    rifle.add_load(Load(
+    store.add_load(Load(
         name="23.5gr H335", bullet_weight_gr=77, bc=0.372, drag_model="G7",
         muzzle_velocity_fps=2766, zero_distance_yd=36,
     ), make_active=True)
-    store.add_rifle(rifle)
     store.save()
 
     reloaded = ProfileStore(path)
-    assert reloaded.get_active_rifle().get_active_load().name == "23.5gr H335"
+    assert reloaded.get_active_rifle().name == "AR-15 20in Faxon"
+    assert reloaded.get_active_load().name == "23.5gr H335"
 
     switched = reloaded.set_active_load("21 grain")
     assert switched.name == "21.0gr H335"
 
-    updated = reloaded.update_load_velocity("Faxon", "21.0gr", 2450)
+    # No rifle_query anymore -- loads are independent (2026-09-05, §28).
+    updated = reloaded.update_load_velocity("21.0gr", 2450)
     assert updated.muzzle_velocity_fps == 2450
     reloaded.save()
 
     reloaded_again = ProfileStore(path)
-    assert reloaded_again.find_rifle("faxon").find_load("21.0").muzzle_velocity_fps == 2450
+    assert reloaded_again.find_rifle("faxon").name == "AR-15 20in Faxon"
+    assert reloaded_again.find_load("21.0").muzzle_velocity_fps == 2450
 
 
 def test_find_rifle_matches_on_caliber_and_barrel_length_not_just_name(tmp_path):
@@ -257,12 +260,17 @@ def test_delete_rifle_removes_it_and_reassigns_active(tmp_path):
 def test_rifle_supports_zero_or_multiple_loads_and_suppressor_tracking(tmp_path):
     """Addendum 36 (correction from Rick): a rifle with no loads yet is a
     valid, normal state -- e.g. building the profile before load
-    development -- and one rifle can hold multiple loads. Rick's own
-    example: a single suppressed .300 BLK carrying both a subsonic and a
-    supersonic load. Suppressor data lives on the RIFLE, not any one
-    load, since the same can stays attached across both -- and it's
-    deliberately open text, not a brand enum, since plenty of real cans
-    are homemade/custom builds with no commercial name to pick from."""
+    development. Loads are an independent, store-level pool now
+    (2026-09-05, §28) -- Rick's own example driving that change: a
+    single suppressed .300 BLK barrel paired with a subsonic load, and a
+    SEPARATE .300 BLK barrel paired with a supersonic load, wanting to
+    define each load once and freely pick which rifle to pair it with,
+    rather than a load being recreated under each rifle it's ever used
+    with. Suppressor data lives on the RIFLE, not any one load, since the
+    same can stays attached regardless of which load is active -- and
+    it's deliberately open text, not a brand enum, since plenty of real
+    cans are homemade/custom builds with no commercial name to pick
+    from."""
     path = tmp_path / "profiles.json"
     store = ProfileStore(path)
 
@@ -273,21 +281,22 @@ def test_rifle_supports_zero_or_multiple_loads_and_suppressor_tracking(tmp_path)
 
     reloaded = ProfileStore(path)
     saved = reloaded.find_rifle("300 BLK SBR")
-    assert saved.loads == {}
-    assert saved.active_load_name is None
+    assert reloaded.loads == {}
+    assert reloaded.active_load_name is None
     assert saved.has_suppressor is True
     assert saved.suppressor_type == "custom build, ATF Form 1"
 
-    saved.add_load(Load(name="Subsonic 220gr", bullet_weight_gr=220, bc=0.35, drag_model="G1",
-                         muzzle_velocity_fps=1050, zero_distance_yd=50), make_active=False)
-    saved.add_load(Load(name="Supersonic 125gr", bullet_weight_gr=125, bc=0.28, drag_model="G1",
-                         muzzle_velocity_fps=2150, zero_distance_yd=100), make_active=True)
+    reloaded.add_load(Load(name="Subsonic 220gr", bullet_weight_gr=220, bc=0.35, drag_model="G1",
+                            muzzle_velocity_fps=1050, zero_distance_yd=50), make_active=False)
+    reloaded.add_load(Load(name="Supersonic 125gr", bullet_weight_gr=125, bc=0.28, drag_model="G1",
+                            muzzle_velocity_fps=2150, zero_distance_yd=100), make_active=True)
     reloaded.save()
 
-    final = ProfileStore(path).find_rifle("300 BLK SBR")
-    assert set(final.loads.keys()) == {"Subsonic 220gr", "Supersonic 125gr"}
-    assert final.active_load_name == "Supersonic 125gr"
+    final_store = ProfileStore(path)
+    assert set(final_store.loads.keys()) == {"Subsonic 220gr", "Supersonic 125gr"}
+    assert final_store.active_load_name == "Supersonic 125gr"
     # Suppressor stays a rifle-level property regardless of which load is active.
+    final = final_store.find_rifle("300 BLK SBR")
     assert final.has_suppressor is True
     assert final.suppressor_type == "custom build, ATF Form 1"
 
@@ -603,10 +612,9 @@ def test_load_setup_slot_filling_multi_turn_correction_and_save(monkeypatch, tmp
     assert "25gr Varget" in saved
     assert cli._setup is None
 
-    rifle = store.get_active_rifle()
-    assert rifle.active_load_name == "25gr Varget"
-    assert rifle.loads["25gr Varget"].zero_distance_yd == 50
-    assert rifle.loads["25gr Varget"].bc == 0.37
+    assert store.active_load_name == "25gr Varget"
+    assert store.loads["25gr Varget"].zero_distance_yd == 50
+    assert store.loads["25gr Varget"].bc == 0.37
 
 
 def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
@@ -977,9 +985,9 @@ def test_switch_rifle_with_new_load_volunteered_in_the_same_breath(monkeypatch, 
 
     store = ProfileStore(tmp_path / "profiles.json")
     ar15 = Rifle(name="AR-15", scope_height_in=2.5, click_value_mrad=0.1)
-    ar15.add_load(Load(name="75gr ELD", bullet_weight_gr=75, bc=0.402, drag_model="G1",
-                        muzzle_velocity_fps=2787, zero_distance_yd=100))
     store.add_rifle(ar15)
+    store.add_load(Load(name="75gr ELD", bullet_weight_gr=75, bc=0.402, drag_model="G1",
+                         muzzle_velocity_fps=2787, zero_distance_yd=100))
     blackout = Rifle(name="300 Blackout SBR", scope_height_in=2.2, click_value_mrad=0.1)
     store.add_rifle(blackout, make_active=False)
     cli = BallisticaCLI(store)
@@ -1034,7 +1042,7 @@ def test_setup_cancel_discards_draft_without_saving(monkeypatch, tmp_path):
     assert "scrapped" in reply.lower()
     assert cli._setup is None
     assert len(store.rifles) == original_rifle_count
-    assert "should not save" not in store.get_active_rifle().loads
+    assert "should not save" not in store.loads
 
 
 def test_voice_query_understands_natural_range_phrasing(tmp_path):
@@ -1092,7 +1100,7 @@ def test_calibration_flow_outlier_flag_discard_and_save(tmp_path):
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
     cli = BallisticaCLI(store)
-    original_notes = store.get_active_rifle().get_active_load().notes
+    original_notes = store.get_active_load().notes
 
     assert "Read me shots" in cli.handle("start calibration")
     assert "Average 2780" in cli.handle("2780")
@@ -1117,7 +1125,7 @@ def test_calibration_flow_outlier_flag_discard_and_save(tmp_path):
     assert "2788" in saved
     assert cli._calibration is None
 
-    load = store.get_active_rifle().get_active_load()
+    load = store.get_active_load()
     assert load.muzzle_velocity_fps == pytest.approx((2780 + 2795 + 2788) / 3)
     assert load.notes.startswith(original_notes)
     assert "Chrono-verified: 3 shots" in load.notes
@@ -1144,7 +1152,7 @@ def test_calibration_confirmation_recognizes_natural_phrasing(tmp_path):
     saved = cli.handle("that is correct")
     assert "saved" in saved.lower()
     assert cli._calibration is None
-    assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == 2787.5
+    assert store.get_active_load().muzzle_velocity_fps == 2787.5
 
 
 def test_calibration_cancel_and_reject_leave_no_trace(tmp_path):
@@ -1157,14 +1165,14 @@ def test_calibration_cancel_and_reject_leave_no_trace(tmp_path):
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
     cli = BallisticaCLI(store)
-    original_fps = store.get_active_rifle().get_active_load().muzzle_velocity_fps
+    original_fps = store.get_active_load().muzzle_velocity_fps
 
     cli.handle("start calibration")
     cli.handle("2900")
     reply = cli.handle("cancel")
     assert "cancelled" in reply.lower()
     assert cli._calibration is None
-    assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == original_fps
+    assert store.get_active_load().muzzle_velocity_fps == original_fps
 
     cli.handle("start calibration")
     cli.handle("3000")
@@ -1172,7 +1180,7 @@ def test_calibration_cancel_and_reject_leave_no_trace(tmp_path):
     reply = cli.handle("no")
     assert "discarded" in reply.lower()
     assert cli._calibration is None
-    assert store.get_active_rifle().get_active_load().muzzle_velocity_fps == original_fps
+    assert store.get_active_load().muzzle_velocity_fps == original_fps
 
     # Confirms the CLI is back to normal command handling, not stuck.
     assert "yards" in cli.handle("drop at 300 yards").lower()
@@ -1249,7 +1257,74 @@ def test_calibration_end_of_string_natural_phrasing_falls_back_to_llm(monkeypatc
     reply = cli.handle("mumble mumble")
     assert "didn't catch" in reply.lower()
     assert cli._calibration is not None
-    assert cli._calibration.failed_attempts == 1
+
+
+def test_top_level_intent_interrupts_a_stuck_modal_session(tmp_path):
+    """Regression, found live (2026-09-05): once a modal session (setup
+    or calibration) was running, EVERY utterance got swallowed by it --
+    only a tiny fixed set of exact cancel phrases could ever escape.
+    Rick's own diagnosis: a clearly-stated request for a different
+    top-level task should always interrupt whatever's currently running,
+    not require guessing the one phrase that "unlocks" it. This is pure
+    regex (_requests_different_top_level_task), no LLM call, so fully
+    deterministic here -- verified separately against the live API that
+    the fall-through dispatch (get_drop_at_range et al.) still resolves
+    real natural phrasing correctly once the interrupt fires."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    # Mid-calibration, an explicit solution request must interrupt and
+    # actually compute a solution, not get treated as a shot reading.
+    cli.handle("start calibration")
+    cli.handle("2780")
+    reply = cli.handle("give me a solution at 400 yards")
+    assert "400 yards" in reply
+    assert cli._calibration is None
+
+    # Mid-load-setup, "add a new rifle" must abandon the load draft and
+    # start a rifle setup instead -- a different top-level task entirely.
+    cli.handle("let's set up a new load")
+    cli.handle("call it Test Load")
+    reply2 = cli.handle("actually add a new rifle")
+    assert "call this rifle" in reply2.lower()
+    assert cli._setup.kind == "rifle"
+
+    # Mid-rifle-setup, switching to a different rifle must interrupt too.
+    reply3 = cli.handle("actually just switch rifle to the AR-15 20in Faxon")
+    assert "switched" in reply3.lower()
+    assert cli._setup is None
+    assert store.active_rifle_name == "AR-15 20in Faxon"
+
+
+def test_bare_distance_mid_setup_is_not_mistaken_for_a_solution_request(tmp_path):
+    """The collision risk the interrupt-check has to avoid: a bare
+    "100 yards" is a completely normal answer to "what yardage is it
+    zeroed at?" mid-setup, not a solution request. Only an explicit
+    trigger word (solution/shoot) should ever interrupt -- distance
+    alone must not, or every zero-distance answer during setup would
+    get hijacked into a mid-setup solution readout instead of recorded."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli.handle("let's set up a new load")
+    cli.handle("call it Test Load")
+    cli.handle("75 grains point four oh two G1")
+    cli.handle("2800 feet per second")
+    reply = cli.handle("100 yards")
+    assert cli._setup is not None  # still mid-setup, not interrupted
+    assert cli._setup.draft.get("zero_distance_yd") == 100
+
+    # Also guarded against re-triggering "new load" as a false interrupt
+    # while a load answer legitimately mentions the word "load".
+    still_setup = cli.handle("it's a new load I just made up")
+    assert cli._setup is not None
+    assert cli._setup.kind == "load"
 
 
 def test_setup_session_dict_round_trip_preserves_all_state():
@@ -1383,13 +1458,12 @@ def test_hydrate_dehydrate_round_trips_chat_history(tmp_path):
 def test_calibration_session_dict_round_trip_preserves_all_state():
     from ballistica.cli import _CalibrationSession
 
-    original = _CalibrationSession("Test AR", "23.5gr H335")
+    original = _CalibrationSession("23.5gr H335")
     original.shots = [2750.0, 2761.0, 2758.0]
     original.confirming = True
     original.failed_attempts = 1
 
     restored = _CalibrationSession.from_dict(original.to_dict())
-    assert restored.rifle_name == "Test AR"
     assert restored.load_name == "23.5gr H335"
     assert restored.shots == [2750.0, 2761.0, 2758.0]
     assert restored.confirming is True

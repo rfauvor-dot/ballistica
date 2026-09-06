@@ -2086,3 +2086,119 @@ both deletes now rather than queuing them; Build found the same root
 cause independently affected loads, fixed both together, and verified
 against the real API and a real account, not just new unit tests in
 isolation.
+
+---
+
+## 28. Decoupling loads from rifles -- scope (2026-09-05)
+
+**Raised:** Rick, live-voice test session, alongside a state-locking bug
+report. Loads/rounds are currently owned by a single rifle; Rick wants
+them as an independent, shared pool, freely paired with any rifle at
+use-time (concrete example: a 7in .300 Blackout barrel running subsonic
+and a 16in .300 Blackout barrel running supersonic, wanting to define a
+load once and pick either rifle to pair it with, rather than recreating
+it under each).
+
+**Current model, verified against the live schema and code, not assumed:**
+
+- Database (`db/001_multi_tenant_schema.sql` + `007_fix_circular_rls_recursion.sql`,
+  the live policy): `loads.rifle_id` is `not null references rifles(id) on
+  delete cascade`; uniqueness is `(rifle_id, name)`; `rifles.active_load_id`
+  is a column on the rifle itself. RLS ownership is `user_id = auth.uid()`
+  directly on both tables (`loads.user_id` already exists, denormalized
+  specifically to avoid a join) -- but migration 003 (fixed for circular-
+  RLS recursion in 007) added a SECOND, tighter check via `security
+  definer` functions: `_rifle_owned_by()` verifies `loads.rifle_id`
+  belongs to the same user, and `_load_owned_by_and_belongs_to_rifle()`
+  verifies a rifle's `active_load_id` actually belongs to *that specific
+  rifle*. That second layer is exactly what becomes moot once there's no
+  `rifle_id` to cross-check -- decoupling *removes* RLS complexity here,
+  it doesn't add any.
+- Python (`ballistica/profiles.py`): `Rifle.loads: dict[str, Load]` is a
+  literal nested field, not a reference. Every load-touching
+  `ProfileStore` method (`delete_load`, `update_load_velocity`,
+  `update_load_fields`) takes an explicit `rifle_query` parameter and
+  resolves the rifle first -- the rifle-scoping is baked into the call
+  signatures themselves, not just the schema.
+
+**Target model:** loads become a top-level, per-user pool
+(`ProfileStore.loads`, not nested in `Rifle`); `active_load_name` moves
+from a per-rifle pointer to a store-level one, the same treatment
+`active_rifle_name` already gets (stored independently via
+`conversation_state`, not owned by any single entity). A rifle and a
+load are two separate, independently-selected things combined only at
+the moment something needs both (computing a solution, starting a
+calibration).
+
+**What changes, by layer:**
+
+- **DB schema** (new migration): drop `loads.rifle_id` and its FK/cascade
+  entirely; `rifles.active_load_id` goes away, replaced by an
+  `active_load_id` in `conversation_state` (mirroring the active-rifle
+  pattern already in place); uniqueness becomes `(user_id, name)`; the
+  `loads` RLS policy simplifies back toward the original `auth.uid() =
+  user_id` since migration 003's cross-reference check has nothing left
+  to check. A real migration on a live table, but a *removal* of a
+  constraint, not a restructuring -- no data destroyed, existing loads
+  just stop being pinned to one rifle.
+- **`profiles.py`**: load-handling methods move from `Rifle`/rifle-scoped
+  `ProfileStore` methods to plain `ProfileStore` methods with no
+  `rifle_query` parameter.
+- **`supabase_store.py`**: `load()`/`save()` stop nesting fetched loads
+  into each `Rifle` object; loads become a sibling top-level collection.
+- **`api.py`**: the three existing `/v2/rifles/{rifle_name}/loads...`
+  endpoints become top-level `/v2/loads...` endpoints; `RifleDetail`
+  stops embedding a nested loads list.
+- **`cli.py`**: `solver()` and every load lookup changes from
+  `rifle.get_active_load()` to `store.get_active_load()` -- mechanical,
+  but touches most of the file's command handlers.
+- **`import_export.py`**: CSV format likely unchanged (one row = one
+  rifle+load pairing is still how people naturally log range data), but
+  import logic needs to deduplicate a load repeated across multiple
+  rifle rows instead of creating a separate nested copy per rifle.
+- **Web UI**: rifle/load picker currently assumes "pick a rifle, see its
+  loads" -- becomes two independent pickers, combined at use-time. The
+  one place this is a real design change, not just mechanical.
+- **Full test suite**: every load-related test currently constructs
+  `Rifle(...).add_load(...)` -- all needs rewriting to the new shape.
+
+**Existing live data:** nothing lost. Dropping `rifle_id`'s constraint
+just removes the forced pairing -- current loads keep every field (BC,
+velocity, powder, etc.) and become part of the pool immediately.
+
+**Recommended sequencing** (touches live account data, not a single
+big-bang migration): (1) schema migration + `profiles.py`/
+`supabase_store.py` model change first, verified against a disposable
+test account, no user-facing change yet; (2) `api.py` + `cli.py`
+call-site updates, full suite passing; (3) web UI picker redesign last,
+since it's the part with real UX decisions, not just plumbing.
+
+**Open questions for Rick, not decided here:**
+- ~~Should `contribute_load()` fire at load creation still, or move to
+  "whenever a rifle+load pair is actually used together"?~~ Resolved
+  with a logged default per the standing autonomy directive rather than
+  left open -- see BACKLOG.md's "Load/rifle decoupling (§28)" entry:
+  contribution at save time uses the user's currently-active rifle
+  (best-effort, skipped if none is active), not moved to use-time.
+- Web UI presentation of two independent pickers -- side-by-side, one
+  full-screen at a time, something else. Still genuinely open, still
+  reserved for Rick (BACKLOG.md's same entry, Decision 2) -- not
+  defaulted.
+
+**Status:** Scoped 2026-09-05. Phase 1 (schema + Python model) and
+phase 2 (API + CLI + import/export call sites) both code-complete
+2026-09-05 -- `ballistica/profiles.py`, `cli.py`, `import_export.py`,
+`api.py`, and `supabase_store.py` all rewritten against the independent
+pool, full non-Supabase test suite green. The one remaining piece of
+phase 1 is `db/010_decouple_loads_from_rifles.sql`, written but NOT YET
+RUN -- it needs Supabase SQL Editor access this codebase's own
+REST/anon credentials don't have, so Rick has to run it himself before
+`SupabaseProfileStore`'s rewritten load()/save() are live against real
+data (`tests/test_tenant_isolation.py`'s Supabase-backed tests will
+keep failing against the unmigrated schema until then -- expected, not
+a regression). Phase 3 (web UI redesign) not started -- blocked on
+Rick's Decision 2 above, and also on the migration actually running.
+
+**Owning lenses:** Build (full migration); Rick decides the remaining
+open question above before phase 3 (web UI) starts, and needs to run
+db/010 himself in the Supabase SQL Editor.

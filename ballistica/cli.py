@@ -253,8 +253,12 @@ class _CalibrationSession:
     silent, hard-to-notice data corruption, not just an annoyance). Same
     to_dict()/from_dict() round-trip purpose as _SetupSession above."""
 
-    def __init__(self, rifle_name: str, load_name: str) -> None:
-        self.rifle_name = rifle_name
+    def __init__(self, load_name: str) -> None:
+        # No rifle_name anymore (2026-09-05, §28): calibrating a load's
+        # muzzle velocity is a property of the load/ammo itself, not of
+        # whatever rifle happens to be active -- it never actually
+        # needed a rifle to update the velocity, that was only a
+        # leftover from loads being nested under a rifle before.
         self.load_name = load_name
         self.shots: list[float] = []
         self.confirming = False
@@ -263,14 +267,14 @@ class _CalibrationSession:
 
     def to_dict(self) -> dict:
         return {
-            "rifle_name": self.rifle_name, "load_name": self.load_name, "shots": self.shots,
+            "load_name": self.load_name, "shots": self.shots,
             "confirming": self.confirming, "failed_attempts": self.failed_attempts,
             "last_activity": self.last_activity,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "_CalibrationSession":
-        session = cls(data["rifle_name"], data["load_name"])
+        session = cls(data["load_name"])
         session.shots = data["shots"]
         session.confirming = data["confirming"]
         session.failed_attempts = data["failed_attempts"]
@@ -302,21 +306,21 @@ def bootstrap_default_profile(store: ProfileStore) -> None:
         twist_rate="1:7",
         click_value_mrad=0.1,
     )
-    rifle.add_load(Load(
+    store.add_rifle(rifle)
+    store.add_load(Load(
         name="21.0gr H335", bullet_weight_gr=77, bc=0.362, drag_model="G1",
         muzzle_velocity_fps=2422, zero_distance_yd=36,
         bullet_type="77gr Sierra MatchKing (SMK)", powder="H335",
         powder_charge_gr=21.0,
         notes="Sierra book BC (G1, 1700-3000fps band); velocity is a book estimate pending chrono data",
     ), make_active=False)
-    rifle.add_load(Load(
+    store.add_load(Load(
         name="23.5gr H335", bullet_weight_gr=77, bc=0.362, drag_model="G1",
         muzzle_velocity_fps=2766, zero_distance_yd=36,
         bullet_type="77gr Sierra MatchKing (SMK)", powder="H335",
         powder_charge_gr=23.5,
         notes="Sierra book BC (G1, 1700-3000fps band); pending pressure verification",
     ), make_active=True)
-    store.add_rifle(rifle)
     store.save()
 
 
@@ -340,7 +344,7 @@ class BallisticaCLI:
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
-        load = rifle.get_active_load()
+        load = self.store.get_active_load()
         solver = TrajectorySolver(
             muzzle_velocity_fps=load.muzzle_velocity_fps,
             bc=load.bc,
@@ -366,6 +370,37 @@ class BallisticaCLI:
         if self._pending_delete is not None and now - self._pending_delete_at > _SESSION_STALE_SECONDS:
             self._pending_delete = None
 
+    def _requests_different_top_level_task(self, low: str) -> bool:
+        """Whether `low` unambiguously asks for a different top-level task
+        than whatever modal session is currently running -- only ever
+        checked while a modal session is active (see handle()), so this
+        never runs redundantly outside of one.
+
+        Deliberately narrower than it could be, favoring a missed
+        interrupt over a false one: a bare "100 yards" is a completely
+        normal answer to "what yardage is it zeroed at?" mid-setup, NOT a
+        solution request, so a distance alone never counts here -- only
+        an explicit trigger word (solution/shoot) does. Same reasoning
+        for "new rifle"/"new load": guarded against firing when we're
+        already in that exact kind of setup, since "it's a new load I
+        just made up, call it Test Load" is a real, plausible answer
+        while naming a load, not a request to abandon the current draft
+        and start another blank one."""
+        already_rifle_setup = self._setup is not None and self._setup.kind == "rifle"
+        already_load_setup = self._setup is not None and self._setup.kind == "load"
+
+        if not already_rifle_setup and re.search(r"\b(?:new|add)\b.*\brifle\b", low):
+            return True
+        if not already_load_setup and re.search(r"\b(?:new|add|set ?up)\b.*\b(load|round)\b", low):
+            return True
+        if self._calibration is None and (re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low)):
+            return True
+        if re.search(r"\bswitch\b", low):
+            return True
+        if re.search(r"\b(solution|shoot)\b", low):
+            return True
+        return False
+
     def handle(self, text: str) -> str:
         t = text.strip()
         if not t:
@@ -374,19 +409,38 @@ class BallisticaCLI:
 
         self._expire_stale_sessions()
 
-        # A guided load/rifle setup interview is modal: once it's running,
-        # every utterance is directed at it (a field value, a correction,
-        # or a way out) until it's confirmed or cancelled -- including
-        # "quit"/"exit", which cancel the interview here rather than the
-        # whole session.
-        if self._setup is not None:
+        # Top-level intent switching (2026-09-05): confirmed live,
+        # repeatedly, that once a modal session (setup/calibration)
+        # started, EVERY utterance got swallowed by it -- only a tiny
+        # fixed set of exact cancel phrases ("cancel", "never mind",
+        # "quit"...) could ever escape it. A clearly-stated request for a
+        # different top-level task ("add a new rifle" while mid-load-
+        # setup, "give me a solution" while mid-calibration) got treated
+        # as a field answer or a shot reading instead of what it actually
+        # was -- Rick's own read on this: it's a state-machine gap, not a
+        # vocabulary gap, and the fix is checking for a mode switch FIRST,
+        # before committing the utterance to whatever's currently running.
+        # Clearing state here and falling through to the normal (non-
+        # modal) handling below reuses every existing dispatch path
+        # (start_rifle_setup, start_load_setup, switch_rifle, drop-at-
+        # range, calibration) exactly as-is -- nothing about how those
+        # commands themselves work changes, only when they're allowed to
+        # fire.
+        if (self._setup is not None or self._calibration is not None) and self._requests_different_top_level_task(low):
+            self._setup = None
+            self._calibration = None
+        elif self._setup is not None:
+            # A guided load/rifle setup interview is modal: once it's
+            # running, every utterance is directed at it (a field value, a
+            # correction, or a way out) until it's confirmed or cancelled
+            # -- including "quit"/"exit", which cancel the interview here
+            # rather than the whole session.
             self._setup.last_activity = time.time()
             return self._handle_setup_turn(t)
-
-        # Same modal pattern as setup, above: while a calibration is
-        # running, every utterance is a shot reading, a control phrase
-        # ("average", "discard that", "end calibration"), or a way out.
-        if self._calibration is not None:
+        elif self._calibration is not None:
+            # Same modal pattern as setup, above: while a calibration is
+            # running, every utterance is a shot reading, a control phrase
+            # ("average", "discard that", "end calibration"), or a way out.
             self._calibration.last_activity = time.time()
             return self._handle_calibration_turn(t)
 
@@ -415,8 +469,10 @@ class BallisticaCLI:
         if low == "list rifles":
             return "\n".join(self.store.rifles.keys()) or "No rifles configured."
         if low == "list loads":
-            rifle = self.store.get_active_rifle()
-            return "\n".join(rifle.loads.keys()) or "No loads configured."
+            # All loads in the independent pool (2026-09-05, §28) --
+            # no longer scoped to the active rifle, since a load isn't
+            # owned by any one rifle anymore.
+            return "\n".join(self.store.loads.keys()) or "No loads configured."
 
         m = re.search(r"drop at ([\d.]+)\s*(?:yd|yard|yards)", low)
         if m:
@@ -654,7 +710,10 @@ class BallisticaCLI:
             return str(exc)
         self._pending_delete = rifle.name
         self._pending_delete_at = time.time()
-        return f"Delete the {rifle.name}, and all its loads? This can't be undone."
+        # Loads are independent now (2026-09-05, §28) -- deleting a
+        # rifle never touches them, so the confirmation shouldn't imply
+        # it does.
+        return f"Delete the {rifle.name}? This can't be undone."
 
     def _handle_delete_confirm(self, text: str) -> str:
         low = text.lower().strip()
@@ -768,10 +827,16 @@ class BallisticaCLI:
         kind = self._setup.kind
         try:
             if kind == "load":
+                # Independent of any rifle (2026-09-05, §28) -- no
+                # active rifle required to exist just to log a new
+                # load. Previously this required an active rifle since
+                # the load got nested inside it; that also meant there
+                # was no way to add a rifle's first load via a fresh
+                # setup unless some other rifle happened to already be
+                # active, which is exactly backwards.
                 valid = {f.name for f in dataclasses.fields(Load)}
                 load = Load(**{k: v for k, v in d.items() if k in valid})
-                rifle = self.store.get_active_rifle()
-                rifle.add_load(load, make_active=True)
+                self.store.add_load(load, make_active=True)
                 self.store.save()
                 self._setup = None
                 return f"Saved -- you're on the {load.name} now."
@@ -875,10 +940,10 @@ class BallisticaCLI:
 
     def _start_calibration(self) -> str:
         try:
-            _, rifle, load = self.solver()
+            load = self.store.get_active_load()
         except ValueError as exc:
             return str(exc)
-        self._calibration = _CalibrationSession(rifle.name, load.name)
+        self._calibration = _CalibrationSession(load.name)
         return (f"Calibration started, {load.name}. Book velocity {load.muzzle_velocity_fps:.0f}. "
                 f"Read me shots.")
 
@@ -910,9 +975,7 @@ class BallisticaCLI:
     def _finalize_calibration(self) -> str:
         avg, spread = self._calibration_stats()
         n = len(self._calibration.shots)
-        load = self.store.update_load_velocity(
-            self._calibration.rifle_name, self._calibration.load_name, avg,
-        )
+        load = self.store.update_load_velocity(self._calibration.load_name, avg)
         chrono_note = f"Chrono-verified: {n} shots, avg {avg:.0f} fps, spread {spread:.0f} fps."
         load.notes = f"{load.notes} {chrono_note}".strip() if load.notes else chrono_note
         self.store.save()

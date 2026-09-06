@@ -15,11 +15,15 @@ not just something this code promises to filter correctly on its own.
 
 Storage mapping:
 - rifles/loads: real tables, one row each, user_id-scoped by RLS.
-- active_rifle_name: NOT a rifles-table column (there isn't one) --
-  stored in conversation_state.state_json, since "which rifle is
-  currently selected" is per-user session preference, not identity
-  data, and that table already exists for exactly this kind of state
-  (voice conversation state lands there too, in a later phase).
+  Independent of each other since 2026-09-05 (MULTI_TENANCY_DESIGN.md
+  §28, migration db/010) -- loads no longer carry a rifle_id at all,
+  same as the in-memory model above them.
+- active_rifle_name / active_load_name: NOT columns on rifles/loads
+  (there isn't one for either) -- both stored in
+  conversation_state.state_json, since "which one is currently
+  selected" is per-user session preference, not identity data, and
+  that table already exists for exactly this kind of state (voice
+  conversation state lands there too, in a later phase).
 
 save() does a full delete-and-reinsert of the user's rifles/loads on
 every call, matching the flat-file store's own save() semantics
@@ -56,6 +60,8 @@ class SupabaseProfileStore(ProfileStore):
         self.access_token = access_token
         self.rifles: dict[str, Rifle] = {}
         self.active_rifle_name: str | None = None
+        self.loads: dict[str, Load] = {}
+        self.active_load_name: str | None = None
         self.load()
 
     def _headers(self) -> dict:
@@ -87,85 +93,61 @@ class SupabaseProfileStore(ProfileStore):
             "GET", "loads", params={"user_id": f"eq.{self.user_id}", "select": "*"},
         ).json()
 
-        loads_by_rifle_id: dict[str, dict[str, Load]] = {}
-        load_id_to_name: dict[str, str] = {}
-        for row in load_rows:
-            load_obj = Load(**{k: row[k] for k in _LOAD_COLUMNS})
-            loads_by_rifle_id.setdefault(row["rifle_id"], {})[load_obj.name] = load_obj
-            load_id_to_name[row["id"]] = load_obj.name
-
-        self.rifles = {}
-        for row in rifle_rows:
-            rifle_loads = loads_by_rifle_id.get(row["id"], {})
-            active_load_name = load_id_to_name.get(row["active_load_id"])
-            rifle_obj = Rifle(
-                **{k: row[k] for k in _RIFLE_COLUMNS},
-                loads=rifle_loads,
-                active_load_name=active_load_name,
-            )
-            self.rifles[rifle_obj.name] = rifle_obj
+        self.rifles = {row["name"]: Rifle(**{k: row[k] for k in _RIFLE_COLUMNS}) for row in rifle_rows}
+        # id-keyed too, briefly, so active_rifle_id/active_load_id (both
+        # stored in conversation_state, see class docstring) can resolve
+        # back to a name below without a second round-trip.
+        rifle_name_by_id = {row["id"]: row["name"] for row in rifle_rows}
+        self.loads = {row["name"]: Load(**{k: row[k] for k in _LOAD_COLUMNS}) for row in load_rows}
+        load_name_by_id = {row["id"]: row["name"] for row in load_rows}
 
         state = self.get_conversation_state()
-        active_rifle_id = state.get("active_rifle_id")
-        self.active_rifle_name = None
-        if active_rifle_id:
-            for row in rifle_rows:
-                if row["id"] == active_rifle_id:
-                    self.active_rifle_name = row["name"]
-                    break
+        self.active_rifle_name = rifle_name_by_id.get(state.get("active_rifle_id"))
         if self.active_rifle_name is None and self.rifles:
             # No stored preference (or it pointed at a rifle that's gone)
             # -- fall back to any rifle, matching add_rifle()'s own
             # "make active if nothing else is" default.
             self.active_rifle_name = next(iter(self.rifles))
+        self.active_load_name = load_name_by_id.get(state.get("active_load_id"))
+        if self.active_load_name is None and self.loads:
+            self.active_load_name = next(iter(self.loads))
 
     def save(self) -> None:
+        # Rifles and loads are independent (2026-09-05, §28) -- each
+        # gets its own full delete-and-reinsert, with no id relationship
+        # between them to thread through, and active_rifle_id/
+        # active_load_id both land in conversation_state (neither is a
+        # column on rifles/loads anymore).
         self._rest("DELETE", "rifles", params={"user_id": f"eq.{self.user_id}"})
+        self._rest("DELETE", "loads", params={"user_id": f"eq.{self.user_id}"})
 
-        if not self.rifles:
-            self.set_conversation_state(active_rifle_id=None)
-            return
+        rifle_id_by_name = {}
+        if self.rifles:
+            rifle_payload = [
+                {**{k: getattr(rifle, k) for k in _RIFLE_COLUMNS}, "user_id": self.user_id}
+                for rifle in self.rifles.values()
+            ]
+            inserted_rifles = self._rest(
+                "POST", "rifles", json=rifle_payload,
+                headers={"Prefer": "return=representation"},
+            ).json()
+            rifle_id_by_name = {row["name"]: row["id"] for row in inserted_rifles}
 
-        rifle_payload = [
-            {**{k: getattr(rifle, k) for k in _RIFLE_COLUMNS}, "user_id": self.user_id}
-            for rifle in self.rifles.values()
-        ]
-        inserted_rifles = self._rest(
-            "POST", "rifles", json=rifle_payload,
-            headers={"Prefer": "return=representation"},
-        ).json()
-        rifle_id_by_name = {row["name"]: row["id"] for row in inserted_rifles}
-
-        load_payload = []
-        for rifle in self.rifles.values():
-            rifle_id = rifle_id_by_name[rifle.name]
-            for load_obj in rifle.loads.values():
-                load_payload.append({
-                    **{k: getattr(load_obj, k) for k in _LOAD_COLUMNS},
-                    "rifle_id": rifle_id, "user_id": self.user_id,
-                })
-        load_id_by_rifle_and_name = {}
-        if load_payload:
+        load_id_by_name = {}
+        if self.loads:
+            load_payload = [
+                {**{k: getattr(load_obj, k) for k in _LOAD_COLUMNS}, "user_id": self.user_id}
+                for load_obj in self.loads.values()
+            ]
             inserted_loads = self._rest(
                 "POST", "loads", json=load_payload,
                 headers={"Prefer": "return=representation"},
             ).json()
-            for row in inserted_loads:
-                load_id_by_rifle_and_name[(row["rifle_id"], row["name"])] = row["id"]
-
-        for rifle in self.rifles.values():
-            if rifle.active_load_name is None:
-                continue
-            rifle_id = rifle_id_by_name[rifle.name]
-            load_id = load_id_by_rifle_and_name.get((rifle_id, rifle.active_load_name))
-            if load_id:
-                self._rest(
-                    "PATCH", "rifles", params={"id": f"eq.{rifle_id}"},
-                    json={"active_load_id": load_id},
-                )
+            load_id_by_name = {row["name"]: row["id"] for row in inserted_loads}
 
         active_rifle_id = rifle_id_by_name.get(self.active_rifle_name) if self.active_rifle_name else None
-        self.set_conversation_state(active_rifle_id=active_rifle_id)
+        active_load_id = load_id_by_name.get(self.active_load_name) if self.active_load_name else None
+        self.set_conversation_state(active_rifle_id=active_rifle_id, active_load_id=active_load_id)
 
     def get_conversation_state(self) -> dict:
         """Public: also used directly by api.py's /v2/voice/query to

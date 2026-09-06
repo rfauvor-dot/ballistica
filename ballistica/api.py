@@ -292,7 +292,9 @@ class RifleIn(BaseModel):
     suppressor_type: str = Field("", description="Open text -- a real brand if there is one, or a "
                                                    "generic/custom description if not. Tied to the "
                                                    "rifle, not any one load.")
-    loads: list[LoadIn] = []
+    # No embedded loads field anymore (2026-09-05, §28) -- loads are an
+    # independent pool, created via POST /v2/loads, not nested under a
+    # rifle at creation time.
 
 
 class RifleUpdate(BaseModel):
@@ -322,8 +324,6 @@ class RifleUpdate(BaseModel):
 
 class RifleSummary(BaseModel):
     name: str
-    active_load_name: str | None
-    load_count: int
 
 
 class RifleDetail(BaseModel):
@@ -344,8 +344,15 @@ class RifleDetail(BaseModel):
     dot_size_moa: float | None
     has_suppressor: bool
     suppressor_type: str
-    active_load_name: str | None
-    loads: list[LoadOut]
+    # No active_load_name/loads anymore (2026-09-05, §28) -- a rifle
+    # doesn't own or reference loads at all; see GET /v2/loads and
+    # GET /v2/status for the independent load pool and the current
+    # active load, respectively.
+
+
+class LoadSummary(BaseModel):
+    name: str
+    active: bool
 
 
 class CalcRequest(BaseModel):
@@ -396,13 +403,14 @@ class VoiceSpeakIn(BaseModel):
                                 "not a guess, don't second-guess it without asking first.",
     )
     speed: float = Field(
-        0.75, ge=0.25, le=4.0,
+        0.8, ge=0.25, le=4.0,
         description="OpenAI TTS speed multiplier. Slowed once already (1.0 -> 0.9) after live "
                     "feedback that full-speed replies were hard to follow at the range; slowed "
-                    "again here (2026-09-05) after live feedback that 0.9 was still fast enough to "
-                    "clip whole words out of numeric readouts (drop/MOA/MRAD values), not just "
-                    "'a bit quick' -- this needs another live-fire round to confirm 0.75 actually "
-                    "lands, not assumed correct just because it's slower.",
+                    "again (0.9 -> 0.75) after live feedback that 0.9 still clipped whole words out "
+                    "of numeric readouts -- 0.75 overcorrected (confirmed live 2026-09-05), pulled "
+                    "back about 35% of the way toward 0.9 per Rick's own read on the direction. "
+                    "Still needs a live-fire round to confirm 0.8 actually lands -- three rounds of "
+                    "live tuning on this number so far, don't assume this one's the last.",
     )
 
 
@@ -443,8 +451,7 @@ def _rifle_to_detail(rifle: Rifle) -> RifleDetail:
         magnification=rifle.magnification, objective_lens_mm=rifle.objective_lens_mm,
         focal_plane=rifle.focal_plane, reticle_type=rifle.reticle_type,
         dot_size_moa=rifle.dot_size_moa, has_suppressor=rifle.has_suppressor,
-        suppressor_type=rifle.suppressor_type, active_load_name=rifle.active_load_name,
-        loads=[_load_to_out(load) for load in rifle.loads.values()],
+        suppressor_type=rifle.suppressor_type,
     )
 
 
@@ -810,31 +817,33 @@ async def v2_import_commit(
     except (ImportError_, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    results, touched = apply_mapping(rows, mapping_dict, existing_rifles=user_store.rifles)
-    user_store.rifles.update(touched)  # new rifles weren't in user_store.rifles until now -- save()
-                                        # persists the FULL set it finds there, so this must happen
-                                        # before save(), not just rely on in-place mutation of
-                                        # existing rifle objects (which alone would lose new ones).
-    if touched:
+    results, touched_rifles, touched_loads = apply_mapping(
+        rows, mapping_dict, existing_rifles=user_store.rifles, existing_loads=user_store.loads,
+    )
+    # New rifles/loads weren't in user_store.rifles/.loads until now --
+    # save() persists the FULL set it finds there, so this must happen
+    # before save(), not just rely on in-place mutation of existing
+    # objects (which alone would lose new ones).
+    user_store.rifles.update(touched_rifles)
+    user_store.loads.update(touched_loads)
+    if touched_rifles or touched_loads:
         user_store.save()
         # Same automatic, non-optional contribution as the single-load
         # endpoints -- imported loads are still loads a user "saved or
         # entered into the app" (waiver.py Section 4), not a separate
-        # category exempt from it.
-        for r in results:
-            if r.status == "failed":
-                continue
-            rifle = touched.get(r.rifle_name)
-            load = rifle.loads.get(r.load_name) if rifle else None
-            if rifle and load:
-                contribute_load(rifle, load, user_store.access_token)
+        # category exempt from it. Rifle-spec context is best-effort
+        # only (see _contribute_load_best_effort) -- an imported
+        # load-only row has no rifle in it at all now that the two are
+        # independent (2026-09-05, §28).
+        for load in touched_loads.values():
+            _contribute_load_best_effort(user_store, load)
 
     return {
         "results": [
             {"row": r.row_number, "rifle": r.rifle_name, "load": r.load_name, "status": r.status, "detail": r.detail}
             for r in results
         ],
-        "created_or_updated": len(touched),
+        "created_or_updated": len(touched_rifles) + len(touched_loads),
         "failed": sum(1 for r in results if r.status == "failed"),
     }
 
@@ -846,7 +855,7 @@ def v2_export_rifles(request: Request, user_store: SupabaseProfileStore = Depend
     column shape /v2/import expects -- available any time (not gated to
     right before account deletion), and also the thing the deletion
     flow itself prompts for right before the delete button (index.html)."""
-    csv_bytes = generate_export_csv(list(user_store.rifles.values()))
+    csv_bytes = generate_export_csv(list(user_store.rifles.values()), list(user_store.loads.values()))
     return Response(
         content=csv_bytes, media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=ballistica-export.csv"},
@@ -903,10 +912,7 @@ def v2_delete_account(request: Request, auth: tuple[str, str] = Depends(_verify_
 
 @app.get("/v2/rifles", response_model=list[RifleSummary])
 def v2_list_rifles(user_store: SupabaseProfileStore = Depends(_get_user_store)):
-    return [
-        RifleSummary(name=r.name, active_load_name=r.active_load_name, load_count=len(r.loads))
-        for r in user_store.rifles.values()
-    ]
+    return [RifleSummary(name=r.name) for r in user_store.rifles.values()]
 
 
 @app.post("/v2/rifles", response_model=RifleDetail)
@@ -925,14 +931,10 @@ def v2_create_rifle(payload: RifleIn, user_store: SupabaseProfileStore = Depends
             dot_size_moa=payload.dot_size_moa, has_suppressor=payload.has_suppressor,
             suppressor_type=payload.suppressor_type,
         )
-        for i, load_in in enumerate(payload.loads):
-            rifle.add_load(Load(**load_in.model_dump()), make_active=(i == 0))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_msg(exc))
     user_store.add_rifle(rifle)
     user_store.save()
-    for load in rifle.loads.values():
-        contribute_load(rifle, load, user_store.access_token)
     return _rifle_to_detail(rifle)
 
 
@@ -1042,64 +1044,85 @@ def v2_update_rifle(
     return _rifle_to_detail(rifle)
 
 
-@app.post("/v2/rifles/{rifle_name}/loads", response_model=LoadOut)
-def v2_add_load(
-    rifle_name: str, payload: LoadIn, user_store: SupabaseProfileStore = Depends(_get_user_store),
-):
+def _contribute_load_best_effort(user_store: SupabaseProfileStore, load: Load) -> None:
+    """Loads are an independent pool now (2026-09-05, §28) -- there's no
+    rifle inherently paired with a load at save time anymore, so
+    contribution uses whichever rifle is CURRENTLY ACTIVE for this user
+    as the rifle-spec context (caliber/barrel/twist), best-effort, same
+    as contribute_load() itself already is. If no rifle is active at
+    all, the contribution is skipped rather than sending a payload with
+    made-up/blank rifle specs. Logged as a resolved default in
+    BACKLOG.md §28, not a silent judgment call -- the alternative
+    (moving contribution to whenever a rifle+load pair is actually used
+    together, e.g. a solve or calibration) is a bigger change deferred
+    for now."""
     try:
-        rifle = user_store.find_rifle(rifle_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=_msg(exc))
+        rifle = user_store.get_active_rifle()
+    except ValueError:
+        return
+    contribute_load(rifle, load, user_store.access_token)
+
+
+@app.get("/v2/loads", response_model=list[LoadSummary])
+def v2_list_loads(user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    return [
+        LoadSummary(name=load.name, active=(load.name == user_store.active_load_name))
+        for load in user_store.loads.values()
+    ]
+
+
+@app.post("/v2/loads", response_model=LoadOut)
+def v2_add_load(payload: LoadIn, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    if payload.name in user_store.loads:
+        raise HTTPException(status_code=409, detail=f"Load '{payload.name}' already exists")
     try:
         load = Load(**payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_msg(exc))
-    rifle.add_load(load)
+    user_store.add_load(load)
     user_store.save()
     # Every saved load is automatically anonymized and contributed to
     # the aggregate pool -- standard, non-optional, per waiver.py
     # Section 4. Best-effort: never blocks this endpoint's own success.
-    contribute_load(rifle, load, user_store.access_token)
+    _contribute_load_best_effort(user_store, load)
     return _load_to_out(load)
 
 
-@app.put("/v2/rifles/{rifle_name}/loads/{load_name}", response_model=LoadOut)
+@app.put("/v2/loads/{load_name}", response_model=LoadOut)
 def v2_update_load(
-    rifle_name: str, load_name: str, payload: LoadIn,
-    user_store: SupabaseProfileStore = Depends(_get_user_store),
+    load_name: str, payload: LoadIn, user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
     """Updates an existing load in place, including a real rename if
     payload.name differs from {load_name} in the URL -- the load-level
     counterpart to v2_update_rifle's rename fix (2026-08-30), same root
-    cause: rifle.loads is keyed by name, so a rename has to re-key the
-    dict, not just overwrite a field. Distinct from POST .../loads
-    (v2_add_load), which is for creating a genuinely new load -- the
-    web app tracks which one applies the same way it now tracks rifles
-    (an explicit "creating new" flag, not a name comparison)."""
+    cause: ProfileStore.loads is keyed by name, so a rename has to
+    re-key the dict, not just overwrite a field. Distinct from POST
+    /v2/loads (v2_add_load), which is for creating a genuinely new load
+    -- the web app tracks which one applies the same way it already
+    tracks rifles (an explicit "creating new" flag, not a name
+    comparison). No rifle_name in the path anymore (2026-09-05, §28)."""
+    if payload.name != load_name and payload.name in user_store.loads:
+        raise HTTPException(status_code=409, detail=f"A load named '{payload.name}' already exists")
     try:
-        rifle = user_store.find_rifle(rifle_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=_msg(exc))
-    if payload.name != load_name and payload.name in rifle.loads:
-        raise HTTPException(status_code=409, detail=f"A load named '{payload.name}' already exists on this rifle")
-    try:
-        load = user_store.update_load_fields(rifle_name, load_name, **payload.model_dump())
+        load = user_store.update_load_fields(load_name, **payload.model_dump())
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=_msg(exc))
     user_store.save()
-    contribute_load(rifle, load, user_store.access_token)
+    _contribute_load_best_effort(user_store, load)
     return _load_to_out(load)
 
 
-@app.delete("/v2/rifles/{rifle_name}/loads/{load_name}")
-def v2_delete_load(rifle_name: str, load_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
-    """Removes a single load without touching the rifle or its other
-    loads -- previously the only way to remove one bad/duplicate load
-    was deleting the whole rifle and recreating it from scratch (real,
-    documented gap, COMMAND_GUIDE.md's own "Known limitations"
-    section, closed 2026-08-30)."""
+@app.delete("/v2/loads/{load_name}")
+def v2_delete_load(load_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    """Removes a single load from the independent pool -- previously the
+    only way to remove one bad/duplicate load was deleting the whole
+    rifle and recreating it from scratch (real, documented gap,
+    COMMAND_GUIDE.md's own "Known limitations" section, closed
+    2026-08-30). No rifle_name in the path anymore (2026-09-05, §28) --
+    a load isn't scoped to one rifle, so deleting it removes it
+    everywhere, not just "off" one rifle."""
     try:
-        load = user_store.delete_load(rifle_name, load_name)
+        load = user_store.delete_load(load_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=_msg(exc))
     user_store.save()
@@ -1113,8 +1136,8 @@ def v2_status(user_store: SupabaseProfileStore = Depends(_get_user_store)):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=_msg(exc))
     active_load = None
-    if rifle.active_load_name is not None and rifle.active_load_name in rifle.loads:
-        active_load = _load_to_out(rifle.get_active_load())
+    if user_store.active_load_name is not None and user_store.active_load_name in user_store.loads:
+        active_load = _load_to_out(user_store.get_active_load())
     return {"rifle": _rifle_to_detail(rifle), "active_load": active_load}
 
 
@@ -1147,9 +1170,12 @@ def v2_conditions_from_location(
 
 
 def _v2_resolve(user_store: SupabaseProfileStore, rifle_query: str | None, load_query: str | None) -> tuple[Rifle, Load]:
+    """Rifle and load are resolved independently now (2026-09-05, §28)
+    -- a solve just needs one of each, not a load that's nested under
+    the resolved rifle."""
     try:
         rifle = user_store.find_rifle(rifle_query) if rifle_query else user_store.get_active_rifle()
-        load = rifle.find_load(load_query) if load_query else rifle.get_active_load()
+        load = user_store.find_load(load_query) if load_query else user_store.get_active_load()
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=_msg(exc))
     return rifle, load

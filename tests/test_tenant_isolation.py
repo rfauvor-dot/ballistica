@@ -295,7 +295,7 @@ def rifle_owned_by_a_via_api(user_a, api_client):
     _, token_a = user_a
     resp = api_client.post(
         "/v2/rifles", headers={"Authorization": f"Bearer {token_a}"},
-        json={"name": "API Isolation Test Rifle", "scope_height_in": 2.0, "loads": []},
+        json={"name": "API Isolation Test Rifle", "scope_height_in": 2.0},
     )
     assert resp.status_code == 200
     yield resp.json()
@@ -325,7 +325,7 @@ def test_api_persists_suppressor_fields_on_the_rifle(user_a, api_client):
     try:
         r = api_client.post("/v2/rifles", headers=headers, json={
             "name": "Suppressed 45 API Test", "scope_height_in": 2.0, "click_value_mrad": 0.1,
-            "has_suppressor": True, "suppressor_type": "unclear -- inherited, no markings", "loads": [],
+            "has_suppressor": True, "suppressor_type": "unclear -- inherited, no markings",
         })
         assert r.status_code == 200
         body = r.json()
@@ -345,46 +345,43 @@ def test_api_persists_suppressor_fields_on_the_rifle(user_a, api_client):
 
 
 def test_get_and_add_load_work_on_a_rifle_with_no_loads_yet(user_a, api_client):
-    """Regression: GET /v2/rifles/{name} and POST /v2/rifles/{name}/loads
-    both used to be able to route through a resolver that defaults a
-    missing load_query to get_active_load() -- raising for any rifle
-    with zero loads. That 404'd GET on a freshly created rifle and,
-    worse, made it impossible to POST a rifle's first load via the API
-    at all. Neither endpoint touches a load; only the rifle needs to
-    resolve, so v2_get_rifle/v2_add_load call find_rifle() directly."""
+    """Regression: GET /v2/rifles/{name} used to route through a resolver
+    that defaults a missing load_query to get_active_load() -- raising
+    for any rifle with zero loads. That 404'd GET on a freshly created
+    rifle. v2_get_rifle calls find_rifle() directly, not through that
+    resolver, so a loadless rifle is a normal, gettable state.
+
+    Loads are an independent pool now (2026-09-05, §28) -- a rifle
+    detail response no longer carries a "loads" list at all (there's
+    nothing rifle-scoped to list); loads are created/listed through
+    /v2/loads, with no rifle in the URL."""
     _, token_a = user_a
     headers = {"Authorization": f"Bearer {token_a}"}
     try:
         r = api_client.post("/v2/rifles", headers=headers, json={
-            "name": "Loadless Rifle API Test", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
+            "name": "Loadless Rifle API Test", "scope_height_in": 2.5, "click_value_mrad": 0.1,
         })
         assert r.status_code == 200
 
         r = api_client.get("/v2/rifles/Loadless Rifle API Test", headers=headers)
         assert r.status_code == 200
-        assert r.json()["loads"] == []
 
-        r = api_client.post("/v2/rifles/Loadless Rifle API Test/loads", headers=headers, json={
-            "name": "First Load", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+        r = api_client.post("/v2/loads", headers=headers, json={
+            "name": "First Load API Test", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
             "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
         })
         assert r.status_code == 200
-        assert r.json()["name"] == "First Load"
+        assert r.json()["name"] == "First Load API Test"
 
-        r = api_client.get("/v2/rifles/Loadless Rifle API Test", headers=headers)
+        r = api_client.get("/v2/loads", headers=headers)
         assert r.status_code == 200
-        assert [load["name"] for load in r.json()["loads"]] == ["First Load"]
+        assert "First Load API Test" in [load["name"] for load in r.json()]
 
         r = api_client.get("/v2/rifles/No Such Rifle API Test", headers=headers)
         assert r.status_code == 404
-
-        r = api_client.post("/v2/rifles/No Such Rifle API Test/loads", headers=headers, json={
-            "name": "X", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
-            "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
-        })
-        assert r.status_code == 404
     finally:
         api_client.delete("/v2/rifles/Loadless Rifle API Test", headers=headers)
+        api_client.delete("/v2/loads/First Load API Test", headers=headers)
 
 
 def test_status_reports_null_active_load_for_rifle_with_no_loads(user_a, api_client):
@@ -393,12 +390,17 @@ def test_status_reports_null_active_load_for_rifle_with_no_loads(user_a, api_cli
     loads. That's a normal state (e.g. a rifle profile set up by voice
     before its first load exists) -- the web UI's post-setup refresh
     hit this 404 and silently failed to show the newly created rifle at
-    all."""
+    all.
+
+    Loads are an independent pool now (2026-09-05, §28) -- "active
+    load" is a store-level concept (user_store.active_load_name), not
+    tied to whichever rifle is active, so adding a load here doesn't go
+    through the rifle at all: POST /v2/loads, no rifle in the URL."""
     _, token_a = user_a
     headers = {"Authorization": f"Bearer {token_a}"}
     try:
         r = api_client.post("/v2/rifles", headers=headers, json={
-            "name": "Statusless Rifle API Test", "scope_height_in": 2.5, "click_value_mrad": 0.1, "loads": [],
+            "name": "Statusless Rifle API Test", "scope_height_in": 2.5, "click_value_mrad": 0.1,
         })
         assert r.status_code == 200
 
@@ -408,17 +410,18 @@ def test_status_reports_null_active_load_for_rifle_with_no_loads(user_a, api_cli
         assert body["rifle"]["name"] == "Statusless Rifle API Test"
         assert body["active_load"] is None
 
-        r = api_client.post("/v2/rifles/Statusless Rifle API Test/loads", headers=headers, json={
-            "name": "L1", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
+        r = api_client.post("/v2/loads", headers=headers, json={
+            "name": "L1 API Test", "bullet_weight_gr": 175, "bc": 0.5, "drag_model": "G1",
             "muzzle_velocity_fps": 2700, "zero_distance_yd": 100,
         })
         assert r.status_code == 200
 
         r = api_client.get("/v2/status", headers=headers)
         assert r.status_code == 200
-        assert r.json()["active_load"]["name"] == "L1"
+        assert r.json()["active_load"]["name"] == "L1 API Test"
     finally:
         api_client.delete("/v2/rifles/Statusless Rifle API Test", headers=headers)
+        api_client.delete("/v2/loads/L1 API Test", headers=headers)
 
 
 def test_user_b_cannot_list_user_a_rifles_through_the_api(user_b, rifle_owned_by_a_via_api, api_client):

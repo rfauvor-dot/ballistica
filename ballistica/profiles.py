@@ -6,7 +6,7 @@ switching the active rifle/load by (fuzzy, voice-friendly) name.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import re
@@ -129,8 +129,15 @@ class Rifle:
     # homemade/custom builds with no commercial brand name to pick from.
     has_suppressor: bool = False
     suppressor_type: str = ""
-    loads: dict[str, Load] = field(default_factory=dict)
-    active_load_name: str | None = None
+    # loads/active_load_name used to live here (a Rifle literally owned a
+    # dict of Loads). Moved to ProfileStore (2026-09-05, see
+    # MULTI_TENANCY_DESIGN.md §28): Rick wants a load defined once and
+    # freely paired with any rifle at use-time (e.g. one .300 Blackout
+    # load tried on both a 7in subsonic barrel and a 16in supersonic
+    # one), not recreated under each rifle it's ever used with. A rifle
+    # and a load are now two independent, independently-selected pools,
+    # combined only at the moment something needs both (a solution, a
+    # calibration) -- see ProfileStore.get_active_load() etc. below.
 
     def __post_init__(self) -> None:
         if self.reticle_unit not in ("MRAD", "MOA"):
@@ -138,39 +145,19 @@ class Rifle:
         if self.optic_type not in ("", "scope", "red_dot"):
             raise ValueError("optic_type must be 'scope', 'red_dot', or unset")
 
-    def add_load(self, load: Load, make_active: bool = True) -> None:
-        self.loads[load.name] = load
-        if make_active or self.active_load_name is None:
-            self.active_load_name = load.name
-
-    def get_active_load(self) -> Load:
-        if self.active_load_name is None or self.active_load_name not in self.loads:
-            raise ValueError(f"Rifle '{self.name}' has no active load")
-        return self.loads[self.active_load_name]
-
-    def find_load(self, query: str) -> Load:
-        """Fuzzy, voice-friendly lookup: exact name, then case-insensitive
-        substring match against name/powder/notes."""
-        if query in self.loads:
-            return self.loads[query]
-        q_tokens = _query_tokens(query)
-        matches = [
-            load for load in self.loads.values()
-            if _tokens_match(q_tokens, _tokens(f"{load.name} {load.powder} {load.notes}"))
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        if not matches:
-            raise KeyError(f"No load matching '{query}' on rifle '{self.name}'")
-        raise KeyError(f"'{query}' matches multiple loads on '{self.name}': "
-                        f"{[m.name for m in matches]}")
-
 
 class ProfileStore:
     def __init__(self, path: Path | str = DEFAULT_PROFILES_PATH) -> None:
         self.path = Path(path)
         self.rifles: dict[str, Rifle] = {}
         self.active_rifle_name: str | None = None
+        # Loads: independent, store-level pool (2026-09-05, §28) -- a
+        # load is no longer owned by any one rifle, so it lives here
+        # rather than nested inside a Rifle, same as active_rifle_name
+        # above is store-level rather than nested inside some other
+        # object.
+        self.loads: dict[str, Load] = {}
+        self.active_load_name: str | None = None
         if self.path.exists():
             self.load()
 
@@ -201,9 +188,12 @@ class ProfileStore:
         return rifle
 
     def delete_rifle(self, query: str) -> Rifle:
-        """Removes a rifle (and its loads) entirely. There was previously
-        no way to do this at all -- confirmed as a real gap (Addendum 29),
-        both for cleaning up a bad/duplicate entry and for removing test
+        """Removes a rifle entirely. Loads are independent (2026-09-05,
+        §28) -- this never touches self.loads, even for loads that were
+        originally entered while this rifle was active, since they may
+        be in use with other rifles too. There was previously no way to
+        do this at all -- confirmed as a real gap (Addendum 29), both
+        for cleaning up a bad/duplicate entry and for removing test
         data. If the deleted rifle was active, an arbitrary remaining
         rifle becomes active instead (or none, if it was the last one)."""
         rifle = self.find_rifle(query)
@@ -212,35 +202,61 @@ class ProfileStore:
             self.active_rifle_name = next(iter(self.rifles), None)
         return rifle
 
-    def delete_load(self, rifle_query: str, load_query: str) -> Load:
-        """Removes a single load from a rifle -- the rifle itself and
-        its other loads are untouched. Previously the only way to
-        remove one bad/duplicate load was deleting the whole rifle and
-        recreating it (2026-08-30, real documented gap, not
-        hypothetical -- COMMAND_GUIDE.md's own "Known limitations"
-        section). If the deleted load was the rifle's active one, an
-        arbitrary remaining load becomes active instead (or none, if
-        it was the last one) -- same pattern delete_rifle already uses
-        for the rifle-level active pointer."""
-        rifle = self.find_rifle(rifle_query)
-        load = rifle.find_load(load_query)
-        del rifle.loads[load.name]
-        if rifle.active_load_name == load.name:
-            rifle.active_load_name = next(iter(rifle.loads), None)
+    def find_load(self, query: str) -> Load:
+        """Fuzzy, voice-friendly lookup across the whole independent load
+        pool: exact name, then case-insensitive substring match against
+        name/powder/notes. Same matching logic find_rifle() uses, no
+        longer scoped to any one rifle's own loads (2026-09-05, §28)."""
+        if query in self.loads:
+            return self.loads[query]
+        q_tokens = _query_tokens(query)
+        matches = [
+            load for load in self.loads.values()
+            if _tokens_match(q_tokens, _tokens(f"{load.name} {load.powder} {load.notes}"))
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise KeyError(f"No load matching '{query}'")
+        raise KeyError(f"'{query}' matches multiple loads: {[m.name for m in matches]}")
+
+    def add_load(self, load: Load, make_active: bool = True) -> None:
+        self.loads[load.name] = load
+        if make_active or self.active_load_name is None:
+            self.active_load_name = load.name
+
+    def get_active_load(self) -> Load:
+        if self.active_load_name is None or self.active_load_name not in self.loads:
+            raise ValueError("No active load set")
+        return self.loads[self.active_load_name]
+
+    def delete_load(self, query: str) -> Load:
+        """Removes a load from the independent pool entirely -- no
+        rifle_query anymore (2026-09-05, §28): a load isn't scoped to
+        one rifle, so deleting it removes it everywhere, not just "off"
+        one rifle. Previously the only way to remove one bad/duplicate
+        load was deleting the whole rifle and recreating it (2026-08-30,
+        real documented gap, not hypothetical -- COMMAND_GUIDE.md's own
+        "Known limitations" section). If the deleted load was active, an
+        arbitrary remaining load becomes active instead (or none, if it
+        was the last one) -- same pattern delete_rifle already uses."""
+        load = self.find_load(query)
+        del self.loads[load.name]
+        if self.active_load_name == load.name:
+            self.active_load_name = next(iter(self.loads), None)
         return load
 
     def set_active_load(self, query: str) -> Load:
-        """Switches the active load on the active rifle by fuzzy name."""
-        rifle = self.get_active_rifle()
-        load = rifle.find_load(query)
-        rifle.active_load_name = load.name
+        """Switches the active load by fuzzy name -- independent of
+        whatever rifle is currently active (2026-09-05, §28)."""
+        load = self.find_load(query)
+        self.active_load_name = load.name
         return load
 
-    def update_load_velocity(self, rifle_query: str, load_query: str, new_velocity_fps: float) -> Load:
+    def update_load_velocity(self, load_query: str, new_velocity_fps: float) -> Load:
         """Updates just the muzzle velocity on an existing load, e.g.
         after chronograph testing, without re-entering everything else."""
-        rifle = self.find_rifle(rifle_query)
-        load = rifle.find_load(load_query)
+        load = self.find_load(load_query)
         load.muzzle_velocity_fps = new_velocity_fps
         return load
 
@@ -300,19 +316,19 @@ class ProfileStore:
                 self.active_rifle_name = new_name
         return rifle
 
-    def update_load_fields(self, rifle_query: str, load_query: str, **fields) -> Load:
+    def update_load_fields(self, load_query: str, **fields) -> Load:
         """Updates load fields (bullet, BC, drag model, velocity, etc.)
         in place on an existing load, including a real rename if `name`
-        differs -- rifle.loads is keyed by name, same as self.rifles
+        differs -- self.loads is keyed by name, same as self.rifles
         above, so this has the identical rename-has-to-re-key-the-dict
         requirement and was fixed for the identical reason (2026-08-30):
         the web app's "Save load" button always POSTed a new load
         regardless of whether one by that name already existed, so
         editing a load's name field created a second, duplicate load
         under the new name while leaving the original sitting there
-        under its old name, rather than renaming it."""
-        rifle = self.find_rifle(rifle_query)
-        load = rifle.find_load(load_query)
+        under its old name, rather than renaming it. No rifle_query
+        anymore (2026-09-05, §28) -- a load isn't scoped to one rifle."""
+        load = self.find_load(load_query)
         new_name = fields.pop("name", None)
         original = {}
         for key, value in fields.items():
@@ -329,21 +345,23 @@ class ProfileStore:
         if new_name is not None and new_name != load.name:
             if not new_name.strip():
                 raise ValueError("Load name cannot be empty")
-            if new_name in rifle.loads:
-                raise ValueError(f"A load named '{new_name}' already exists on this rifle")
+            if new_name in self.loads:
+                raise ValueError(f"A load named '{new_name}' already exists")
             old_name = load.name
-            del rifle.loads[old_name]
+            del self.loads[old_name]
             load.name = new_name
-            rifle.loads[new_name] = load
-            if rifle.active_load_name == old_name:
-                rifle.active_load_name = new_name
+            self.loads[new_name] = load
+            if self.active_load_name == old_name:
+                self.active_load_name = new_name
         return load
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "active_rifle_name": self.active_rifle_name,
+            "active_load_name": self.active_load_name,
             "rifles": {name: asdict(rifle) for name, rifle in self.rifles.items()},
+            "loads": {name: asdict(load) for name, load in self.loads.items()},
         }
         self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -351,7 +369,42 @@ class ProfileStore:
         data = json.loads(self.path.read_text(encoding="utf-8"))
         self.active_rifle_name = data.get("active_rifle_name")
         self.rifles = {}
+        self.loads = {}
+
+        if "loads" in data:
+            # Current format: loads are already a top-level, independent
+            # pool -- nothing to migrate.
+            self.active_load_name = data.get("active_load_name")
+            for name, rdata in data.get("rifles", {}).items():
+                self.rifles[name] = Rifle(**rdata)
+            for name, ldata in data.get("loads", {}).items():
+                self.loads[name] = Load(**ldata)
+            return
+
+        # Old format (pre-2026-09-05, §28): loads were nested inside each
+        # rifle's own JSON. Migrated automatically here on load, rather
+        # than requiring a separate one-time script, so existing local
+        # data isn't silently broken by this change. Two rifles' loads
+        # can collide on name (self.loads is one flat dict now, where
+        # before each rifle had its own separate namespace) -- disambig-
+        # uated by appending the original rifle's name rather than
+        # silently letting the second one overwrite the first, since a
+        # silent overwrite here would be real, hard-to-notice data loss.
+        old_active_rifle = data.get("active_rifle_name")
         for name, rdata in data.get("rifles", {}).items():
-            loads = {lname: Load(**ldata) for lname, ldata in rdata.pop("loads", {}).items()}
-            rifle = Rifle(**{**rdata, "loads": loads})
-            self.rifles[name] = rifle
+            nested_loads = rdata.pop("loads", {})
+            rifle_active_load_name = rdata.pop("active_load_name", None)
+            self.rifles[name] = Rifle(**rdata)
+            for lname, ldata in nested_loads.items():
+                final_name = lname
+                if final_name in self.loads:
+                    final_name = f"{lname} ({name})"
+                    while final_name in self.loads:
+                        final_name += " (2)"
+                if final_name != lname:
+                    ldata = {**ldata, "name": final_name}
+                self.loads[final_name] = Load(**ldata)
+                if name == old_active_rifle and lname == rifle_active_load_name:
+                    self.active_load_name = final_name
+        if self.active_load_name is None and self.loads:
+            self.active_load_name = next(iter(self.loads))

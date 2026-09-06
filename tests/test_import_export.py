@@ -115,46 +115,59 @@ def _mapped_row(**overrides) -> tuple[list[dict], dict]:
 
 def test_successful_row_creates_rifle_and_load():
     rows, mapping = _mapped_row()
-    results, touched = apply_mapping(rows, mapping, existing_rifles={})
+    results, touched, touched_loads = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
     assert results[0].status == "created"
     assert "Faxon 20in" in touched
-    load = touched["Faxon 20in"].loads["22.5gr H335"]
+    load = touched_loads["22.5gr H335"]
     assert load.bc == 0.207 and load.drag_model == "G7" and load.muzzle_velocity_fps == 2822.0
 
 
 def test_load_name_synthesized_when_not_mapped():
     rows, mapping = _mapped_row()
-    _, touched = apply_mapping(rows, mapping, existing_rifles={})
-    assert list(touched["Faxon 20in"].loads.keys()) == ["22.5gr H335"]
+    _, _, touched_loads = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
+    assert list(touched_loads.keys()) == ["22.5gr H335"]
 
 
 def test_missing_bc_fails_with_clear_reason():
     """This is exactly what happens with Rick's own real Faxon data --
     a genuinely missing BC must fail cleanly, not silently default."""
     rows, mapping = _mapped_row(BC="")
-    results, touched = apply_mapping(rows, mapping, existing_rifles={})
+    results, touched, touched_loads = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
     assert results[0].status == "failed"
     assert "ballistic coefficient" in results[0].detail.lower()
-    assert touched == {}
+    assert touched_loads == {}
 
 
 def test_missing_velocity_fails():
     rows, mapping = _mapped_row(Velocity="")
-    results, _ = apply_mapping(rows, mapping, existing_rifles={})
+    results, _, _ = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
     assert results[0].status == "failed"
     assert "velocity" in results[0].detail.lower()
 
 
-def test_missing_rifle_name_fails():
+def test_missing_rifle_name_creates_load_only_no_rifle():
+    """rifle_name is no longer required (2026-09-05, §28) -- a load isn't
+    scoped to a rifle, so a row with load data but no rifle name creates
+    just the load. Necessary for generate_export_csv()'s own load-only
+    rows to round-trip back in (see test_export_then_reimport_round_trips)."""
     rows, mapping = _mapped_row(Rifle="")
-    results, _ = apply_mapping(rows, mapping, existing_rifles={})
+    results, touched, touched_loads = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
+    assert results[0].status == "created"
+    assert results[0].rifle_name is None
+    assert touched == {}
+    assert "22.5gr H335" in touched_loads
+
+
+def test_row_with_neither_rifle_nor_load_data_fails():
+    rows, mapping = _mapped_row(Rifle="", BC="", Velocity="")
+    results, touched, touched_loads = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
     assert results[0].status == "failed"
-    assert "rifle name" in results[0].detail.lower()
+    assert touched == {} and touched_loads == {}
 
 
 def test_invalid_drag_model_fails():
     rows, mapping = _mapped_row(**{"Drag Model": "G3"})
-    results, _ = apply_mapping(rows, mapping, existing_rifles={})
+    results, _, _ = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
     assert results[0].status == "failed"
     assert "G1 or G7" in results[0].detail
 
@@ -162,17 +175,16 @@ def test_invalid_drag_model_fails():
 def test_second_row_same_rifle_adds_load_not_new_rifle():
     row1, mapping = _mapped_row()
     row2, _ = _mapped_row(Charge="23.0", Velocity="2947")
-    results, touched = apply_mapping(row1 + row2, mapping, existing_rifles={})
+    results, touched, touched_loads = apply_mapping(row1 + row2, mapping, existing_rifles={}, existing_loads={})
     assert len(touched) == 1
-    rifle = list(touched.values())[0]
-    assert set(rifle.loads.keys()) == {"22.5gr H335", "23gr H335"}
-    assert results[1].detail == "Added load to existing rifle."
+    assert set(touched_loads.keys()) == {"22.5gr H335", "23gr H335"}
+    assert results[1].detail == "Added load to the load pool."
 
 
 def test_existing_rifle_reused_and_not_overwritten():
     existing = Rifle(name="Faxon 20in", scope_height_in=2.5, caliber="already set")
     rows, mapping = _mapped_row()
-    results, touched = apply_mapping(rows, mapping, existing_rifles={"Faxon 20in": existing})
+    results, touched, _ = apply_mapping(rows, mapping, existing_rifles={"Faxon 20in": existing}, existing_loads={})
     assert touched["Faxon 20in"] is existing  # same object, mutated in place
     assert existing.scope_height_in == 2.5  # not overwritten by the row's lack of a scope-height column
     assert existing.caliber == "already set"  # not overwritten by the row's "Caliber" value either
@@ -180,7 +192,7 @@ def test_existing_rifle_reused_and_not_overwritten():
 
 def test_missing_scope_height_defaults_to_zero_with_warning():
     rows, mapping = _mapped_row()
-    results, touched = apply_mapping(rows, mapping, existing_rifles={})
+    results, touched, _ = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
     assert touched["Faxon 20in"].scope_height_in == 0.0
     assert "scope height" in results[0].detail.lower()
 
@@ -188,19 +200,31 @@ def test_missing_scope_height_defaults_to_zero_with_warning():
 def test_partial_failure_still_imports_valid_rows():
     good, mapping = _mapped_row()
     bad, _ = _mapped_row(BC="", Charge="23.0")
-    results, touched = apply_mapping(good + bad, mapping, existing_rifles={})
+    results, touched, touched_loads = apply_mapping(good + bad, mapping, existing_rifles={}, existing_loads={})
     assert results[0].status == "created"
     assert results[1].status == "failed"
-    assert len(touched["Faxon 20in"].loads) == 1  # only the good row landed
+    assert len(touched_loads) == 1  # only the good row landed
+
+
+def test_repeated_load_name_across_rows_is_deduplicated_not_recreated():
+    """A load name repeated across rows (the same round tried on two
+    different rifles) must land in the pool once, not twice -- loads
+    are independent now (2026-09-05, §28), not owned per rifle."""
+    row1, mapping = _mapped_row()
+    row2, _ = _mapped_row(Rifle="Second Rifle")
+    results, touched, touched_loads = apply_mapping(row1 + row2, mapping, existing_rifles={}, existing_loads={})
+    assert len(touched) == 2  # two distinct rifles
+    assert len(touched_loads) == 1  # one shared load, not one per rifle
+    assert results[0].status == "created" and results[1].status == "created"  # both rows still valid
 
 
 # ------------------------------------------------------------- export
 
 def test_export_csv_injection_protection():
     rifle = Rifle(name="=cmd|/c calc!A1", scope_height_in=2.0)
-    rifle.add_load(Load(name="Test", bullet_weight_gr=77, bc=0.2, drag_model="G7",
-                         muzzle_velocity_fps=2800, zero_distance_yd=100, notes="+SUM(A1:A9)"))
-    csv_text = generate_export_csv([rifle]).decode("utf-8-sig")
+    load = Load(name="Test", bullet_weight_gr=77, bc=0.2, drag_model="G7",
+                muzzle_velocity_fps=2800, zero_distance_yd=100, notes="+SUM(A1:A9)")
+    csv_text = generate_export_csv([rifle], [load]).decode("utf-8-sig")
     assert "'=cmd" in csv_text
     assert "'+SUM" in csv_text
     # And never unescaped -- a bare "=cmd" or "+SUM" without the leading
@@ -211,24 +235,37 @@ def test_export_csv_injection_protection():
 
 def test_export_rifle_with_no_loads_still_gets_a_row():
     rifle = Rifle(name="Empty Rifle", scope_height_in=2.0)
-    csv_text = generate_export_csv([rifle]).decode("utf-8-sig")
+    csv_text = generate_export_csv([rifle], []).decode("utf-8-sig")
     assert "Empty Rifle" in csv_text
     assert csv_text.strip().count("\n") == 1  # header + exactly one data row
 
 
+def test_export_emits_rifles_and_loads_as_separate_rows():
+    """Rifles and loads are an independent pool now (2026-09-05, §28) --
+    there's no stored pairing left to export, so a rifle with no loads
+    at all and a load with no particular rifle each still get their own
+    row, rather than a "one row per pairing" that no longer reflects
+    what's actually stored."""
+    rifle = Rifle(name="Faxon 20in", scope_height_in=2.5)
+    load = Load(name="22.5gr H335", bullet_weight_gr=77, bc=0.207, drag_model="G7",
+                muzzle_velocity_fps=2822, zero_distance_yd=100)
+    csv_text = generate_export_csv([rifle], [load]).decode("utf-8-sig")
+    assert csv_text.strip().count("\n") == 2  # header + one rifle row + one load row
+
+
 def test_export_then_reimport_round_trips():
     rifle = Rifle(name="Faxon 20in", scope_height_in=2.5, caliber=".223 Wylde")
-    rifle.add_load(Load(name="22.5gr H335", bullet_weight_gr=77, bc=0.207, drag_model="G7",
-                         muzzle_velocity_fps=2822, zero_distance_yd=100, powder="H335", powder_charge_gr=22.5))
-    csv_bytes = generate_export_csv([rifle])
+    load = Load(name="22.5gr H335", bullet_weight_gr=77, bc=0.207, drag_model="G7",
+                muzzle_velocity_fps=2822, zero_distance_yd=100, powder="H335", powder_charge_gr=22.5)
+    csv_bytes = generate_export_csv([rifle], [load])
 
     headers, rows = parse_uploaded_file("export.csv", csv_bytes)
     mapping = suggest_mapping(headers)
     assert all(v is not None for v in mapping.values())  # every column maps with zero manual correction
 
-    results, touched = apply_mapping(rows, mapping, existing_rifles={})
-    assert results[0].status == "created"
-    reimported = touched["Faxon 20in"].loads["22.5gr H335"]
+    results, touched, touched_loads = apply_mapping(rows, mapping, existing_rifles={}, existing_loads={})
+    assert touched["Faxon 20in"].caliber == ".223 Wylde"
+    reimported = touched_loads["22.5gr H335"]
     assert reimported.bc == 0.207
     assert reimported.muzzle_velocity_fps == 2822.0
     assert reimported.powder_charge_gr == 22.5

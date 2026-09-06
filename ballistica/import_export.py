@@ -239,30 +239,88 @@ def _extract(row: dict[str, str], mapping: dict[str, str | None], key: str) -> s
 
 
 def apply_mapping(
-    rows: list[dict[str, str]], mapping: dict[str, str | None], existing_rifles: dict[str, Rifle],
-) -> tuple[list[RowResult], dict[str, Rifle]]:
+    rows: list[dict[str, str]], mapping: dict[str, str | None],
+    existing_rifles: dict[str, Rifle], existing_loads: dict[str, Load],
+) -> tuple[list[RowResult], dict[str, Rifle], dict[str, Load]]:
     """Builds/updates Rifle and Load objects from the mapped rows.
     Existing rifles (already loaded from this user's real data) are
-    reused and only ever gain a load -- an import never overwrites a
-    rifle's own metadata, only adds to it, so re-importing a partial
-    export can't clobber fields that were filled in some other way
-    since. Returns (per-row results, the full set of rifles touched --
-    both newly created and updated -- for the caller to persist)."""
+    reused and only ever gain metadata, never a nested load anymore --
+    loads are an independent pool (2026-09-05, MULTI_TENANCY_DESIGN.md
+    §28), so this returns them separately from the rifles touched, keyed
+    by name the same way ProfileStore.loads is. A load name repeated
+    across multiple rows is deliberately deduplicated into one entry,
+    not recreated per row -- the last row's data wins for that name,
+    same as every other name-keyed collection in this codebase.
+
+    rifle_name is no longer required (2026-09-05, §28): a row can carry
+    rifle data only, load data only, or both -- necessary for
+    generate_export_csv()'s own output (which now emits rifles and loads
+    as separate rows, since there's no stored pairing left to export) to
+    round-trip back in without every load-only row failing on "missing
+    rifle name." A row with neither still fails; there's nothing to do
+    with it. An import never overwrites a rifle's own metadata, only
+    adds to it, so re-importing a partial export can't clobber fields
+    that were filled in some other way since. Returns (per-row results,
+    rifles touched, loads touched)."""
     results: list[RowResult] = []
     touched: dict[str, Rifle] = {}
+    touched_loads: dict[str, Load] = {}
 
     for i, row in enumerate(rows, start=1):
         rifle_name = _extract(row, mapping, "rifle_name")
-        if not rifle_name:
-            results.append(RowResult(i, None, _extract(row, mapping, "load_name") or None, "failed", "Missing rifle name."))
-            continue
-
+        load_name = _extract(row, mapping, "load_name")
         powder = _extract(row, mapping, "powder")
         powder_charge_gr = _to_float(_extract(row, mapping, "powder_charge_gr"))
         bullet_weight_gr_raw = _to_float(_extract(row, mapping, "bullet_weight_gr"))
         bullet_type = _extract(row, mapping, "bullet_type")
+        bc = _to_float(_extract(row, mapping, "bc"))
+        muzzle_velocity_fps = _to_float(_extract(row, mapping, "muzzle_velocity_fps"))
+        has_load_data = load_name or bc is not None or muzzle_velocity_fps is not None
 
-        load_name = _extract(row, mapping, "load_name")
+        if not rifle_name and not has_load_data:
+            results.append(RowResult(i, None, None, "failed", "Row has neither a rifle nor a load in it."))
+            continue
+
+        rifle = None
+        rifle_is_new = False
+        scope_height_in = None
+        if rifle_name:
+            rifle = touched.get(rifle_name) or existing_rifles.get(rifle_name)
+            rifle_is_new = rifle is None
+            if rifle_is_new:
+                scope_height_in = _to_float(_extract(row, mapping, "scope_height_in"))
+                try:
+                    rifle = Rifle(
+                        name=rifle_name,
+                        scope_height_in=scope_height_in if scope_height_in is not None else 0.0,
+                        caliber=_extract(row, mapping, "caliber"),
+                        barrel_length_in=_to_float(_extract(row, mapping, "barrel_length_in")),
+                        twist_rate=_extract(row, mapping, "twist_rate"),
+                        click_value_mrad=_to_float(_extract(row, mapping, "click_value_mrad")) or 0.1,
+                        reticle_unit=(_extract(row, mapping, "reticle_unit") or "MRAD").upper(),
+                        optic_type=_extract(row, mapping, "optic_type"),
+                        scope_make=_extract(row, mapping, "scope_make"),
+                        scope_model=_extract(row, mapping, "scope_model"),
+                        magnification=_extract(row, mapping, "magnification"),
+                        objective_lens_mm=_to_float(_extract(row, mapping, "objective_lens_mm")),
+                        focal_plane=_extract(row, mapping, "focal_plane"),
+                        reticle_type=_extract(row, mapping, "reticle_type"),
+                        dot_size_moa=_to_float(_extract(row, mapping, "dot_size_moa")),
+                        has_suppressor=_to_bool(_extract(row, mapping, "has_suppressor")),
+                        suppressor_type=_extract(row, mapping, "suppressor_type"),
+                    )
+                except ValueError as exc:
+                    results.append(RowResult(i, rifle_name, load_name or None, "failed", f"Rifle data invalid: {exc}"))
+                    continue
+            touched[rifle_name] = rifle
+
+        if not has_load_data:
+            # Rifle-only row -- metadata with no load attached, a
+            # perfectly normal state now (2026-09-05, §28: a rifle with
+            # zero loads yet is expected, not incomplete).
+            results.append(RowResult(i, rifle_name, None, "created" if rifle_is_new else "updated", "Rifle only, no load in this row."))
+            continue
+
         if not load_name:
             if powder_charge_gr is not None and powder:
                 load_name = f"{powder_charge_gr:g}gr {powder}"
@@ -271,11 +329,9 @@ def apply_mapping(
             else:
                 load_name = f"Load {i}"
 
-        bc = _to_float(_extract(row, mapping, "bc"))
-        muzzle_velocity_fps = _to_float(_extract(row, mapping, "muzzle_velocity_fps"))
         if bc is None or bc <= 0:
             results.append(RowResult(
-                i, rifle_name, load_name, "failed",
+                i, rifle_name or None, load_name, "failed",
                 "Ballistic coefficient is missing or not a positive number -- Ballistica can't "
                 "compute a solution without it. Add it (check the bullet manufacturer's published "
                 "data) and re-import this row.",
@@ -283,47 +339,19 @@ def apply_mapping(
             continue
         if muzzle_velocity_fps is None or muzzle_velocity_fps <= 0:
             results.append(RowResult(
-                i, rifle_name, load_name, "failed", "Muzzle velocity is missing or not a positive number.",
+                i, rifle_name or None, load_name, "failed", "Muzzle velocity is missing or not a positive number.",
             ))
             continue
 
         drag_model = (_extract(row, mapping, "drag_model") or "G1").upper()
         if drag_model not in ("G1", "G7"):
             results.append(RowResult(
-                i, rifle_name, load_name, "failed", f"Drag model must be G1 or G7, got '{drag_model}'.",
+                i, rifle_name or None, load_name, "failed", f"Drag model must be G1 or G7, got '{drag_model}'.",
             ))
             continue
 
         zero_distance_yd = _to_float(_extract(row, mapping, "zero_distance_yd")) or 100.0
         bullet_weight_gr = bullet_weight_gr_raw or 0.0
-
-        rifle = touched.get(rifle_name) or existing_rifles.get(rifle_name)
-        rifle_is_new = rifle is None
-        if rifle_is_new:
-            scope_height_in = _to_float(_extract(row, mapping, "scope_height_in"))
-            try:
-                rifle = Rifle(
-                    name=rifle_name,
-                    scope_height_in=scope_height_in if scope_height_in is not None else 0.0,
-                    caliber=_extract(row, mapping, "caliber"),
-                    barrel_length_in=_to_float(_extract(row, mapping, "barrel_length_in")),
-                    twist_rate=_extract(row, mapping, "twist_rate"),
-                    click_value_mrad=_to_float(_extract(row, mapping, "click_value_mrad")) or 0.1,
-                    reticle_unit=(_extract(row, mapping, "reticle_unit") or "MRAD").upper(),
-                    optic_type=_extract(row, mapping, "optic_type"),
-                    scope_make=_extract(row, mapping, "scope_make"),
-                    scope_model=_extract(row, mapping, "scope_model"),
-                    magnification=_extract(row, mapping, "magnification"),
-                    objective_lens_mm=_to_float(_extract(row, mapping, "objective_lens_mm")),
-                    focal_plane=_extract(row, mapping, "focal_plane"),
-                    reticle_type=_extract(row, mapping, "reticle_type"),
-                    dot_size_moa=_to_float(_extract(row, mapping, "dot_size_moa")),
-                    has_suppressor=_to_bool(_extract(row, mapping, "has_suppressor")),
-                    suppressor_type=_extract(row, mapping, "suppressor_type"),
-                )
-            except ValueError as exc:
-                results.append(RowResult(i, rifle_name, load_name, "failed", f"Rifle data invalid: {exc}"))
-                continue
 
         try:
             load = Load(
@@ -336,19 +364,18 @@ def apply_mapping(
                 notes=_extract(row, mapping, "notes"),
             )
         except ValueError as exc:
-            results.append(RowResult(i, rifle_name, load_name, "failed", f"Load data invalid: {exc}"))
+            results.append(RowResult(i, rifle_name or None, load_name, "failed", f"Load data invalid: {exc}"))
             continue
 
-        load_is_new = load_name not in rifle.loads
-        rifle.add_load(load, make_active=load_is_new and not rifle.loads)
-        touched[rifle_name] = rifle
+        load_is_new = load_name not in touched_loads and load_name not in existing_loads
+        touched_loads[load_name] = load
 
-        detail = "Created." if rifle_is_new else ("Added load to existing rifle." if load_is_new else "Updated existing load.")
+        detail = "Created." if rifle_is_new else ("Added load to the load pool." if load_is_new else "Updated existing load.")
         if rifle_is_new and scope_height_in is None:
             detail += " Scope height wasn't provided -- defaulted to 0; add it before relying on solutions from this rifle."
-        results.append(RowResult(i, rifle_name, load_name, "created" if rifle_is_new or load_is_new else "updated", detail))
+        results.append(RowResult(i, rifle_name or None, load_name, "created" if rifle_is_new or load_is_new else "updated", detail))
 
-    return results, touched
+    return results, touched, touched_loads
 
 
 # ------------------------------------------------------------------ export
@@ -372,14 +399,17 @@ def _csv_safe(value) -> str:
     return s
 
 
-def generate_export_csv(rifles: list[Rifle]) -> bytes:
-    """One row per load; a rifle with zero loads still gets one row
-    with the load columns blank, so it isn't silently dropped from the
-    export. Column order matches TARGET_FIELDS exactly, so this file
-    re-imports with an auto-suggested mapping that needs no correction
-    at all -- a clean round-trip, which matters both for the
-    before-you-delete-your-account use case and for genuinely moving
-    data between two Ballistica accounts."""
+def generate_export_csv(rifles: list[Rifle], loads: list[Load]) -> bytes:
+    """One row per rifle (load columns blank) and one row per load
+    (rifle columns blank) -- rifles and loads are an independent pool
+    now (2026-09-05, MULTI_TENANCY_DESIGN.md §28), so there's no stored
+    pairing left to enumerate the old "one row per rifle+load" way.
+    Every rifle and every load still round-trips losslessly; re-
+    importing just recreates them as independent entries again, matching
+    what's actually stored, rather than reconstructing pairings that no
+    longer exist as data. Column order matches TARGET_FIELDS exactly, so
+    this file re-imports with an auto-suggested mapping that needs no
+    correction at all."""
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([f.label for f in TARGET_FIELDS])
@@ -402,11 +432,12 @@ def generate_export_csv(rifles: list[Rifle]) -> bytes:
             _csv_safe(load.notes),
         ]
 
-    blank_load = ["", "", "", "", "", "", "", "", "", ""]
+    blank_rifle = [""] * 17  # matches rifle_cells()'s own column count
+    blank_load = [""] * 10   # matches load_cells()'s own column count
+
     for rifle in rifles:
-        if not rifle.loads:
-            writer.writerow(rifle_cells(rifle) + blank_load)
-        for load in rifle.loads.values():
-            writer.writerow(rifle_cells(rifle) + load_cells(load))
+        writer.writerow(rifle_cells(rifle) + blank_load)
+    for load in loads:
+        writer.writerow(blank_rifle + load_cells(load))
 
     return buf.getvalue().encode("utf-8-sig")  # BOM so Excel opens UTF-8 correctly, not just Sheets/etc.
