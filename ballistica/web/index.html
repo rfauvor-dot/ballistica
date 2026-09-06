@@ -1815,6 +1815,20 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     } else {
       await speak(queryData.reply || "Didn't catch that.", CONVERSATIONAL_TTS_SPEED);
     }
+    // Root-caused live (2026-09-06): a voice-triggered rifle switch (or
+    // new rifle, or delete) was saved correctly server-side -- confirmed
+    // by Rick via a reboot bringing the right rifle back up -- but the
+    // on-screen picker/active-rifle display never refreshed to match,
+    // staying on whatever was shown before the command. loadRifles()
+    // with no argument asks /status for the TRUE active rifle rather
+    // than assuming, so this brings the display back in sync with
+    // whatever server-side state actually changed. Skipped mid-setup/
+    // mid-calibration (awaiting_response true) -- nothing's actually
+    // finalized yet, and re-fetching on every single interview answer
+    // would be wasted work for no visible change.
+    if (!queryData.awaiting_response) {
+      loadRifles().catch(() => {});
+    }
     return { continueConversation: !!queryData.awaiting_response, hadSpeech: true, heardText };
   } catch (e) {
     setVoiceState('Voice: error handling that command');
