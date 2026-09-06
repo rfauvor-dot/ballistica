@@ -388,6 +388,37 @@ class BallisticaCLI:
         if self._pending_delete is not None and now - self._pending_delete_at > _SESSION_STALE_SECONDS:
             self._pending_delete = None
 
+    def _requests_different_top_level_task(self, low: str) -> bool:
+        """Whether `low` unambiguously asks for a different top-level task
+        than whatever modal session is currently running -- only ever
+        checked while a modal session is active (see handle()), so this
+        never runs redundantly outside of one.
+
+        Deliberately narrower than it could be, favoring a missed
+        interrupt over a false one: a bare "100 yards" is a completely
+        normal answer to "what yardage is it zeroed at?" mid-setup, NOT a
+        solution request, so a distance alone never counts here -- only
+        an explicit trigger word (solution/shoot) does. Same reasoning
+        for "new rifle"/"new load": guarded against firing when we're
+        already in that exact kind of setup, since "it's a new load I
+        just made up, call it Test Load" is a real, plausible answer
+        while naming a load, not a request to abandon the current draft
+        and start another blank one."""
+        already_rifle_setup = self._setup is not None and self._setup.kind == "rifle"
+        already_load_setup = self._setup is not None and self._setup.kind == "load"
+
+        if not already_rifle_setup and re.search(r"\b(?:new|add)\b.*\brifle\b", low):
+            return True
+        if not already_load_setup and re.search(r"\b(?:new|add|set ?up)\b.*\b(load|round)\b", low):
+            return True
+        if self._calibration is None and (re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low)):
+            return True
+        if re.search(r"\bswitch\b", low):
+            return True
+        if re.search(r"\b(solution|shoot)\b", low):
+            return True
+        return False
+
     def handle(self, text: str) -> str:
         t = text.strip()
         if not t:
@@ -397,19 +428,41 @@ class BallisticaCLI:
 
         self._expire_stale_sessions()
 
+        # Top-level intent switching (2026-09-05, deployed to main
+        # 2026-09-06 after being confirmed live-broken again in
+        # production -- this fix existed on an in-progress branch but
+        # never actually shipped): confirmed live, repeatedly, that once
+        # a modal session (setup/calibration) started, EVERY utterance
+        # got swallowed by it -- only a tiny fixed set of exact cancel
+        # phrases ("cancel", "never mind", "quit"...) could ever escape
+        # it. A clearly-stated request for a different top-level task
+        # ("add a new rifle" while mid-load-setup, "give me a solution"
+        # while mid-calibration) got treated as a field answer or a shot
+        # reading instead of what it actually was -- Rick's own read on
+        # this: it's a state-machine gap, not a vocabulary gap, and the
+        # fix is checking for a mode switch FIRST, before committing the
+        # utterance to whatever's currently running. Clearing state here
+        # and falling through to the normal (non-modal) handling below
+        # reuses every existing dispatch path (start_rifle_setup,
+        # start_load_setup, switch_rifle, drop-at-range, calibration)
+        # exactly as-is -- nothing about how those commands themselves
+        # work changes, only when they're allowed to fire.
+        if (self._setup is not None or self._calibration is not None) and self._requests_different_top_level_task(low):
+            self._setup = None
+            self._calibration = None
         # A guided load/rifle setup interview is modal: once it's running,
         # every utterance is directed at it (a field value, a correction,
         # or a way out) until it's confirmed or cancelled -- including
         # "quit"/"exit", which cancel the interview here rather than the
         # whole session.
-        if self._setup is not None:
+        elif self._setup is not None:
             self._setup.last_activity = time.time()
             return self._handle_setup_turn(t)
 
         # Same modal pattern as setup, above: while a calibration is
         # running, every utterance is a shot reading, a control phrase
         # ("average", "discard that", "end calibration"), or a way out.
-        if self._calibration is not None:
+        elif self._calibration is not None:
             self._calibration.last_activity = time.time()
             return self._handle_calibration_turn(t)
 
