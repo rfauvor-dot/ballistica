@@ -414,7 +414,9 @@ def test_update_rifle_fields_command_edits_the_active_rifle(tmp_path):
 
     reply = cli._update_rifle_fields({"twist_rate": "1:8", "reticle_unit": "MOA"})
     assert "twist rate 1:8" in reply
-    assert "reticle unit MOA" in reply
+    # "MOA reticle", not "reticle unit MOA" -- _speak_field() (2026-09-06)
+    # frames this more naturally for a spoken confirmation.
+    assert "MOA reticle" in reply
     rifle = store.get_active_rifle()
     assert rifle.twist_rate == "1:8"
     assert rifle.reticle_unit == "MOA"

@@ -119,6 +119,55 @@ _RIFLE_EXTRA_PROMPTS = {
 }
 
 
+def _speak_field(field: str, value) -> str:
+    """Natural-language framing for one field value in a spoken
+    readout -- names what the number IS and its unit, rather than
+    reading a bare digit string. Confirmed live (2026-09-06): the old
+    behavior (_extras_summary() joining raw str(value)s with commas,
+    "Also got: 5.7x28, 11.0, 1:16...") was genuinely impossible to
+    parse by ear -- Rick's own example, a zero distance or scope height
+    read back as something like "zero three six five" with no way to
+    tell which field it belonged to or what unit it was in. Shared by
+    _extras_summary() (setup interview readback) and
+    _update_rifle_fields()'s own description, same root cause either
+    place a raw field dict gets spoken back."""
+    if field == "caliber":
+        return f"caliber {value}"
+    if field == "barrel_length_in":
+        return f"{value:g} inch barrel"
+    if field == "twist_rate":
+        return f"twist rate {value}"
+    if field == "click_value_mrad":
+        return f"click value {value:g}"
+    if field == "reticle_unit":
+        return f"{value} reticle"
+    if field == "scope_make":
+        return f"made by {value}"
+    if field == "scope_model":
+        return f"model {value}"
+    if field == "suppressor_type":
+        return f"suppressor, {value}"
+    if field == "magnification":
+        return f"{value} magnification"
+    if field == "objective_lens_mm":
+        return f"{value:g} millimeter objective lens"
+    if field == "focal_plane":
+        return f"{value} focal plane"
+    if field == "reticle_type":
+        return f"reticle, {value}"
+    if field == "dot_size_moa":
+        return f"{value:g} M O A dot"
+    if field == "bullet_type":
+        return f"bullet, {value}"
+    if field == "powder":
+        return f"powder, {value}"
+    if field == "powder_charge_gr":
+        return f"{value:g} grain charge"
+    if field == "notes":
+        return f"note, {value}"
+    return f"{field.replace('_', ' ')} {value}"
+
+
 def _rifle_extra_fields(optic_type: str, has_suppressor: bool = False) -> list[str]:
     # suppressor_type is only asked when has_suppressor is actually true --
     # tied to the rifle, not any one load (Addendum 36), and inserted right
@@ -677,7 +726,7 @@ class BallisticaCLI:
             # same reasoning as _extras_summary()'s handling of this field.
             if k == "has_suppressor":
                 return "suppressed" if v else "no suppressor"
-            return f"{k.replace('_', ' ')} {v}"
+            return _speak_field(k, v)
         parts = ", ".join(_describe(k, v) for k, v in updates.items())
         return f"Updated -- {parts}."
 
@@ -816,14 +865,15 @@ class BallisticaCLI:
                     parts.append("suppressed")
                 continue
             if v not in (None, ""):
-                parts.append(str(v))
+                parts.append(_speak_field(f, v))
         return f" Also got: {', '.join(parts)}." if parts else ""
 
     def _setup_summary(self) -> str:
         d = self._setup.draft
         if self._setup.kind == "load":
             base = (f"Here's what I've got -- {d['name']}: {d['bullet_weight_gr']:.0f} grain, "
-                    f"BC {d['bc']} {d['drag_model']}, {d['muzzle_velocity_fps']:.0f} feet per second, "
+                    f"ballistic coefficient {d['bc']}, {d['drag_model']} drag model, "
+                    f"{d['muzzle_velocity_fps']:.0f} feet per second, "
                     f"zeroed at {d['zero_distance_yd']:.0f} yards.")
         else:
             base = f"Here's what I've got -- {d['name']}, scope height {d['scope_height_in']:g} inches."
