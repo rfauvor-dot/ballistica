@@ -148,6 +148,17 @@ _SKIP_RE = re.compile(r"^(skip|none|n/?a|not sure|don.t know|no|nothing|pass)\b"
 # the word "right" or "correct".
 _CONFIRM_NO_RE = re.compile(r"^(no|nope|not (quite|right|correct)|wrong|incorrect)\b[,.]?\s*(.*)$")
 _CONFIRM_YES_WORD_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|sounds good|good to go)\b")
+# Separate from _CONFIRM_YES_WORD_RE above on purpose (2026-09-06, real
+# bug confirmed live): that one's vocabulary is tuned for "do you want
+# to SAVE this new profile" (setup/calibration confirmations), so
+# "save"/"save it" is a real yes-word there but "delete"/"delete it" is
+# not in its list at all. For "do you want to DELETE this", the single
+# most natural word to say back is "delete" itself -- Rick said exactly
+# that on a real delete confirmation and it fell through to the
+# implicit-no branch, silently keeping the rifle with no indication
+# anything had gone wrong. "Save" is deliberately NOT in this list --
+# saying "save" to confirm a delete would be actively misleading.
+_CONFIRM_DELETE_YES_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|delete( it)?|do it|go ahead)\b")
 _NEGATED_CONFIRM_RE = re.compile(r"\b(not|isn.t|wasn.t|ain.t)\b[\w\s]{0,15}\b(correct|right)\b")
 
 # Confirmed live (Addendum 11): asked something that isn't an answer to
@@ -330,6 +341,17 @@ class BallisticaCLI:
         self._calibration: _CalibrationSession | None = None
         self._pending_delete: str | None = None
         self._pending_delete_at: float = 0.0
+        # Set True by whichever handler produces a dense numeric readout
+        # this turn (drop-at-range, repeat, table, spread-zero, incline
+        # angle) -- api.py reads this right after handle() returns so
+        # the frontend knows to keep TTS at the slower, careful pace
+        # ONLY for that reply, not for every reply (2026-09-06: general
+        # conversation had been dragged down to the same slow pace as
+        # numeric readouts, which is what the pace was ever slowed down
+        # for in the first place -- Rick's own read, "she sounds drunk,
+        # drugged, or a robot" for ordinary chat). Reset at the top of
+        # every handle() call, not sticky across turns.
+        self._last_reply_is_readout = False
         # Rolling short-term memory for genuine open-ended conversation
         # (2026-09-05) -- NOT populated by ordinary ballistics commands
         # (switch rifle, drop-at-range, etc.), only by "converse" turns,
@@ -371,6 +393,7 @@ class BallisticaCLI:
         if not t:
             return ""
         low = t.lower()
+        self._last_reply_is_readout = False
 
         self._expire_stale_sessions()
 
@@ -452,8 +475,15 @@ class BallisticaCLI:
         if re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low):
             return self._start_calibration()
 
-        if re.search(r"\b(?:delete|remove|get rid of)\b.*\brifle\b", low):
-            return self._request_delete_active_rifle()
+        m = re.search(r"\b(?:delete|remove|get rid of)\b\s*(?:the\s+)?(.*)", low)
+        if m:
+            # No longer requires the literal word "rifle" -- Rick's own
+            # report (2026-09-06): "get rid of the 5.7x28 11 inch" has
+            # no noun at all (some of what's stored here are pistols,
+            # not rifles), just a caliber/barrel-length description.
+            # Whatever's left after the delete verb becomes a fuzzy
+            # query, same net find_rifle() already casts for switching.
+            return self._request_delete_rifle_by_query(m.group(1).strip())
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
@@ -545,6 +575,8 @@ class BallisticaCLI:
                 clock_hours = float(args["clock_hours"])
             elif name == "repeat_last_solution":
                 part = str(args.get("part") or "solution")
+            elif name == "delete_rifle":
+                delete_query = str(args.get("query") or "")
             elif name not in ("set_conditions", "get_status", "converse", "update_rifle_field",
                                "start_load_setup", "start_rifle_setup", "start_calibration"):
                 return "Didn't understand that. Type 'help' for supported commands."
@@ -578,6 +610,8 @@ class BallisticaCLI:
             return self._start_calibration()
         if name == "update_rifle_field":
             return self._update_rifle_fields(args)
+        if name == "delete_rifle":
+            return self._request_delete_rifle_by_query(delete_query)
         if name == "converse":
             reply = str(args.get("reply") or "").strip()
             if not reply:
@@ -647,11 +681,43 @@ class BallisticaCLI:
         parts = ", ".join(_describe(k, v) for k, v in updates.items())
         return f"Updated -- {parts}."
 
-    def _request_delete_active_rifle(self) -> str:
-        try:
-            rifle = self.store.get_active_rifle()
-        except ValueError as exc:
-            return str(exc)
+    def _request_delete_rifle_by_query(self, query: str) -> str:
+        """Voice-triggered rifle/pistol delete, matched fuzzily against
+        caliber/barrel-length/manufacturer/name (find_rifle_matches()
+        casts the same net switch_rifle already relies on) rather than
+        requiring the exact stored name -- Rick may not recall or say
+        the full name correctly, word order can flip ("5.7x28 11 inch"
+        vs "11 inch 5.7x28"), and this is deliberately NOT solved by a
+        separate tagging/color field: Rick's own convention is to
+        disambiguate identical models (two S&W 5.7x28s, different
+        barrels; two Taurus G2Cs, different colors) directly in the
+        name, so the fuzzy match against name+caliber+barrel is the
+        whole mechanism, not a workaround for a missing field.
+
+        Always reads back the full matched name and asks for
+        confirmation before deleting -- never guesses silently on an
+        ambiguous match, never fails silently on no match. This is the
+        standard shape for any voice-triggered delete now (2026-09-06,
+        per Rick's own explicit read-back-to-confirm requirement).
+
+        An empty/filler-only query (bare "delete it", "get rid of this
+        rifle") falls back to the active rifle, same as before this
+        query-aware version existed."""
+        matches = self.store.find_rifle_matches(query)
+        if matches is None:
+            try:
+                rifle = self.store.get_active_rifle()
+            except ValueError as exc:
+                return str(exc)
+        elif not matches:
+            return (f"I couldn't find anything matching '{query}'. "
+                     f"You may need to check the name in Settings.")
+        elif len(matches) > 1:
+            names = [f"the {m.name}" for m in matches]
+            listed = " or ".join(names) if len(names) == 2 else ", ".join(names[:-1]) + f", or {names[-1]}"
+            return f"That could be {listed}. Which one do you mean?"
+        else:
+            rifle = matches[0]
         self._pending_delete = rifle.name
         self._pending_delete_at = time.time()
         return f"Delete the {rifle.name}, and all its loads? This can't be undone."
@@ -659,7 +725,7 @@ class BallisticaCLI:
     def _handle_delete_confirm(self, text: str) -> str:
         low = text.lower().strip()
         name = self._pending_delete
-        if _CONFIRM_YES_WORD_RE.match(low) or (
+        if _CONFIRM_DELETE_YES_RE.match(low) or (
             re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
         ):
             self._pending_delete = None
@@ -1067,6 +1133,7 @@ class BallisticaCLI:
         # Two full sentences, not one comma-separated run-on: the period
         # gives TTS a natural pause between elevation and windage instead
         # of both numbers running together.
+        self._last_reply_is_readout = True
         return (f"Solution, {r.range_yd:.0f} yards. "
                 f"Elevation, {elev_dir} {abs(elev_val):.1f} {unit_word}. "
                 f"Windage, {wind_dir} {abs(wind_val):.1f} {unit_word}.")
@@ -1075,6 +1142,7 @@ class BallisticaCLI:
         s = self._last_solution
         if s is None:
             return "No solution given yet -- ask for a range first."
+        self._last_reply_is_readout = True
         if part == "elevation":
             return f"Elevation, {s['elev_dir']} {s['elev_val']:.1f} {s['unit_word']}."
         if part == "windage":
@@ -1087,11 +1155,13 @@ class BallisticaCLI:
         solver, rifle, load = self.solver()
         points = solver.drop_table(load.zero_distance_yd, max_range_yd, step_yd)
         reports = report_table(points, rifle.click_value_mrad)
+        self._last_reply_is_readout = True
         return format_table_text(reports)
 
     def _minimum_spread_zero(self, max_range_yd: float) -> str:
         solver, rifle, load = self.solver()
         result = find_minimum_spread_zero(solver, max_range_yd)
+        self._last_reply_is_readout = True
         return (f"Your {result.zero_distance_yd:.0f} yard zero minimizes spread out to "
                 f"{max_range_yd:.0f} yards -- peak rise {result.max_height_in:.1f} inches, "
                 f"terminal drop {result.min_height_in:.1f} inches, "
@@ -1107,6 +1177,7 @@ class BallisticaCLI:
         except ValueError as exc:
             return str(exc)
         holdover = result.corrected_holdover_clicks(solver, load.zero_distance_yd, los_yd, rifle.click_value_mrad)
+        self._last_reply_is_readout = True
         return (f"Angle confirmed, {result.angle_deg:.1f} degrees. "
                 f"Shoot-to distance {result.shoot_to_distance_yd:.0f} yards. "
                 f"Corrected holdover {holdover:.1f} clicks. Solution locked.")

@@ -386,6 +386,17 @@ class VoiceQueryOut(BaseModel):
                      "frontend should keep listening for the next answer without requiring the wake "
                      "word again.",
     )
+    is_readout: bool = Field(
+        False,
+        description="True only for a dense numeric solution (drop-at-range, repeat, table, "
+                     "spread-zero, incline angle) -- set from BallisticaCLI._last_reply_is_readout "
+                     "(2026-09-06). The frontend uses this for two things: keeping TTS at the slower, "
+                     "careful pace ONLY for these replies (ordinary conversation reverted to full "
+                     "speed after live feedback that the readout-tuned slow pace made general chat "
+                     "sound drunk/robotic), and showing the reply on screen for several seconds "
+                     "instead of just speaking it, so a shooter mid-adjustment at the bench can glance "
+                     "at a phone/tablet to confirm the numbers without asking for a repeat.",
+    )
 
 
 class VoiceSpeakIn(BaseModel):
@@ -399,10 +410,15 @@ class VoiceSpeakIn(BaseModel):
         0.75, ge=0.25, le=4.0,
         description="OpenAI TTS speed multiplier. Slowed once already (1.0 -> 0.9) after live "
                     "feedback that full-speed replies were hard to follow at the range; slowed "
-                    "again here (2026-09-05) after live feedback that 0.9 was still fast enough to "
-                    "clip whole words out of numeric readouts (drop/MOA/MRAD values), not just "
-                    "'a bit quick' -- this needs another live-fire round to confirm 0.75 actually "
-                    "lands, not assumed correct just because it's slower.",
+                    "again (0.9 -> 0.75) after live feedback that 0.9 still clipped whole words out "
+                    "of numeric readouts (drop/MOA/MRAD values) -- confirmed live 2026-09-06, this "
+                    "pace is correct and should NOT change. This default is deliberately the READOUT "
+                    "pace, not a general-purpose one: it used to apply to every reply including "
+                    "ordinary conversation, which live feedback the same day called out as sounding "
+                    "unnaturally slow ('drunk, drugged, or a robot') for anything that isn't a dense "
+                    "numeric solution -- the frontend now explicitly passes a faster speed (1.0) for "
+                    "conversational replies and only lets this default apply for a genuine readout "
+                    "(see VoiceQueryOut.is_readout).",
     )
 
 
@@ -1016,7 +1032,10 @@ def v2_voice_query(
 
     user_store.set_conversation_state(**_dehydrate_cli(cli))
     awaiting_response = cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
-    return VoiceQueryOut(reply=reply or "Didn't catch that.", awaiting_response=awaiting_response)
+    return VoiceQueryOut(
+        reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,
+        is_readout=cli._last_reply_is_readout,
+    )
 
 
 # The remaining endpoints the live web UI actually calls (Addendum: live

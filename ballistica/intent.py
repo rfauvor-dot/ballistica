@@ -92,7 +92,13 @@ _SYSTEM_PROMPT = (
 _TOOLS = [
     {
         "name": "get_drop_at_range",
-        "description": "Get the drop/windage solution at a specific distance.",
+        "description": "Get the drop/windage solution at a specific distance. ANY utterance that "
+                        "states or clearly implies a specific yardage and wants a solution belongs "
+                        "here, no matter how it's framed or what else is said alongside it -- e.g. "
+                        "'this is what I'm shooting, four hundred yards, give me a solution' is "
+                        "still this, not get_status, even though it opens like a general "
+                        "description. The distance is the signal; use get_status only when NO "
+                        "distance is stated anywhere in the utterance.",
         "input_schema": {
             "type": "object",
             "properties": {"range_yd": {"type": "number", "description": "Target distance in yards"}},
@@ -252,8 +258,28 @@ _TOOLS = [
         },
     },
     {
+        "name": "delete_rifle",
+        "description": "Delete a saved rifle/pistol profile. Covers phrasing that doesn't lead with "
+                        "the delete verb, or that never uses the word 'rifle'/'pistol' at all -- e.g. "
+                        "'can you get rid of the 5.7x28 11 inch' or 'that Taurus in black, get rid of "
+                        "it'. Pull whatever identifying details were actually said (caliber, barrel "
+                        "length, manufacturer, color, model) into query verbatim -- the fuzzy match "
+                        "against the saved name happens downstream, not here. Leave query empty only "
+                        "if nothing identifying was said at all (e.g. bare 'delete it').",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Whatever identifying words were said, "
+                                                             "e.g. '5.7x28 11 inch' or 'the black one'"},
+            },
+        },
+    },
+    {
         "name": "get_status",
-        "description": "Report the active rifle, load, and current conditions.",
+        "description": "Report the active rifle, load, and current conditions -- only when NO "
+                        "specific distance is mentioned anywhere in the utterance. If a distance "
+                        "is stated, that's always get_drop_at_range instead, even if the phrasing "
+                        "sounds like a general description of what's being shot.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]

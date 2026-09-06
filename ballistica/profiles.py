@@ -34,6 +34,14 @@ _TOKEN_RE = re.compile(r"\d+\.?\d*|[a-z]+")
 _QUERY_FILLER_WORDS = {
     "my", "the", "a", "an", "to", "load", "rifle", "gun", "use", "please",
     "switch", "for", "with",
+    # "Rifle"/"gun" already covered some of what's stored here even
+    # though it's really a pistol -- these are the same kind of words a
+    # shooter naturally reaches for out loud to mean "this gun" that
+    # likewise never appear in the stored name itself.
+    "pistol", "handgun", "firearm",
+    # Pronouns a delete/switch command naturally carries ("delete this
+    # rifle", "get rid of it") that are never part of an actual name.
+    "this", "that", "it",
 }
 
 
@@ -184,11 +192,28 @@ class ProfileStore:
             raise ValueError("No active rifle set")
         return self.rifles[self.active_rifle_name]
 
-    def find_rifle(self, query: str) -> Rifle:
+    def find_rifle_matches(self, query: str) -> list[Rifle] | None:
+        """The raw candidate list find_rifle() itself resolves down to
+        one-or-raise -- exposed separately so a caller (cli.py's voice
+        delete flow, 2026-09-06) can build a natural disambiguation
+        message ("that could be the X or the Y, which one?") from an
+        ambiguous match without parsing find_rifle()'s exception text.
+
+        Returns None, not an empty list, when the query has no real
+        content left once filler words are stripped (e.g. "it", "this
+        rifle") -- distinct from a specific query that matched nothing,
+        so a caller can tell "say more" apart from "name one clearly"
+        and fall back to something like the active rifle if that's
+        appropriate for its own flow."""
         if query in self.rifles:
-            return self.rifles[query]
+            return [self.rifles[query]]
         q_tokens = _query_tokens(query)
-        matches = [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(_rifle_search_text(r)))]
+        if not q_tokens:
+            return None
+        return [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(_rifle_search_text(r)))]
+
+    def find_rifle(self, query: str) -> Rifle:
+        matches = self.find_rifle_matches(query) or []
         if len(matches) == 1:
             return matches[0]
         if not matches:
