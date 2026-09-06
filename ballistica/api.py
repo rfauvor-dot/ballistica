@@ -393,6 +393,17 @@ class VoiceQueryOut(BaseModel):
                      "frontend should keep listening for the next answer without requiring the wake "
                      "word again.",
     )
+    is_readout: bool = Field(
+        False,
+        description="True only for a dense numeric solution (drop-at-range, repeat, table, "
+                     "spread-zero, incline angle) -- set from BallisticaCLI._last_reply_is_readout "
+                     "(2026-09-06). The frontend uses this for two things: keeping TTS at the slower, "
+                     "careful pace ONLY for these replies (ordinary conversation reverted to full "
+                     "speed after live feedback that the readout-tuned slow pace made general chat "
+                     "sound drunk/robotic), and showing the reply on screen for several seconds "
+                     "instead of just speaking it, so a shooter mid-adjustment at the bench can glance "
+                     "at a phone/tablet to confirm the numbers without asking for a repeat.",
+    )
 
 
 class VoiceSpeakIn(BaseModel):
@@ -1018,7 +1029,10 @@ def v2_voice_query(
 
     user_store.set_conversation_state(**_dehydrate_cli(cli))
     awaiting_response = cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
-    return VoiceQueryOut(reply=reply or "Didn't catch that.", awaiting_response=awaiting_response)
+    return VoiceQueryOut(
+        reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,
+        is_readout=cli._last_reply_is_readout,
+    )
 
 
 # The remaining endpoints the live web UI actually calls (Addendum: live

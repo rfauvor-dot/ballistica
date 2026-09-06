@@ -177,6 +177,15 @@
   .voice-panel .state-line { font-size: 15px; font-weight: 700; color: var(--muted); min-height: 20px; }
   .voice-panel .state-line.hot { color: var(--accent); }
   .voice-panel .heard-line { font-size: 14px; color: var(--muted); font-style: italic; min-height: 18px; margin-top: 2px; }
+  /* Readout stays on screen for several seconds after being spoken
+     (2026-09-06, Rick: wants to glance at the phone/tablet mid-
+     adjustment to confirm elevation/windage without asking Ballistica
+     to repeat herself) -- large and high-contrast on purpose, meant to
+     be readable at a glance from arm's length, not just present. */
+  .voice-panel .readout-line {
+    font-size: 22px; font-weight: 700; color: var(--text); min-height: 28px;
+    margin-top: 6px; white-space: pre-line;
+  }
   #enableVoiceBtn { margin-top: 8px; }
   #sessionModeBtn { margin-top: 8px; margin-left: 8px; }
   #voiceUnsupported { display: none; color: var(--error-text); font-size: 13px; margin-top: 6px; }
@@ -274,6 +283,7 @@
   <div class="voice-panel">
     <div class="state-line" id="voiceState">Voice: off</div>
     <div class="heard-line" id="voiceHeard"></div>
+    <div class="readout-line" id="voiceReadout"></div>
     <button id="enableVoiceBtn" class="primary">Enable voice ("Ballistica")</button>
     <button id="sessionModeBtn" disabled>Start session mode</button>
     <div id="voiceUnsupported">This browser doesn't support wake-word listening (needs Chrome). Use the manual controls below instead.</div>
@@ -1438,9 +1448,24 @@ let sessionModeEnabled = false;
 
 const voiceStateEl = document.getElementById('voiceState');
 const voiceHeardEl = document.getElementById('voiceHeard');
+const voiceReadoutEl = document.getElementById('voiceReadout');
 const enableVoiceBtn = document.getElementById('enableVoiceBtn');
 const sessionModeBtn = document.getElementById('sessionModeBtn');
 const voiceUnsupportedEl = document.getElementById('voiceUnsupported');
+
+// How long a spoken numeric readout (elevation/windage, etc.) stays on
+// screen after being spoken (2026-09-06, Rick: wants to glance at the
+// phone/tablet mid-adjustment to confirm the numbers without asking
+// Ballistica to repeat herself). Mid-range of the "5-10 seconds" he
+// asked for.
+const READOUT_DISPLAY_MS = 8000;
+let readoutClearTimer = null;
+
+function showReadout(text) {
+  voiceReadoutEl.textContent = text;
+  if (readoutClearTimer) clearTimeout(readoutClearTimer);
+  readoutClearTimer = setTimeout(() => { voiceReadoutEl.textContent = ''; }, READOUT_DISPLAY_MS);
+}
 
 function setVoiceState(text, hot) {
   voiceStateEl.textContent = text;
@@ -1491,11 +1516,24 @@ async function playAudioBlob(blob) {
   URL.revokeObjectURL(url);
 }
 
-async function speak(text) {
+// Reverted to full speed (2026-09-06) after live feedback that ordinary
+// conversation -- acks, session-mode phrases, sign-off, "didn't catch
+// that" -- had been dragged down to the same slow, careful pace tuned
+// for numeric readouts, and sounded unnatural doing it ("drunk, drugged,
+// or a robot," Rick's words). The readout pace itself (currently 0.85,
+// see api.py's VoiceSpeakIn) is unaffected -- omitting `speed` here lets
+// that endpoint's own default apply, which is exactly what the one
+// readout call site below (speaking queryData.reply when is_readout) does
+// by not passing this constant.
+const CONVERSATIONAL_TTS_SPEED = 1.0;
+
+async function speak(text, speed) {
   try {
+    const body = { text };
+    if (speed !== undefined) body.speed = speed;
     const res = await fetch('/voice/speak', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) return;
     await playAudioBlob(await res.blob());
@@ -1726,7 +1764,7 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     // stretch between shots.
     if (speakOnSilence) {
       voiceState = 'speaking';
-      await speak("Didn't catch that. Say again.");
+      await speak("Didn't catch that. Say again.", CONVERSATIONAL_TTS_SPEED);
     } else {
       setVoiceState(voiceEnabled ? 'Listening...' : 'Voice: off', true);
     }
@@ -1747,7 +1785,7 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     if (!heardText) {
       if (speakOnSilence) {
         voiceState = 'speaking';
-        await speak("Didn't catch that. Say again.");
+        await speak("Didn't catch that. Say again.", CONVERSATIONAL_TTS_SPEED);
       }
       return { continueConversation: false, hadSpeech: true, heardText: '' };
     }
@@ -1766,7 +1804,17 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     const queryData = await queryRes.json();
     voiceState = 'speaking';
     setVoiceState('Speaking...', true);
-    await speak(queryData.reply || "Didn't catch that.");
+    // Only a dense numeric readout keeps the slower, careful TTS pace
+    // (omitting `speed` lets /voice/speak's own readout-tuned default
+    // apply) and gets shown on screen to linger -- ordinary conversation
+    // reverted to full speed (2026-09-06) and isn't worth pinning to
+    // the screen.
+    if (queryData.is_readout) {
+      showReadout(queryData.reply || '');
+      await speak(queryData.reply || "Didn't catch that.");
+    } else {
+      await speak(queryData.reply || "Didn't catch that.", CONVERSATIONAL_TTS_SPEED);
+    }
     return { continueConversation: !!queryData.awaiting_response, hadSpeech: true, heardText };
   } catch (e) {
     setVoiceState('Voice: error handling that command');
@@ -1779,7 +1827,7 @@ async function handleWakeWord() {
   setVoiceState('Ballistica heard -- acknowledging', true);
   const ackPool = sessionWakeCount === 0 ? greetingPhrases(userDisplayName) : ackPhrases(userDisplayName);
   sessionWakeCount++;
-  await speak(ackPool[Math.floor(Math.random() * ackPool.length)]);
+  await speak(ackPool[Math.floor(Math.random() * ackPool.length)], CONVERSATIONAL_TTS_SPEED);
 
   // voiceEnabled is re-checked every iteration -- without it, disabling
   // voice mid-conversation did nothing: the sign-off phrase would play
@@ -1846,7 +1894,7 @@ async function runSessionModeLoop() {
 
   voiceState = 'acknowledging';
   setVoiceState('Session mode -- starting', true);
-  await speak(SESSION_MODE_ON_PHRASES[Math.floor(Math.random() * SESSION_MODE_ON_PHRASES.length)]);
+  await speak(SESSION_MODE_ON_PHRASES[Math.floor(Math.random() * SESSION_MODE_ON_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
 
   let endedBySpeech = false;
   while (sessionModeEnabled && voiceEnabled) {
@@ -1870,7 +1918,7 @@ async function runSessionModeLoop() {
   if (voiceEnabled) {
     voiceState = 'idle';
     setVoiceState('Voice: on');
-    await speak(SESSION_MODE_OFF_PHRASES[Math.floor(Math.random() * SESSION_MODE_OFF_PHRASES.length)]);
+    await speak(SESSION_MODE_OFF_PHRASES[Math.floor(Math.random() * SESSION_MODE_OFF_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
     // Session Mode ending (by button or by spoken phrase) drops back to
     // ordinary wake-word listening rather than voice going fully off --
     // matches "end session" reading as "stop the continuous listening,"
@@ -1927,7 +1975,7 @@ enableVoiceBtn.addEventListener('click', async () => {
     // Fire-and-forget: the toggle and mic should go quiet right away,
     // the sign-off just plays out over it rather than blocking the UI.
     if (hadSession) {
-      speak(SIGNOFF_PHRASES[Math.floor(Math.random() * SIGNOFF_PHRASES.length)]);
+      speak(SIGNOFF_PHRASES[Math.floor(Math.random() * SIGNOFF_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
     }
     return;
   }
