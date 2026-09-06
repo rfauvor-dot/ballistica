@@ -181,11 +181,26 @@
      (2026-09-06, Rick: wants to glance at the phone/tablet mid-
      adjustment to confirm elevation/windage without asking Ballistica
      to repeat herself) -- large and high-contrast on purpose, meant to
-     be readable at a glance from arm's length, not just present. */
+     be readable at a glance from arm's length, not just present.
+     Fixed/centered overlay, not inline in the voice panel (2026-09-06,
+     range retest): an inline readout at the top of the page was
+     invisible whenever Rick was scrolled down near conditions/solutions
+     (exactly where he's naturally looking after asking for a solution),
+     so this now floats front-and-center regardless of scroll position.
+     Hidden via opacity/pointer-events (not `display`) so the fade
+     transition can run; `.visible` is toggled by showReadout()/its
+     clear timer below. */
   .voice-panel .readout-line {
-    font-size: 22px; font-weight: 700; color: var(--text); min-height: 28px;
-    margin-top: 6px; white-space: pre-line;
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) scale(0.96);
+    z-index: 30; max-width: min(90vw, 480px);
+    background: var(--bg); border: 3px solid var(--text); border-radius: 16px;
+    padding: 20px 26px; box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+    font-size: 26px; font-weight: 800; color: var(--text); white-space: pre-line;
+    text-align: center; opacity: 0; pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease;
   }
+  .voice-panel .readout-line.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   #enableVoiceBtn { margin-top: 8px; }
   #sessionModeBtn { margin-top: 8px; margin-left: 8px; }
   #voiceUnsupported { display: none; color: var(--error-text); font-size: 13px; margin-top: 6px; }
@@ -1456,15 +1471,20 @@ const voiceUnsupportedEl = document.getElementById('voiceUnsupported');
 // How long a spoken numeric readout (elevation/windage, etc.) stays on
 // screen after being spoken (2026-09-06, Rick: wants to glance at the
 // phone/tablet mid-adjustment to confirm the numbers without asking
-// Ballistica to repeat herself). Mid-range of the "5-10 seconds" he
-// asked for.
-const READOUT_DISPLAY_MS = 8000;
+// Ballistica to repeat herself). Doubled to 10s after a range retest
+// found 8s wasn't enough time to read elevation, then windage, then
+// physically dial both turrets.
+const READOUT_DISPLAY_MS = 10000;
 let readoutClearTimer = null;
 
 function showReadout(text) {
   voiceReadoutEl.textContent = text;
+  voiceReadoutEl.classList.add('visible');
   if (readoutClearTimer) clearTimeout(readoutClearTimer);
-  readoutClearTimer = setTimeout(() => { voiceReadoutEl.textContent = ''; }, READOUT_DISPLAY_MS);
+  readoutClearTimer = setTimeout(() => {
+    voiceReadoutEl.classList.remove('visible');
+    voiceReadoutEl.textContent = '';
+  }, READOUT_DISPLAY_MS);
 }
 
 function setVoiceState(text, hot) {

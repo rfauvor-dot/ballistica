@@ -1198,6 +1198,11 @@ class BallisticaCLI:
             solver, rifle, load = self.solver()
         except ValueError as exc:
             return str(exc)
+        # Range retest, 2026-09-06: "what rifle/load are we using" was read
+        # back at full conversational speed -- fine for small talk, too
+        # fast to follow for a dense rifle/load/conditions dump. Same
+        # readout pace as a drop-at-range solution, not a general-chat one.
+        self._last_reply_is_readout = True
         return (
             f"Rifle: {rifle.name} (scope height {rifle.scope_height_in}in, "
             f"click value {rifle.click_value_mrad} mrad)\n"
