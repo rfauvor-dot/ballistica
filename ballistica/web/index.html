@@ -189,15 +189,19 @@
      so this now floats front-and-center regardless of scroll position.
      Hidden via opacity/pointer-events (not `display`) so the fade
      transition can run; `.visible` is toggled by showReadout()/its
-     clear timer below. */
+     clear timer below. Widened and given more breathing room
+     (2026-09-06, second range retest): confirmed working and centered,
+     but Rick found it narrow and tall, crowding the form fields right
+     up against the box edges -- more horizontal room lets the three
+     lines sit wider and shorter instead of cramped. */
   .voice-panel .readout-line {
     position: fixed; top: 50%; left: 50%;
     transform: translate(-50%, -50%) scale(0.96);
-    z-index: 30; max-width: min(90vw, 480px);
+    z-index: 30; min-width: min(80vw, 320px); max-width: min(94vw, 560px);
     background: var(--bg); border: 3px solid var(--text); border-radius: 16px;
-    padding: 20px 26px; box-shadow: 0 8px 32px rgba(0,0,0,0.35);
-    font-size: 26px; font-weight: 800; color: var(--text); white-space: pre-line;
-    text-align: center; opacity: 0; pointer-events: none;
+    padding: 28px 36px; box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+    font-size: 26px; font-weight: 800; line-height: 1.5; color: var(--text);
+    white-space: pre-line; text-align: center; opacity: 0; pointer-events: none;
     transition: opacity 0.15s ease, transform 0.15s ease;
   }
   .voice-panel .readout-line.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
@@ -1471,10 +1475,11 @@ const voiceUnsupportedEl = document.getElementById('voiceUnsupported');
 // How long a spoken numeric readout (elevation/windage, etc.) stays on
 // screen after being spoken (2026-09-06, Rick: wants to glance at the
 // phone/tablet mid-adjustment to confirm the numbers without asking
-// Ballistica to repeat herself). Doubled to 10s after a range retest
-// found 8s wasn't enough time to read elevation, then windage, then
-// physically dial both turrets.
-const READOUT_DISPLAY_MS = 10000;
+// Ballistica to repeat herself). 8s -> 10s, then 10s STILL felt too
+// short on a second range retest the same day -- extended further to
+// 15s (reading elevation, then windage, then physically dialing both
+// turrets is genuinely a longer task than either estimate assumed).
+const READOUT_DISPLAY_MS = 15000;
 let readoutClearTimer = null;
 
 function showReadout(text) {

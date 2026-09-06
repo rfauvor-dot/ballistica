@@ -156,16 +156,55 @@ class Rifle:
             raise ValueError(f"Rifle '{self.name}' has no active load")
         return self.loads[self.active_load_name]
 
-    def find_load(self, query: str) -> Load:
-        """Fuzzy, voice-friendly lookup: exact name, then case-insensitive
-        substring match against name/powder/notes."""
+    def find_load_matches(self, query: str) -> list[Load] | None:
+        """The raw candidate list find_load() itself resolves down to
+        one-or-raise -- exposed separately (2026-09-06, mirroring
+        find_rifle_matches() below, added 2026-09-06 for the same
+        reason) so a caller (cli.py's switch_load failure path) can
+        build a helpful "here's what's saved, which one?" message
+        instead of a flat KeyError string.
+
+        Returns None, not an empty list, when the query has no real
+        content left once filler words are stripped -- same distinction
+        find_rifle_matches() makes, for the same reason.
+
+        Ports the same two robustness passes find_rifle_matches() got on
+        2026-09-06 -- this method was never updated alongside it despite
+        the identical fuzzy-matching shape, which is exactly the kind of
+        gap that let a real, correctly-spoken load name ("3.2 grain
+        Tight Group" against a saved "3.2gr Tight Group") fail to match
+        live at the range:
+        1. Case/whitespace-insensitive exact-match shortcut first --
+           a voice transcript essentially never reproduces the stored
+           name's exact casing.
+        2. When fuzzy matching still yields more than one candidate
+           (e.g. two loads sharing a powder name like "Tight Group"),
+           a candidate whose OWN full name is completely covered by the
+           query is a much stronger signal than one that only matches
+           on scattered shared tokens."""
         if query in self.loads:
-            return self.loads[query]
+            return [self.loads[query]]
+        normalized = {name.strip().lower(): name for name in self.loads}
+        exact = normalized.get(query.strip().lower())
+        if exact:
+            return [self.loads[exact]]
         q_tokens = _query_tokens(query)
+        if not q_tokens:
+            return None
         matches = [
             load for load in self.loads.values()
             if _tokens_match(q_tokens, _tokens(f"{load.name} {load.powder} {load.notes}"))
         ]
+        if len(matches) > 1:
+            name_covered = [load for load in matches if _tokens_match(_tokens(load.name), q_tokens)]
+            if len(name_covered) == 1:
+                return name_covered
+        return matches
+
+    def find_load(self, query: str) -> Load:
+        """Fuzzy, voice-friendly lookup: exact name, then case-insensitive
+        substring match against name/powder/notes."""
+        matches = self.find_load_matches(query) or []
         if len(matches) == 1:
             return matches[0]
         if not matches:
