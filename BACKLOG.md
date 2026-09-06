@@ -487,3 +487,58 @@ camera feature not yet decided.
 once scoped), Marketing (a real differentiator -- teaching correct
 technique, not just computing a number, is a meaningfully different
 pitch from "ballistics calculator").
+
+---
+
+## Camera-based parallax detection (research, hardware/build undecided)
+
+**Raised:** Rick, 2026-09-06. Research question, not a build request.
+
+**What:** Use the scope-mounted camera to detect parallax error (target
+image and reticle sitting on different focal planes), rather than
+relying on the shooter noticing reticle "swim" via the manual head-shift
+test. Rick's own research found this genuinely unaddressed industry-wide
+(TrackingPoint's smart scope did target tracking/ballistic compensation,
+not parallax) -- a real, unclaimed diagnostic gap, not just a Ballistica
+differentiator. Framing: not a group-size silver bullet, but a way to
+rule out one invisible variable shooters routinely misattribute to their
+rifle/ammo/fundamentals.
+
+**Key finding from this research pass:** a single camera in one truly
+fixed position cannot detect parallax AT ALL, in principle -- parallax
+is defined relative to a viewpoint change, so zero viewpoint change
+means zero parallax-revealing signal, independent of algorithm
+sophistication. This ruled out the passive "camera just watches, shooter
+does nothing" version as not a v2-vs-v1 complexity question but a
+genuine hardware-architecture requirement: getting any real signal needs
+either (a) a controlled small nudge of the camera/mount itself (motorized
+or shooter-assisted, camera measures its own displacement via optical
+flow against the target), (b) a stereo camera pair at a fixed lateral
+offset, or (c) an unproven depth-from-defocus approach exploiting the
+camera's own aperture within a single frame.
+
+**Recommended v1 (validates Rick's own instinct):** controlled-nudge
+approach -- verify rifle stability via optical flow on the target
+(shared groundwork with other camera features), introduce a small known
+lateral shift of the camera/mount, sub-pixel-track reticle-vs-target
+displacement across that shift (standard OpenCV optical flow, nothing
+exotic), and compare against the drift-per-nudge ratio a real parallax
+error of a given magnitude would predict (the transferable idea from
+HCI display-parallax-correction research like EyePACT: two known-depth
+planes + a tracked viewpoint change + a geometric model of expected
+apparent shift) -- this ratio check is what distinguishes a genuine
+parallax signature from mount flex/vibration noise.
+
+**Complexity, relative to the other camera features on the roadmap:**
+active-v1 parallax detection ranks low-to-medium -- comparable to
+light/glare and precipitation detection, meaningfully simpler than
+mirage wind reading or thermal heat lift (no atmospheric modeling, no
+extra thermal hardware, no exotic ML). See chat log 2026-09-06 for the
+full complexity comparison table across all camera features.
+
+**Not scoped, hardware undecided** (ScopeMate vs. DIY, same open
+question as the rest of the camera feature set).
+
+**Owning lenses:** Build (once a hardware path and nudge mechanism are
+picked), Marketing (a genuine, verifiably-unclaimed diagnostic feature --
+worth keeping visible given how rare that is in this space).
