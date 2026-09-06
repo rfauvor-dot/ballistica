@@ -390,6 +390,22 @@ class BallisticaCLI:
         self._calibration: _CalibrationSession | None = None
         self._pending_delete: str | None = None
         self._pending_delete_at: float = 0.0
+        # Confirmation gate before a calibration session actually starts
+        # (2026-09-06, range retest): start_calibration is one of several
+        # tools the LLM can call via tool_choice="auto" alongside ordinary
+        # conversation/wind/conditions handling, and a wind-adjustment
+        # utterance mid-solution was confirmed live to occasionally
+        # misfire into it -- once started, calibration is modal (every
+        # later utterance becomes a shot reading unless it happens to
+        # contain an exact interrupt word), so an accidental entry here
+        # is far more disruptive than an accidental entry to most other
+        # tools. The deterministic fast-path regex in handle() ("start
+        # calibration", "let's chrono this") is already unambiguous and
+        # starts immediately, unchanged -- this gate applies only to the
+        # LLM-dispatched path (_request_start_calibration(), used by
+        # _dispatch_intent), which asks first instead of committing.
+        self._pending_calibration_start: bool = False
+        self._pending_calibration_start_at: float = 0.0
         # Set True by whichever handler produces a dense numeric readout
         # this turn (drop-at-range, repeat, table, spread-zero, incline
         # angle) -- api.py reads this right after handle() returns so
@@ -436,6 +452,8 @@ class BallisticaCLI:
             self._calibration = None
         if self._pending_delete is not None and now - self._pending_delete_at > _SESSION_STALE_SECONDS:
             self._pending_delete = None
+        if self._pending_calibration_start and now - self._pending_calibration_start_at > _SESSION_STALE_SECONDS:
+            self._pending_calibration_start = False
 
     def _requests_different_top_level_task(self, low: str) -> bool:
         """Whether `low` unambiguously asks for a different top-level task
@@ -464,7 +482,18 @@ class BallisticaCLI:
             return True
         if re.search(r"\bswitch\b", low):
             return True
-        if re.search(r"\b(solution|shoot)\b", low):
+        # \bshoot\b alone missed "shooting" -- \b requires a boundary
+        # right after "shoot", which "shooting" never has. Found live
+        # (2026-09-06): stuck mid-calibration, "we're shooting distance
+        # now" failed to interrupt for exactly this reason, alongside
+        # "no, we're not doing velocities" and "I adjusted for wind, try
+        # again" -- none of which contain any of this method's trigger
+        # words at all, meaning today's fix only closes the "shoot" vs
+        # "shooting" gap, not a full guarantee every plain-English way of
+        # saying "get me out of this" will interrupt (that's the
+        # limitation motivating the confirmation-gate fix alongside this
+        # one -- see _start_calibration()).
+        if re.search(r"\b(solutions?|shoot\w*)\b", low):
             return True
         return False
 
@@ -520,6 +549,10 @@ class BallisticaCLI:
         if self._pending_delete is not None:
             self._pending_delete_at = time.time()
             return self._handle_delete_confirm(t)
+
+        if self._pending_calibration_start:
+            self._pending_calibration_start_at = time.time()
+            return self._handle_calibration_start_confirm(t)
 
         if low in ("help", "?"):
             return HELP_TEXT
@@ -709,7 +742,7 @@ class BallisticaCLI:
         if name == "start_rifle_setup":
             return self._start_setup("rifle", original_text)
         if name == "start_calibration":
-            return self._start_calibration()
+            return self._request_start_calibration()
         if name == "update_rifle_field":
             return self._update_rifle_fields(args)
         if name == "delete_rifle":
@@ -1074,6 +1107,39 @@ class BallisticaCLI:
         self._calibration = _CalibrationSession(rifle.name, load.name)
         return (f"Calibration started, {load.name}. Book velocity {load.muzzle_velocity_fps:.0f}. "
                 f"Read me shots.")
+
+    def _request_start_calibration(self) -> str:
+        """Confirmation gate in front of _start_calibration(), used only
+        by the LLM-dispatched start_calibration tool call (_dispatch_intent),
+        never by handle()'s own deterministic "start calibration"/"chrono
+        this" fast-path regex above, which is already unambiguous and
+        starts immediately as before. Added 2026-09-06 after a wind-
+        adjustment utterance mid-solution was confirmed live to
+        occasionally get classified as start_calibration instead of
+        set_wind -- tool_choice="auto" lets the model choose ANY tool
+        for ANY utterance, and once calibration actually starts it's
+        modal (every later utterance becomes a shot reading unless it
+        hits an exact interrupt word), which is a much more disruptive
+        failure than most other wrong-tool mistakes this session turned
+        up. Asking first costs one extra turn on a genuine calibration
+        request but costs nothing on a false one -- "no"/anything else
+        just cancels with no session ever created."""
+        try:
+            _, rifle, load = self.solver()
+        except ValueError as exc:
+            return str(exc)
+        self._pending_calibration_start = True
+        self._pending_calibration_start_at = time.time()
+        return f"Start a calibration session for the {load.name}? Say yes to begin."
+
+    def _handle_calibration_start_confirm(self, text: str) -> str:
+        low = text.lower().strip()
+        self._pending_calibration_start = False
+        if _CONFIRM_YES_WORD_RE.match(low) or (
+            re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
+        ):
+            return self._start_calibration()
+        return "Okay, not starting calibration."
 
     def _calibration_stats(self) -> tuple[float, float]:
         shots = self._calibration.shots

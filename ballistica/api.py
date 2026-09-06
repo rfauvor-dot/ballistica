@@ -974,10 +974,10 @@ def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(
 
 def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     """Reconstructs a BallisticaCLI's in-progress voice-conversation
-    state (setup/calibration/pending_delete/chat_history/atmosphere/
-    wind) from what the previous request persisted -- the API is
-    stateless per-request, so this stands in for the single-tenant
-    CLI's long-lived in-memory object.
+    state (setup/calibration/pending_delete/pending_calibration_start/
+    chat_history/atmosphere/wind) from what the previous request
+    persisted -- the API is stateless per-request, so this stands in
+    for the single-tenant CLI's long-lived in-memory object.
 
     atmosphere/wind added 2026-09-06: a real, confirmed-live bug found
     during a deep-dive review -- these were never part of this round
@@ -986,7 +986,15 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     silently reverted to STANDARD_ATMOSPHERE / a calm WindCondition()
     default on the very next voice turn, since every turn constructs a
     brand new BallisticaCLI. Matches Rick's own report of a solve
-    reading back conditions that didn't match what he'd just set."""
+    reading back conditions that didn't match what he'd just set.
+
+    pending_calibration_start added 2026-09-06 (same day, second pass):
+    the new confirmation gate in front of a calibration session
+    (_request_start_calibration()) is exactly this same class of state
+    -- omitting it here would mean the "yes" reply to "start a
+    calibration session? say yes to begin" arrives on a brand new
+    CLI that never heard the question, landing in ordinary dispatch
+    instead of confirming anything."""
     cli._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
     cli._calibration = (
         _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
@@ -994,6 +1002,9 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     pending_delete = state.get("pending_delete")
     cli._pending_delete = pending_delete["rifle_name"] if pending_delete else None
     cli._pending_delete_at = pending_delete["at"] if pending_delete else 0.0
+    pending_cal = state.get("pending_calibration_start")
+    cli._pending_calibration_start = bool(pending_cal)
+    cli._pending_calibration_start_at = pending_cal["at"] if pending_cal else 0.0
     # Open-ended conversational memory (2026-09-05) -- plain list of
     # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
     # from_dict() round-trip needed like the session objects above.
@@ -1014,6 +1025,9 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
         "pending_delete": (
             {"rifle_name": cli._pending_delete, "at": cli._pending_delete_at}
             if cli._pending_delete else None
+        ),
+        "pending_calibration_start": (
+            {"at": cli._pending_calibration_start_at} if cli._pending_calibration_start else None
         ),
         "chat_history": cli._chat_history,
         "atmosphere": dataclasses.asdict(cli.atmosphere),
