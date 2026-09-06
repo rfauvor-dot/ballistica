@@ -396,9 +396,13 @@ class VoiceSpeakIn(BaseModel):
                                 "not a guess, don't second-guess it without asking first.",
     )
     speed: float = Field(
-        0.9, ge=0.25, le=4.0,
-        description="OpenAI TTS speed multiplier. Default slowed from the API's own 1.0 default "
-                    "after live feedback that full-speed replies were hard to follow at the range.",
+        0.75, ge=0.25, le=4.0,
+        description="OpenAI TTS speed multiplier. Slowed once already (1.0 -> 0.9) after live "
+                    "feedback that full-speed replies were hard to follow at the range; slowed "
+                    "again here (2026-09-05) after live feedback that 0.9 was still fast enough to "
+                    "clip whole words out of numeric readouts (drop/MOA/MRAD values), not just "
+                    "'a bit quick' -- this needs another live-fire round to confirm 0.75 actually "
+                    "lands, not assumed correct just because it's slower.",
     )
 
 

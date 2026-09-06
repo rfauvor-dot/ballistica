@@ -1558,7 +1558,20 @@ async function recordCommand() {
   // on *any* pause once speech has already begun, not just a lead-in
   // pause. Widened to give a deliberate speaker room to compose a full
   // sentence without being cut off mid-thought.
-  const SILENCE_MS = 2200;
+  //
+  // Widened again (2026-09-05): even 2200ms wasn't enough for deliberate,
+  // clause-separated command phrasing ("distance, [pause] four hundred
+  // yards, [pause] get solution") -- confirmed live as the likely cause
+  // of a sentence fragmenting into multiple separate recordings, each one
+  // sent as its own utterance, so only the LAST fragment's transcript
+  // ever showed as "heard" (an isolated word like "distance" landing on
+  // its own utterance is exactly the kind of thing the open-conversation
+  // layer would reasonably ask a clarifying follow-up about, which reads
+  // like the app entering some other state rather than a dropped
+  // sentence). Command-style phrasing paradoxically tends toward LONGER
+  // inter-clause pauses than natural continuous speech, not shorter, so
+  // this needs more room than conversational speech turned out to need.
+  const SILENCE_MS = 3200;
   const MIN_RECORD_MS = 500;
   const MAX_RECORD_MS = 12000;
   // Consecutive above-threshold frames (~60/sec via requestAnimationFrame)
