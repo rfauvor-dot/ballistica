@@ -259,7 +259,22 @@ class ProfileStore:
            query is a much stronger signal than one that only matches
            on scattered attribute tokens -- if exactly one candidate is
            fully name-covered, that one wins instead of surfacing every
-           attribute-level match as if they were equally likely."""
+           attribute-level match as if they were equally likely.
+
+        Third pass added 2026-09-06: the name-coverage tiebreak above
+        only helps when the rifle's own `name` field happens to restate
+        everything the shooter said (caliber, barrel length, maker) --
+        it never fires for a rifle named something short/generic that
+        doesn't literally repeat those details, even when the FULL
+        description (name + caliber + barrel + scope) uniquely nails
+        one candidate. Reported live: a fully-specified "300 Blackout,
+        7 inch barrel, Aero Precision" still came back ambiguous
+        repeatedly. Falls back to the same tiebreak against the full
+        search text (not just the bare name) ONLY when the name-only
+        tiebreak didn't already resolve it -- strictly additive, so a
+        case the name-only check already narrowed correctly is
+        untouched, this only helps cases that were otherwise still
+        ambiguous."""
         if query in self.rifles:
             return [self.rifles[query]]
         normalized = {name.strip().lower(): name for name in self.rifles}
@@ -274,6 +289,11 @@ class ProfileStore:
             name_covered = [r for r in matches if _tokens_match(_tokens(r.name), q_tokens)]
             if len(name_covered) == 1:
                 return name_covered
+            search_text_covered = [
+                r for r in matches if _tokens_match(_tokens(_rifle_search_text(r)), q_tokens)
+            ]
+            if len(search_text_covered) == 1:
+                return search_text_covered
         return matches
 
     def find_rifle(self, query: str) -> Rifle:
