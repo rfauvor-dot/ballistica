@@ -204,13 +204,38 @@ class ProfileStore:
         rifle") -- distinct from a specific query that matched nothing,
         so a caller can tell "say more" apart from "name one clearly"
         and fall back to something like the active rifle if that's
-        appropriate for its own flow."""
+        appropriate for its own flow.
+
+        Two robustness passes added 2026-09-06 after a report that a
+        FULL, correct rifle name still triggered a disambiguation
+        prompt among several similar rifles:
+        1. The exact-match shortcut used to be case/whitespace-
+           sensitive -- a voice transcript essentially never reproduces
+           the stored name's exact casing, so this almost always fell
+           through to fuzzy matching even when the name was said
+           perfectly.
+        2. When fuzzy matching still yields more than one candidate
+           (e.g. two rifles sharing caliber/manufacturer tokens), a
+           candidate whose OWN full name is completely covered by the
+           query is a much stronger signal than one that only matches
+           on scattered attribute tokens -- if exactly one candidate is
+           fully name-covered, that one wins instead of surfacing every
+           attribute-level match as if they were equally likely."""
         if query in self.rifles:
             return [self.rifles[query]]
+        normalized = {name.strip().lower(): name for name in self.rifles}
+        exact = normalized.get(query.strip().lower())
+        if exact:
+            return [self.rifles[exact]]
         q_tokens = _query_tokens(query)
         if not q_tokens:
             return None
-        return [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(_rifle_search_text(r)))]
+        matches = [r for r in self.rifles.values() if _tokens_match(q_tokens, _tokens(_rifle_search_text(r)))]
+        if len(matches) > 1:
+            name_covered = [r for r in matches if _tokens_match(_tokens(r.name), q_tokens)]
+            if len(name_covered) == 1:
+                return name_covered
+        return matches
 
     def find_rifle(self, query: str) -> Rifle:
         matches = self.find_rifle_matches(query) or []
