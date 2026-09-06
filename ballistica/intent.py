@@ -92,7 +92,13 @@ _SYSTEM_PROMPT = (
 _TOOLS = [
     {
         "name": "get_drop_at_range",
-        "description": "Get the drop/windage solution at a specific distance.",
+        "description": "Get the drop/windage solution at a specific distance. ANY utterance that "
+                        "states or clearly implies a specific yardage and wants a solution belongs "
+                        "here, no matter how it's framed or what else is said alongside it -- e.g. "
+                        "'this is what I'm shooting, four hundred yards, give me a solution' is "
+                        "still this, not get_status, even though it opens like a general "
+                        "description. The distance is the signal; use get_status only when NO "
+                        "distance is stated anywhere in the utterance.",
         "input_schema": {
             "type": "object",
             "properties": {"range_yd": {"type": "number", "description": "Target distance in yards"}},
@@ -253,7 +259,10 @@ _TOOLS = [
     },
     {
         "name": "get_status",
-        "description": "Report the active rifle, load, and current conditions.",
+        "description": "Report the active rifle, load, and current conditions -- only when NO "
+                        "specific distance is mentioned anywhere in the utterance. If a distance "
+                        "is stated, that's always get_drop_at_range instead, even if the phrasing "
+                        "sounds like a general description of what's being shot.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
