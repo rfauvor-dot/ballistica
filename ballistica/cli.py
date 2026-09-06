@@ -739,7 +739,31 @@ class BallisticaCLI:
     # _solve_angle() use for in-the-moment, live-fire solutions.
 
     def _switch_load(self, query: str) -> str:
-        load = self.store.set_active_load(query)
+        # Range retest, 2026-09-06: a flat "No load matching X" (the bare
+        # KeyError text from find_load(), previously left to propagate
+        # untouched) read as a flatly wrong, argumentative denial when
+        # Rick asked for a load that genuinely existed -- he'd push back,
+        # get an apology and a correct list of what's saved, then get the
+        # SAME flat denial again on the identical next request. That
+        # back-and-forth wasn't a personality/tone problem (this message
+        # was never LLM-generated at all, just a terse Python string);
+        # it's a UX gap -- the caller had to argue to get the same
+        # information this could have offered immediately. Catching the
+        # failure here and listing what's actually saved (ambiguous
+        # candidates if there's a specific tie, every load on the rifle
+        # if nothing matched at all) gives that helpful answer on the
+        # first try instead of requiring a correction first.
+        try:
+            load = self.store.set_active_load(query)
+        except KeyError:
+            rifle = self.store.get_active_rifle()
+            candidates = rifle.find_load_matches(query) or []
+            options = candidates if candidates else list(rifle.loads.values())
+            names = ", ".join(o.name for o in options)
+            if not options:
+                return f"No loads saved yet on the {rifle.name}."
+            return (f"I'm not finding exactly one load matching '{query}' on the "
+                    f"{rifle.name} -- here's what's saved: {names}. Which one do you want?")
         self.store.save()
         return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
 
