@@ -441,3 +441,49 @@ position, not heading.
 **Owning lenses:** Build (once an approach is picked), Chief of Staff
 (worth Rick's own call on which UX tradeoff he actually wants at the
 line, before this gets scoped).
+
+---
+
+## Camera-guided zeroing walkthrough (teaching feature)
+
+**Raised:** Rick, 2026-09-06 (evening).
+
+**What:** A guided, step-by-step voice walkthrough of the one-shot-plus-
+one-adjustment zeroing method, not just a turret-click number. Most
+shooters don't know this method and instead burn ammo walking their zero
+in through repeated trial-and-error groups. The actual method: rifle
+rested and NOT moved between the shot and the adjustment; leave the
+crosshairs on the bullet hole (not the bullseye); adjust elevation first,
+then windage, moving the crosshairs FROM the hole TO the bullseye while
+the rifle stays exactly where it was resting. Once the crosshairs are on
+the bullseye with the rifle still aimed at the hole, it's zeroed. Applies
+at any zero distance the shooter is actually using (25/36/50/100yd,
+etc), not one fixed distance.
+
+**Suggested flow (Rick's own):** shooter states a zero distance -> takes
+one shot, rifle stays rested -> camera spots the bullet hole relative to
+the bullseye -> Ballistica: "leave your rifle exactly where it's at, put
+your crosshairs on the hole instead of the bullseye, without moving the
+rifle" -> walks elevation adjustment, then windage, one axis at a time
+-> confirms "your rifle is now zeroed at [distance] yards" once
+crosshairs are on the bullseye with the rifle undisturbed.
+
+**Why this is a teaching feature, not a calculation shortcut:** the
+emphasis Rick wants preserved is Ballistica actively teaching the
+technique in plain, non-jargon language (explicitly telling the shooter
+not to move the rifle between shot and adjustment is the crux of the
+method) -- framed as instruction for someone who doesn't already know
+this, not an automated correction.
+
+**Not scoped yet.** Depends on real camera input (bullet-hole spotting
+relative to a known bullseye position) -- Rick's own note ties this to
+the camera-based field-conditions feature already documented separately
+(mirage/wind reading via camera), since both need camera input during
+live shooting, but this is a distinct guided-teaching workflow, not an
+automatic environmental correction. Sequencing/scope against that other
+camera feature not yet decided.
+
+**Owning lenses:** Build (camera integration + guided-dialogue script,
+once scoped), Marketing (a real differentiator -- teaching correct
+technique, not just computing a number, is a meaningfully different
+pitch from "ballistics calculator").
