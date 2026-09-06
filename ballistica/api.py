@@ -988,13 +988,17 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     brand new BallisticaCLI. Matches Rick's own report of a solve
     reading back conditions that didn't match what he'd just set.
 
-    pending_calibration_start added 2026-09-06 (same day, second pass):
-    the new confirmation gate in front of a calibration session
-    (_request_start_calibration()) is exactly this same class of state
-    -- omitting it here would mean the "yes" reply to "start a
-    calibration session? say yes to begin" arrives on a brand new
-    CLI that never heard the question, landing in ordinary dispatch
-    instead of confirming anything."""
+    pending_calibration_start / pending_setup added 2026-09-06 (same
+    day, second and third passes): the confirmation gates in front of a
+    calibration session (_request_start_calibration()) and a guided
+    setup interview (_request_start_setup()) are exactly this same
+    class of state -- omitting either here would mean the "yes" reply
+    to "start a calibration session?"/"set up a new rifle?" arrives on
+    a brand new CLI that never heard the question, landing in ordinary
+    dispatch instead of confirming anything. pending_setup also carries
+    the original triggering text (kind + text), since confirming defers
+    field pre-fill (extract_setup_fields) until the "yes" turn, not the
+    original one."""
     cli._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
     cli._calibration = (
         _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
@@ -1005,6 +1009,10 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     pending_cal = state.get("pending_calibration_start")
     cli._pending_calibration_start = bool(pending_cal)
     cli._pending_calibration_start_at = pending_cal["at"] if pending_cal else 0.0
+    pending_setup = state.get("pending_setup")
+    cli._pending_setup_kind = pending_setup["kind"] if pending_setup else None
+    cli._pending_setup_text = pending_setup["text"] if pending_setup else ""
+    cli._pending_setup_at = pending_setup["at"] if pending_setup else 0.0
     # Open-ended conversational memory (2026-09-05) -- plain list of
     # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
     # from_dict() round-trip needed like the session objects above.
@@ -1028,6 +1036,10 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
         ),
         "pending_calibration_start": (
             {"at": cli._pending_calibration_start_at} if cli._pending_calibration_start else None
+        ),
+        "pending_setup": (
+            {"kind": cli._pending_setup_kind, "text": cli._pending_setup_text, "at": cli._pending_setup_at}
+            if cli._pending_setup_kind else None
         ),
         "chat_history": cli._chat_history,
         "atmosphere": dataclasses.asdict(cli.atmosphere),

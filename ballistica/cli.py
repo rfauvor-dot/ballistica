@@ -406,6 +406,24 @@ class BallisticaCLI:
         # _dispatch_intent), which asks first instead of committing.
         self._pending_calibration_start: bool = False
         self._pending_calibration_start_at: float = 0.0
+        # Same confirmation gate, extended to setup (2026-09-06, Rick's
+        # own follow-up ask): start_load_setup/start_rifle_setup are
+        # LLM-dispatched exactly like start_calibration was, with the
+        # same tool_choice="auto" risk of an unrelated utterance getting
+        # classified into one of them. A guided setup interview is just
+        # as modal as calibration once running (every utterance becomes
+        # a field answer). Stores kind ("load"/"rifle") and the original
+        # triggering text so field pre-fill (extract_setup_fields) can
+        # still run once confirmed, exactly as it would have immediately
+        # under the old unconfirmed path -- deferred until confirmation
+        # rather than done speculatively before knowing this is really
+        # wanted. The deterministic fast-path regex in handle() ("let's
+        # set up a new load/rifle") is already unambiguous and still
+        # starts immediately, unchanged -- this gate applies only to the
+        # LLM-dispatched path.
+        self._pending_setup_kind: str | None = None
+        self._pending_setup_text: str = ""
+        self._pending_setup_at: float = 0.0
         # Set True by whichever handler produces a dense numeric readout
         # this turn (drop-at-range, repeat, table, spread-zero, incline
         # angle) -- api.py reads this right after handle() returns so
@@ -454,6 +472,9 @@ class BallisticaCLI:
             self._pending_delete = None
         if self._pending_calibration_start and now - self._pending_calibration_start_at > _SESSION_STALE_SECONDS:
             self._pending_calibration_start = False
+        if self._pending_setup_kind is not None and now - self._pending_setup_at > _SESSION_STALE_SECONDS:
+            self._pending_setup_kind = None
+            self._pending_setup_text = ""
 
     def _requests_different_top_level_task(self, low: str) -> bool:
         """Whether `low` unambiguously asks for a different top-level task
@@ -553,6 +574,10 @@ class BallisticaCLI:
         if self._pending_calibration_start:
             self._pending_calibration_start_at = time.time()
             return self._handle_calibration_start_confirm(t)
+
+        if self._pending_setup_kind is not None:
+            self._pending_setup_at = time.time()
+            return self._handle_setup_start_confirm(t)
 
         if low in ("help", "?"):
             return HELP_TEXT
@@ -738,9 +763,9 @@ class BallisticaCLI:
         if name == "repeat_last_solution":
             return self._repeat(part if part in ("elevation", "windage") else "solution")
         if name == "start_load_setup":
-            return self._start_setup("load", original_text)
+            return self._request_start_setup("load", original_text)
         if name == "start_rifle_setup":
-            return self._start_setup("rifle", original_text)
+            return self._request_start_setup("rifle", original_text)
         if name == "start_calibration":
             return self._request_start_calibration()
         if name == "update_rifle_field":
@@ -911,6 +936,40 @@ class BallisticaCLI:
         fields = extract_setup_fields(original_text, kind, asking_about=None) if original_text else {}
         intro = "Alright, let's set up a new load." if kind == "load" else "Alright, let's set up a new rifle."
         return f"{intro} {self._begin_setup_from_fields(kind, fields)}"
+
+    def _request_start_setup(self, kind: str, original_text: str = "") -> str:
+        """Confirmation gate in front of _start_setup(), used only by the
+        LLM-dispatched start_load_setup/start_rifle_setup tool calls
+        (_dispatch_intent), never by handle()'s own deterministic "let's
+        set up a new load/rifle" fast-path regex above, which is already
+        unambiguous and starts immediately as before. Same reasoning and
+        pattern as _request_start_calibration() (2026-09-06, Rick's own
+        follow-up ask to extend that gate here too): a guided setup
+        interview is just as modal as calibration once running, so an
+        accidental LLM-dispatched entry is just as disruptive. Field
+        pre-fill from original_text is deferred until confirmed, not run
+        speculatively before knowing this is really wanted -- the text
+        itself is stashed so it can still feed extract_setup_fields()
+        once the shooter says yes, exactly as it would have immediately
+        under the old unconfirmed path."""
+        self._pending_setup_kind = kind
+        self._pending_setup_text = original_text
+        self._pending_setup_at = time.time()
+        noun = "load" if kind == "load" else "rifle"
+        return f"Set up a new {noun}? Say yes to begin."
+
+    def _handle_setup_start_confirm(self, text: str) -> str:
+        low = text.lower().strip()
+        kind = self._pending_setup_kind
+        original_text = self._pending_setup_text
+        self._pending_setup_kind = None
+        self._pending_setup_text = ""
+        if _CONFIRM_YES_WORD_RE.match(low) or (
+            re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
+        ):
+            return self._start_setup(kind, original_text)
+        noun = "load" if kind == "load" else "rifle"
+        return f"Okay, not setting up a new {noun}."
 
     def _begin_setup_from_fields(self, kind: str, fields: dict) -> str:
         """Starts a new load/rifle setup pre-filled with already-known
