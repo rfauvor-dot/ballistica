@@ -435,6 +435,11 @@ class BallisticaCLI:
         # drugged, or a robot" for ordinary chat). Reset at the top of
         # every handle() call, not sticky across turns.
         self._last_reply_is_readout = False
+        # Which tool/path actually handled this turn -- see handle()'s
+        # own comment. Purely diagnostic (api.py's per-turn debug log),
+        # never round-tripped through hydrate/dehydrate; read once, right
+        # after handle() returns, same request.
+        self._last_tool_name: str = ""
         # Rolling short-term memory for genuine open-ended conversation
         # (2026-09-05) -- NOT populated by ordinary ballistics commands
         # (switch rifle, drop-at-range, etc.), only by "converse" turns,
@@ -524,6 +529,14 @@ class BallisticaCLI:
             return ""
         low = t.lower()
         self._last_reply_is_readout = False
+        # Per-turn debug logging (2026-09-06, temporary for the current
+        # build phase -- see api.py's log_conversation_turn call site):
+        # api.py reads this right after handle() returns, same pattern as
+        # _last_reply_is_readout above. Default assumes a fast, free
+        # regex match; overwritten below for modal/pending turns, and by
+        # _dispatch_intent() with the real tool name (or "converse") for
+        # anything that reached the LLM.
+        self._last_tool_name = "fast_path"
 
         self._expire_stale_sessions()
 
@@ -556,6 +569,7 @@ class BallisticaCLI:
         # whole session.
         elif self._setup is not None:
             self._setup.last_activity = time.time()
+            self._last_tool_name = "setup_turn"
             return self._handle_setup_turn(t)
 
         # Same modal pattern as setup, above: while a calibration is
@@ -563,20 +577,24 @@ class BallisticaCLI:
         # ("average", "discard that", "end calibration"), or a way out.
         elif self._calibration is not None:
             self._calibration.last_activity = time.time()
+            self._last_tool_name = "calibration_turn"
             return self._handle_calibration_turn(t)
 
         # A destructive action -- one confirmation gate, no separate
         # session class needed for a single yes/no.
         if self._pending_delete is not None:
             self._pending_delete_at = time.time()
+            self._last_tool_name = "delete_confirm"
             return self._handle_delete_confirm(t)
 
         if self._pending_calibration_start:
             self._pending_calibration_start_at = time.time()
+            self._last_tool_name = "calibration_start_confirm"
             return self._handle_calibration_start_confirm(t)
 
         if self._pending_setup_kind is not None:
             self._pending_setup_at = time.time()
+            self._last_tool_name = "setup_start_confirm"
             return self._handle_setup_start_confirm(t)
 
         if low in ("help", "?"):
@@ -702,6 +720,10 @@ class BallisticaCLI:
         return self._dispatch_intent(*result, original_text=t)
 
     def _dispatch_intent(self, name: str, args: dict, original_text: str) -> str:
+        # Overwrites handle()'s "fast_path" default with the real
+        # LLM-classified name (including "converse") -- see handle()'s
+        # own comment on _last_tool_name.
+        self._last_tool_name = name
         # Two different failure modes need two different responses: the
         # LLM giving back malformed/missing arguments (its fault, a
         # generic "didn't understand" is honest) versus a well-formed,
