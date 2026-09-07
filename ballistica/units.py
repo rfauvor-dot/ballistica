@@ -65,6 +65,22 @@ def mrad_to_inches(mrad: float, range_yards: float) -> float:
     return mrad * MRAD_INCHES_PER_100YD * range_yards / 100.0
 
 
+def moa_to_mrad(moa: float) -> float:
+    """Pure angular unit conversion, range-independent (the range factor
+    in MOA_INCHES_PER_100YD/MRAD_INCHES_PER_100YD cancels out for any
+    linear deflection, so this is just their ratio). Exists specifically
+    so a stated click value never has to be converted by an LLM's own
+    imprecise mental math -- confirmed live (2026-09-07): asked to save
+    "point one MOA" as a click value, free-form extraction produced
+    0.2957 instead of the correct ~0.02909, an error large enough to
+    make every future dial recommendation on that rifle wrong."""
+    return moa * MOA_INCHES_PER_100YD / MRAD_INCHES_PER_100YD
+
+
+def mrad_to_moa(mrad: float) -> float:
+    return mrad * MRAD_INCHES_PER_100YD / MOA_INCHES_PER_100YD
+
+
 def clicks_to_mrad(clicks: float, click_value_mrad: float) -> float:
     return clicks * click_value_mrad
 

@@ -542,3 +542,37 @@ question as the rest of the camera feature set).
 **Owning lenses:** Build (once a hardware path and nudge mechanism are
 picked), Marketing (a genuine, verifiably-unclaimed diagnostic feature --
 worth keeping visible given how rare that is in this space).
+
+---
+
+## Load/rifle decoupling refinement: velocity data stays barrel-specific
+
+**Raised:** Rick, 2026-09-07. Refines (does not replace) the earlier
+load/rifle independence work (§28, "freely-paired pools").
+
+**The nuance:** loads (bullet, powder, charge, brass, primer -- the
+recipe) should stay independent and reusable across any rifle sharing
+that caliber, exactly as already built. But the MEASURED velocity from
+actually firing a load is a property of the load-PLUS-BARREL
+combination, not the load alone -- the same 5.56 load produces very
+different velocity out of a 6in barrel than a 20in one. Today's model
+doesn't yet have anywhere to hang a rifle-specific velocity record onto
+a caliber-shared load.
+
+**Correct data model per Rick:** loads and rifles both stay independent
+(as already built); a separate pairing record links one specific load
+to one specific rifle and holds the measured velocity (and other chrono
+data) for exactly that combination. One load can have several such
+records -- one per rifle it's actually been tested in -- and a solution
+must use the record matching the CURRENTLY ACTIVE rifle, never a
+generic or wrong-barrel value.
+
+**Not scoped yet** -- no existing migration or code implements this
+pairing-record concept; current schema has no barrel-specific velocity
+table at all. Real design work needed on how this interacts with the
+existing calibration flow (_CalibrationSession already measures a
+real velocity per rifle+load -- the natural place this pairing record
+would actually get written).
+
+**Owning lenses:** Build (schema + calibration-flow wiring, once
+scoped).

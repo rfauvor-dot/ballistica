@@ -30,6 +30,7 @@ from .intent import classify_calibration_turn, extract_intent, extract_setup_fie
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
+from .units import moa_to_mrad
 from .zero import find_minimum_spread_zero
 
 HELP_TEXT = """\
@@ -97,8 +98,15 @@ _LOAD_EXTRA_PROMPTS = {
 # a red dot's "reticle" is a dot/circle size in MOA, not a scope's
 # crosshair pattern. _rifle_extra_fields() picks the right set once
 # optic_type is known (see _RIFLE_REQUIRED above).
-_RIFLE_EXTRA_FIELDS_COMMON = ["caliber", "barrel_length_in", "twist_rate", "click_value_mrad",
-                              "reticle_unit", "scope_make", "scope_model", "has_suppressor"]
+_RIFLE_EXTRA_FIELDS_COMMON = ["caliber", "barrel_length_in", "twist_rate", "reticle_unit",
+                              "click_value_mrad", "scope_make", "scope_model", "has_suppressor"]
+# reticle_unit asked BEFORE click_value_mrad, not the reverse (2026-09-07,
+# confirmed live): click_value has to be precisely converted to true mrad
+# when the reticle is MOA (see _normalize_click_value()), and that
+# conversion needs to know the unit -- asking unit-then-value means the
+# unit is already in the draft by the time click value is extracted,
+# instead of relying on the shooter volunteering both at once in a
+# single breath (which they may not).
 _RIFLE_EXTRA_FIELDS_SCOPE = ["magnification", "objective_lens_mm", "focal_plane", "reticle_type"]
 _RIFLE_EXTRA_FIELDS_RED_DOT = ["dot_size_moa", "reticle_type"]
 _RIFLE_EXTRA_PROMPTS = {
@@ -210,6 +218,39 @@ _CONFIRM_YES_WORD_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|s
 _CONFIRM_DELETE_YES_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|delete( it)?|do it|go ahead)\b")
 _NEGATED_CONFIRM_RE = re.compile(r"\b(not|isn.t|wasn.t|ain.t)\b[\w\s]{0,15}\b(correct|right)\b")
 
+_CALIBRATION_WORD_RE = re.compile(r"\bcalibrat(?:e|ion)\b|\bchrono(?:graph)?\b")
+# How far into the utterance "calibrate"/"chronograph" has to appear to
+# count as an actual command, not just a mention. Found live (2026-09-07):
+# a long vocabulary-recitation utterance ("MOA, MRAD, elevation, windage,
+# zero, drag coefficient, chronograph, calibers like...") named
+# "chronograph" as one term among many, deep in the sentence, and this
+# accidentally started a real calibration session -- twice in the same
+# range session. A bare substring search has no way to tell "start
+# calibration" (trigger word in the first couple words, an unmistakable
+# command) from a long list that happens to mention the word once. Every
+# real command phrasing for this puts the trigger word within the first
+# ~30 characters ("start calibration", "let's chrono this load", "time to
+# calibrate"); a recitation or aside puts it much deeper. Not a perfect
+# discriminator -- just the actual failure mode observed, closed without
+# narrowing what genuine commands this still catches.
+_CALIBRATION_TRIGGER_MAX_POS = 30
+
+
+def _looks_like_calibration_command(low: str) -> bool:
+    m = _CALIBRATION_WORD_RE.search(low)
+    return m is not None and m.start() < _CALIBRATION_TRIGGER_MAX_POS
+
+
+# "I'm done with the current thing," anywhere in the utterance, not
+# anchored to the start -- see _requests_different_top_level_task()'s use
+# of this for why an unanchored, broad check matters here specifically
+# ("That's all, finish shooting." doesn't start with "finish", so the
+# calibration-end regex that used to require it at the very start
+# (^(end calibration|...)) never matched it either).
+_DONE_SIGNAL_RE = re.compile(
+    r"\b(end calibration|we.re done|that.s (all|it|enough|good)|finish(ed)?|done|stop( there)?|wrap.*up)\b"
+)
+
 # Confirmed live (Addendum 11): asked something that isn't an answer to
 # the current field (e.g. "what caliber", said while scope height was
 # being asked), the extractor can hallucinate a placeholder value like
@@ -230,6 +271,34 @@ def _is_real_value(value) -> bool:
     if value in (None, ""):
         return False
     return not (isinstance(value, str) and _PLACEHOLDER_RE.match(value.strip()))
+
+
+def _normalize_click_value(fields: dict, effective_reticle_unit: str) -> dict:
+    """Renames the LLM-facing 'click_value' (a raw, unit-ambiguous number,
+    exactly as the shooter stated it -- see click_value's own tool-schema
+    description in intent.py) to the Rifle dataclass's actual
+    'click_value_mrad' field, converting precisely via units.moa_to_mrad()
+    when the reticle is MOA. This conversion must happen here, in
+    deterministic code, never left to the LLM extraction itself --
+    confirmed live (2026-09-07): asked to save "point one MOA" as a
+    click value, free-form extraction produced 0.2957 instead of the
+    correct ~0.02909, an error large enough to make every future dial
+    recommendation on that rifle wrong. click_value_mrad feeds directly
+    into mrad_to_clicks() for every solution's turret guidance, so this
+    has to be exact, not approximate.
+
+    `effective_reticle_unit` is the caller's best knowledge of which unit
+    the click value was actually stated in -- the reticle_unit given in
+    this SAME turn if there is one, otherwise whatever was already known
+    (a previous setup turn's draft, or the rifle's own saved value for a
+    one-shot correction), defaulting to MRAD (Rifle's own dataclass
+    default) if genuinely never stated."""
+    if "click_value" not in fields:
+        return fields
+    fields = dict(fields)
+    raw = fields.pop("click_value")
+    fields["click_value_mrad"] = moa_to_mrad(raw) if effective_reticle_unit == "MOA" else raw
+    return fields
 
 # A modal setup/calibration session used to stay open indefinitely on
 # repeated "didn't catch that" turns -- reasonable for one bad mic pickup,
@@ -504,7 +573,7 @@ class BallisticaCLI:
             return True
         if not already_load_setup and re.search(r"\b(?:new|add|set ?up)\b.*\b(load|round)\b", low):
             return True
-        if self._calibration is None and (re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low)):
+        if self._calibration is None and _looks_like_calibration_command(low):
             return True
         if re.search(r"\bswitch\b", low):
             return True
@@ -519,7 +588,19 @@ class BallisticaCLI:
         # saying "get me out of this" will interrupt (that's the
         # limitation motivating the confirmation-gate fix alongside this
         # one -- see _start_calibration()).
-        if re.search(r"\b(solutions?|shoot\w*)\b", low):
+        #
+        # Excluding a "done/finished" signal here is a second, separate
+        # fix (2026-09-07, found in a real range transcript): "shoot\w*"
+        # widened to catch "shooting" ALSO matches "finish shooting" --
+        # which doesn't mean "switch me to a solution," it means "I'm
+        # done with calibration, wrap it up." Treating it as a top-level
+        # switch cleared an active calibration session with 4 good shots
+        # in it and never once asked to save -- the data was just gone,
+        # a worse outcome than the original stuck-session bug this
+        # trigger word exists to fix. A "done" signal here means let the
+        # modal session's OWN wrap-up handling (a save prompt, not a
+        # silent wipe) take this turn instead.
+        if re.search(r"\b(solutions?|shoot\w*)\b", low) and not _DONE_SIGNAL_RE.search(low):
             return True
         return False
 
@@ -650,7 +731,7 @@ class BallisticaCLI:
         if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b", low):
             return self._start_setup("rifle", t)
 
-        if re.search(r"\bcalibrat(?:e|ion)\b", low) or re.search(r"\bchrono(?:graph)?\b", low):
+        if _looks_like_calibration_command(low):
             return self._start_calibration()
 
         m = re.search(r"\b(?:delete|remove|get rid of)\b\s*(?:the\s+)?(.*)", low)
@@ -884,12 +965,17 @@ class BallisticaCLI:
         correction like "change the twist rate to 1:8" just declined
         with "didn't understand" -- which reads exactly like a save that
         silently failed, even though nothing was ever attempted."""
+        try:
+            rifle = self.store.get_active_rifle()
+        except ValueError as exc:
+            return str(exc)
+        if "click_value" in fields:
+            fields = _normalize_click_value(fields, fields.get("reticle_unit") or rifle.reticle_unit)
         valid = {f.name for f in dataclasses.fields(Rifle)} - {"name", "loads", "active_load_name"}
         updates = {k: v for k, v in fields.items() if k in valid and _is_real_value(v)}
         if not updates:
             return "Didn't catch a specific field to change there -- try again?"
         try:
-            rifle = self.store.get_active_rifle()
             self.store.update_rifle_fields(rifle.name, **updates)
             self.store.save()
         except (KeyError, ValueError) as exc:
@@ -1021,6 +1107,8 @@ class BallisticaCLI:
         used to just switch rifles and silently drop the load info)."""
         self._setup = _SetupSession(kind)
         valid = {f.name for f in dataclasses.fields(Load if kind == "load" else Rifle)}
+        if kind == "rifle":
+            valid = valid | {"click_value"}
         if fields:
             self._setup.draft.update({k: v for k, v in fields.items() if k in valid and _is_real_value(v)})
 
@@ -1048,6 +1136,12 @@ class BallisticaCLI:
         for field in extras:
             if field in self._setup.skipped:
                 continue
+            # click_value_mrad is stored raw, as "click_value", until
+            # _finalize_setup() converts it precisely -- see
+            # _normalize_click_value()'s docstring for why that
+            # conversion can't happen turn-by-turn.
+            if field == "click_value_mrad" and self._setup.draft.get("click_value") not in (None, ""):
+                continue
             if self._setup.draft.get(field) in (None, ""):
                 return field
         return None
@@ -1063,7 +1157,11 @@ class BallisticaCLI:
                         else _rifle_extra_fields(d.get("optic_type", ""), d.get("has_suppressor", False)))
         parts = []
         for f in extra_fields:
-            v = d.get(f)
+            # click_value_mrad is stored raw, as "click_value", until
+            # _finalize_setup() converts it -- speak back whatever's
+            # actually there (the shooter's own stated number, before
+            # conversion happens) rather than showing nothing.
+            v = d.get("click_value") if f == "click_value_mrad" else d.get(f)
             if f == "has_suppressor":
                 # "True"/"False" spoken back verbatim reads wrong -- and a
                 # plain "no suppressor" isn't worth calling out, same as
@@ -1072,7 +1170,7 @@ class BallisticaCLI:
                     parts.append("suppressed")
                 continue
             if v not in (None, ""):
-                parts.append(_speak_field(f, v))
+                parts.append(_speak_field(f, v) if f != "click_value_mrad" else f"click value {v:g}")
         return f" Also got: {', '.join(parts)}." if parts else ""
 
     def _setup_summary(self) -> str:
@@ -1098,6 +1196,16 @@ class BallisticaCLI:
                 self.store.save()
                 self._setup = None
                 return f"Saved -- you're on the {load.name} now."
+            # The one authoritative point click_value gets converted to
+            # true mrad -- see _normalize_click_value()'s docstring.
+            # Deliberately not done turn-by-turn: reticle_unit is asked
+            # right before click value in the normal flow, but a shooter
+            # can volunteer fields out of order, and converting against a
+            # not-yet-known unit (silently defaulting to "no conversion
+            # needed") is exactly the bug this fix closes. By this point
+            # reticle_unit is either genuinely final or genuinely never
+            # stated (Rifle's own MRAD default applies either way).
+            d = _normalize_click_value(d, d.get("reticle_unit") or "MRAD")
             valid = {f.name for f in dataclasses.fields(Rifle)}
             rifle = Rifle(**{k: v for k, v in d.items() if k in valid})
             self.store.add_rifle(rifle, make_active=True)
@@ -1157,6 +1265,8 @@ class BallisticaCLI:
 
         fields = extract_setup_fields(text, self._setup.kind, asking_about=current_field)
         valid = {f.name for f in dataclasses.fields(Load if self._setup.kind == "load" else Rifle)}
+        if self._setup.kind == "rifle":
+            valid = valid | {"click_value"}
         before = dict(self._setup.draft)
         if fields:
             self._setup.draft.update({k: v for k, v in fields.items() if k in valid and _is_real_value(v)})
@@ -1297,7 +1407,10 @@ class BallisticaCLI:
             # Falls through -- most likely one more shot came in after
             # "end calibration" was said a beat too early.
 
-        if re.match(r"^(end calibration|that.s it|we.re done|finished?|finish( calibration)?)\b", low):
+        # Unanchored (2026-09-07, was re.match(r"^...") -- anchoring to
+        # the very start missed "That's all, finish shooting.", a real
+        # utterance that says this plainly but doesn't lead with it).
+        if _DONE_SIGNAL_RE.search(low):
             return self._request_end_calibration()
 
         if re.search(r"\baverage\b", low):
@@ -1310,7 +1423,15 @@ class BallisticaCLI:
         if re.search(r"\b(discard|throw out|toss|scratch that|bad (reading|shot))\b", low):
             return self._discard_last_shot()
 
-        m = re.search(r"(\d{3,5}(?:\.\d+)?)", low)
+        # \b on both sides -- found live (2026-09-07): the bare version
+        # matched digits embedded INSIDE an unrelated alphanumeric token,
+        # specifically "335" out of "H335" (a powder name), logging a
+        # bogus 335fps shot reading every time the powder name was
+        # mentioned mid-calibration and corrupting the running average.
+        # \b requires a transition between a word and non-word character;
+        # "h" and "3" are both word characters, so \b\d never matches
+        # partway through "h335" the way the unanchored version did.
+        m = re.search(r"\b(\d{3,5}(?:\.\d+)?)\b", low)
         if m:
             return self._record_shot(float(m.group(1)))
 
