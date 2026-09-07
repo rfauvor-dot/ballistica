@@ -306,7 +306,14 @@ _TOOLS = [
                 "caliber": {"type": "string"},
                 "barrel_length_in": {"type": "number"},
                 "twist_rate": {"type": "string", "description": "e.g. '1:7'"},
-                "click_value_mrad": {"type": "number"},
+                "click_value": {"type": "number", "description": "The click value EXACTLY as stated, "
+                                "in whatever unit their reticle actually uses -- e.g. 0.1 for '0.1 mrad "
+                                "clicks' or 0.25 for 'quarter MOA clicks'. NEVER convert this to mrad "
+                                "yourself even if you know the reticle is MOA -- the app does that "
+                                "conversion precisely afterward. A free-form conversion attempted here "
+                                "produced a wrong value confirmed live (asked for '0.1 MOA', produced "
+                                "0.2957 instead of the correct ~0.029) -- an error this consequential "
+                                "must never be left to approximate mental math."},
                 "reticle_unit": {"type": "string", "enum": ["MRAD", "MOA"]},
                 "optic_type": {"type": "string", "enum": ["scope", "red_dot"]},
                 "scope_make": {"type": "string"},
@@ -580,7 +587,14 @@ _RIFLE_SETUP_TOOL = {
             "caliber": {"type": "string"},
             "barrel_length_in": {"type": "number"},
             "twist_rate": {"type": "string", "description": "e.g. '1:7'"},
-            "click_value_mrad": {"type": "number"},
+            "click_value": {"type": "number", "description": "The click value EXACTLY as stated, in "
+                            "whatever unit their reticle actually uses -- e.g. 0.1 for '0.1 mrad clicks' "
+                            "or 0.25 for 'quarter MOA clicks'. NEVER convert this to mrad yourself even "
+                            "if you know the reticle is MOA -- the app does that conversion precisely "
+                            "afterward. A free-form conversion attempted here produced a wrong value "
+                            "confirmed live (asked for '0.1 MOA', produced 0.2957 instead of the correct "
+                            "~0.029) -- an error this consequential must never be left to approximate "
+                            "mental math."},
             "reticle_unit": {"type": "string", "enum": ["MRAD", "MOA"]},
             "scope_make": {"type": "string"},
             "scope_model": {"type": "string"},
