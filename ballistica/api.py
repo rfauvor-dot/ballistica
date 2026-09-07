@@ -1073,7 +1073,19 @@ def v2_voice_query(
         reply = _msg(exc)
 
     user_store.set_conversation_state(**_dehydrate_cli(cli))
-    awaiting_response = cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+    # Temporary per-turn debug log (2026-09-06, current build phase --
+    # see db/010_conversation_debug_log.sql and supabase_store.py's
+    # log_conversation_turn()). Best-effort: a logging failure (e.g. the
+    # migration not yet applied to this Supabase project) must never
+    # break the actual voice reply the shooter is waiting on.
+    try:
+        user_store.log_conversation_turn(payload.text, cli._last_tool_name, reply or "")
+    except Exception:
+        pass
+    awaiting_response = (
+        cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+        or cli._pending_calibration_start or cli._pending_setup_kind is not None
+    )
     return VoiceQueryOut(
         reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,
         is_readout=cli._last_reply_is_readout,
@@ -1177,6 +1189,28 @@ def v2_status(user_store: SupabaseProfileStore = Depends(_get_user_store)):
     if rifle.active_load_name is not None and rifle.active_load_name in rifle.loads:
         active_load = _load_to_out(rifle.get_active_load())
     return {"rifle": _rifle_to_detail(rifle), "active_load": active_load}
+
+
+@app.get("/v2/debug/conversation-log")
+def v2_debug_conversation_log(
+    limit: int = 50, user_store: SupabaseProfileStore = Depends(_get_user_store),
+):
+    """Temporary, current-build-phase only (2026-09-06) -- see
+    db/010_conversation_debug_log.sql and log_conversation_turn()'s own
+    docstring. Returns this user's own most recent voice turns (input
+    text, which tool/path handled it, and the reply), newest first --
+    for diagnosing what actually happened in a real session after the
+    fact, instead of relying on a verbal recap. RLS-scoped the same as
+    every other per-user endpoint; there is no cross-user access here
+    regardless of what limit is requested."""
+    try:
+        return {"turns": user_store.get_recent_conversation_log(limit)}
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="conversation_debug_log table not found -- run db/010_conversation_debug_log.sql "
+                   "in the Supabase SQL Editor first.",
+        ) from exc
 
 
 @app.get("/v2/conditions/from-location")
