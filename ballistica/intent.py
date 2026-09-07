@@ -148,7 +148,15 @@ _TOOLS = [
     },
     {
         "name": "switch_load",
-        "description": "Switch the active ammunition load on the current rifle.",
+        "description": "Switch the active ammunition load on the CURRENT rifle -- the query "
+                        "describes the LOAD (grain weight, bullet type, powder name/charge, e.g. "
+                        "'21 grain' or 'H335'), never a caliber or rifle name/description. Found "
+                        "live (2026-09-06): 'I want to switch to the 300 blackout' -- clearly a "
+                        "caliber, describing which RIFLE to switch to -- got misclassified here "
+                        "instead of switch_rifle, then failed to match any load (because it isn't "
+                        "one). If the query names a caliber, rifle manufacturer, or other rifle-level "
+                        "description rather than a load-level one, use switch_rifle instead, even "
+                        "though the word 'switch' alone doesn't say which.",
         "input_schema": {
             "type": "object",
             "properties": {"query": {"type": "string", "description": "Fuzzy name/description of the load, e.g. '21 grain' or 'H335'"}},
@@ -157,12 +165,22 @@ _TOOLS = [
     },
     {
         "name": "switch_rifle",
-        "description": "Switch the active rifle. If the SAME utterance also volunteers details for "
-                        "a NEW load on that rifle (not just switching to one that's already saved --"
-                        "e.g. 'switching to the 300 blackout, first load is the 110s at 24 grains of "
-                        "Lil Gun, zero at 50'), also fill in the matching new_load_* fields so that "
-                        "information isn't lost just because it rode along with a rifle switch. Leave "
-                        "every new_load_* field out entirely if no new load info was actually stated.",
+        "description": "Switch the active rifle -- only when the shooter clearly wants to CHANGE "
+                        "which rifle is active. Naming a rifle is not enough on its own: 'what loads "
+                        "do we have for the 300 Blackout' or 'pull up loads for it' are questions "
+                        "about a rifle's data, not a request to switch -- those are get_status "
+                        "(reporting on whatever's ALREADY active), even when the rifle named happens "
+                        "to already be the active one. Found live (2026-09-06): naming the "
+                        "already-active rifle in a loads/status question got misrouted here instead "
+                        "of get_status, which is unnecessary work at best (re-resolving a rifle "
+                        "that's already correctly active) and can surface real ambiguity that has "
+                        "nothing to do with what was actually asked, at worst. If the SAME utterance "
+                        "also volunteers details for a NEW load on the rifle being switched TO (not "
+                        "just switching to one that's already saved -- e.g. 'switching to the 300 "
+                        "blackout, first load is the 110s at 24 grains of Lil Gun, zero at 50'), also "
+                        "fill in the matching new_load_* fields so that information isn't lost just "
+                        "because it rode along with a rifle switch. Leave every new_load_* field out "
+                        "entirely if no new load info was actually stated.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -336,8 +354,12 @@ _TOOLS = [
                         "this to 'check your manual' or 'I can't give specific data' -- the app "
                         "already has and can state exactly what's saved. This still applies when "
                         "the shooter names the rifle explicitly in the question -- 'what load do we "
-                        "have in the 300 Blackout', 'what's loaded in the AR-15' -- naming it doesn't "
-                        "mean look it up elsewhere or check whether it's really active from memory; "
+                        "have in the 300 Blackout', 'what's loaded in the AR-15', 'pull up loads for "
+                        "the 300 Blackout', 'what loads are saved for it' -- naming a rifle in a "
+                        "loads/status question is never itself a request to switch (that's "
+                        "switch_rifle, only when changing which rifle is active is clearly wanted); "
+                        "it doesn't mean look it up elsewhere or check whether it's really active "
+                        "from memory either; "
                         "call get_status and trust its real answer over anything from earlier in the "
                         "conversation. Found live (2026-09-06): after a rifle switch succeeded and "
                         "was confirmed, asking about that same rifle by name got answered from stale "

@@ -848,7 +848,23 @@ class BallisticaCLI:
         return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
 
     def _switch_rifle(self, query: str, new_load_fields: dict | None = None) -> str:
-        rifle = self.store.set_active_rifle(query)
+        # Live demo bug (2026-09-06): this used to let find_rifle()'s bare
+        # KeyError propagate straight through to speech -- confirmed live,
+        # a genuinely ambiguous query ("300 blackout" matching two saved
+        # rifles) came back as the raw Python repr of the candidate list
+        # ("'300 blackout' matches multiple rifles: ['300 Blackout 16in
+        # Generic', '300 Blackout 7in Aero Precision']"), not a sentence.
+        # Same fix _switch_load() already got for the identical bug shape
+        # -- list what's actually saved and ask, instead of leaking an
+        # exception's string representation as if it were dialogue.
+        try:
+            rifle = self.store.set_active_rifle(query)
+        except KeyError:
+            candidates = self.store.find_rifle_matches(query) or []
+            if not candidates:
+                return f"I couldn't find anything matching '{query}'. You may need to check the name in Settings."
+            names = ", ".join(r.name for r in candidates)
+            return f"That could be {names}. Which one do you mean?"
         self.store.save()
         switched = f"Switched you over to the {rifle.name}."
         if new_load_fields:
