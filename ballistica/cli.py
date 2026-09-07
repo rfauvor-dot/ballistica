@@ -173,6 +173,20 @@ def _speak_field(field: str, value) -> str:
         return f"{value:g} grain charge"
     if field == "notes":
         return f"note, {value}"
+    # The load setup interview's own summary speaks these 5 required
+    # fields directly, in one hardcoded sentence -- never through this
+    # function, which is why they weren't here before. update_load_field
+    # (2026-09-07) needs to speak back a correction to any of them too.
+    if field == "bullet_weight_gr":
+        return f"{value:g} grain bullet"
+    if field == "bc":
+        return f"ballistic coefficient {value:g}"
+    if field == "drag_model":
+        return f"{value} drag model"
+    if field == "muzzle_velocity_fps":
+        return f"{value:g} feet per second"
+    if field == "zero_distance_yd":
+        return f"zeroed at {value:g} yards"
     return f"{field.replace('_', ' ')} {value}"
 
 
@@ -785,9 +799,18 @@ class BallisticaCLI:
         # actually says, spoken or typed, so once nothing more specific
         # matched, any bare "<number> yd/yard/yards/yrd" is treated as a
         # drop-at-range request rather than forcing one exact phrasing.
-        m = re.search(r"(\d+\.?\d*)\s*(?:yd|yrd|yard|yards)\b", low)
-        if m:
-            return self._drop_at(float(m.group(1)))
+        # Excludes "zero" (2026-09-07, confirmed live): "change the zero
+        # distance to 15 yards" and every phrasing like it is a
+        # correction to the load's saved zero_distance_yd -- update_load_
+        # field's job -- not a solution request, but this fast-path fired
+        # on the "15 yards" it also contains before update_load_field's
+        # LLM tool ever got a chance to run. No genuine solution request
+        # naturally uses the word "zero" ("give me a solution at 400
+        # yards" never does), so excluding it here is safe.
+        if "zero" not in low:
+            m = re.search(r"(\d+\.?\d*)\s*(?:yd|yrd|yard|yards)\b", low)
+            if m:
+                return self._drop_at(float(m.group(1)))
 
         # Last resort: every fast, free, exact pattern above missed.
         # Rather than keep discovering and patching one rigid regex at a
@@ -841,7 +864,8 @@ class BallisticaCLI:
             elif name == "delete_rifle":
                 delete_query = str(args.get("query") or "")
             elif name not in ("set_conditions", "get_status", "converse", "update_rifle_field",
-                               "start_load_setup", "start_rifle_setup", "start_calibration"):
+                               "update_load_field", "start_load_setup", "start_rifle_setup",
+                               "start_calibration"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
             return "Didn't understand that. Type 'help' for supported commands."
@@ -873,6 +897,8 @@ class BallisticaCLI:
             return self._request_start_calibration()
         if name == "update_rifle_field":
             return self._update_rifle_fields(args)
+        if name == "update_load_field":
+            return self._update_load_fields(args)
         if name == "delete_rifle":
             return self._request_delete_rifle_by_query(delete_query)
         if name == "converse":
@@ -987,6 +1013,36 @@ class BallisticaCLI:
                 return "suppressed" if v else "no suppressor"
             return _speak_field(k, v)
         parts = ", ".join(_describe(k, v) for k, v in updates.items())
+        return f"Updated -- {parts}."
+
+    def _update_load_fields(self, fields: dict) -> str:
+        """Edits fields on the ACTIVE load's existing saved profile --
+        the load-level counterpart to _update_rifle_fields() above, for
+        correcting something already saved rather than adding a new
+        load. Confirmed live (2026-09-07): there was no voice command
+        for this at all -- only the rifle-level version existed -- so a
+        spoken correction to a saved load's zero distance or velocity
+        had nothing to route to, the same silent-non-save risk
+        _update_rifle_fields() was built to close, just never closed
+        for loads. The actual field-level update/validation/rollback
+        (ProfileStore.update_load_fields()) already existed, built for
+        the web app's own load-edit form -- this only wires the voice
+        layer to that same, already-correct method."""
+        try:
+            rifle = self.store.get_active_rifle()
+            load = rifle.get_active_load()
+        except ValueError as exc:
+            return str(exc)
+        valid = {f.name for f in dataclasses.fields(Load)} - {"name"}
+        updates = {k: v for k, v in fields.items() if k in valid and _is_real_value(v)}
+        if not updates:
+            return "Didn't catch a specific field to change there -- try again?"
+        try:
+            self.store.update_load_fields(rifle.name, load.name, **updates)
+            self.store.save()
+        except (KeyError, ValueError) as exc:
+            return str(exc)
+        parts = ", ".join(_speak_field(k, v) for k, v in updates.items())
         return f"Updated -- {parts}."
 
     def _request_delete_rifle_by_query(self, query: str) -> str:

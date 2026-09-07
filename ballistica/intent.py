@@ -139,7 +139,13 @@ _TOOLS = [
                         "'this is what I'm shooting, four hundred yards, give me a solution' is "
                         "still this, not get_status, even though it opens like a general "
                         "description. The distance is the signal; use get_status only when NO "
-                        "distance is stated anywhere in the utterance.",
+                        "distance is stated anywhere in the utterance. One explicit exception: "
+                        "'the zero is actually/really X yards', 'change the zero to X', 'it's zeroed "
+                        "at X, not what's saved' are correcting the load's SAVED zero_distance_yd "
+                        "field -- that's update_load_field, never a solution request, even though a "
+                        "yardage is stated. The signal is 'zero' -- a distance stated as a zero "
+                        "correction is a different thing from a distance stated as where to compute "
+                        "a solution.",
         "input_schema": {
             "type": "object",
             "properties": {"range_yd": {"type": "number", "description": "Target distance in yards"}},
@@ -327,6 +333,42 @@ _TOOLS = [
                 "suppressor_type": {"type": "string", "description": "Open text -- brand if known, "
                                                                        "otherwise a generic/custom "
                                                                        "description."},
+            },
+        },
+    },
+    {
+        "name": "update_load_field",
+        "description": "Change one or more fields on the ACTIVE load's existing saved profile -- "
+                        "e.g. 'the zero is actually 15 yards', 'change the muzzle velocity to 1750', "
+                        "'update the muzzle velocity to 1750 feet per second', 'the BC is point two "
+                        "zero zero', 'change the ballistic coefficient to point two two'. This is "
+                        "correcting a SAVED VALUE, not measuring a new one -- don't confuse this with "
+                        "start_calibration just because both can involve the word 'velocity': "
+                        "start_calibration is for reading off a STRING OF CHRONOGRAPH SHOTS to "
+                        "compute a fresh average ('let's chrono this load', 'read me shots'); "
+                        "update_load_field is for directly stating what a field should now be, in "
+                        "one sentence, no shot-by-shot reading involved. 'Change the muzzle velocity "
+                        "to 1750' is this tool, not start_calibration -- there's no chronograph "
+                        "session implied, just a direct correction. Only for editing a load that's "
+                        "already saved -- use start_load_setup instead for adding a brand new load, "
+                        "and update_rifle_field instead for a field that belongs to the RIFLE (scope "
+                        "height, click value, twist rate, etc.), not the load. Found live "
+                        "(2026-09-07): update_rifle_field existed for exactly this class of correction "
+                        "on a rifle, but nothing symmetric existed for a load, so a spoken correction "
+                        "to a saved load's zero distance or velocity had no command to route to at "
+                        "all -- same silent-non-save risk update_rifle_field was built to close.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bullet_weight_gr": {"type": "number"},
+                "bc": {"type": "number", "description": "Ballistic coefficient, e.g. 0.200"},
+                "drag_model": {"type": "string", "enum": ["G1", "G7"]},
+                "muzzle_velocity_fps": {"type": "number"},
+                "zero_distance_yd": {"type": "number"},
+                "bullet_type": {"type": "string", "description": "e.g. '77gr Sierra MatchKing'"},
+                "powder": {"type": "string"},
+                "powder_charge_gr": {"type": "number"},
+                "notes": {"type": "string"},
             },
         },
     },
