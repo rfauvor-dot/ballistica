@@ -747,7 +747,7 @@ def v2_get_profile(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
     )
     resp.raise_for_status()
     rows = resp.json()
-    return {"display_name": rows[0]["display_name"] if rows else None}
+    return {"display_name": rows[0].get("display_name") if rows else None}
 
 
 @app.patch("/v2/profile")
@@ -765,7 +765,7 @@ def v2_update_profile(payload: ProfileUpdateIn, auth: tuple[str, str] = Depends(
     )
     resp.raise_for_status()
     rows = resp.json()
-    return {"display_name": rows[0]["display_name"] if rows else None}
+    return {"display_name": rows[0].get("display_name") if rows else None}
 
 
 def _reject_if_too_large(request: Request) -> None:
