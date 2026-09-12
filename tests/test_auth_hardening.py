@@ -211,3 +211,53 @@ def test_wrong_algorithm_family_rejected(api_client):
     allow-list is rejected rather than silently accepted."""
     token = _sign(_valid_claims(), algorithm="HS512")
     _assert_rejected(api_client, token)
+
+
+@requires_jwt_secret
+def test_non_numeric_exp_claim_rejected(api_client):
+    """Claim-type confusion, not just claim-presence: 'exp' as a string
+    instead of a numeric timestamp. PyJWT itself raises DecodeError (a
+    jwt.InvalidTokenError subclass) for this rather than silently
+    coercing or ignoring it, so it's already caught by the same except
+    clause as every other invalid-token case -- this pins that down
+    with a real test instead of trusting it never regresses."""
+    claims = _valid_claims()
+    claims["exp"] = "not-a-number"
+    token = _sign(claims)
+    _assert_rejected(api_client, token)
+
+
+@requires_jwt_secret
+def test_aud_claim_list_without_authenticated_rejected(api_client):
+    """'aud' is allowed by the JWT spec to be a list rather than a
+    single string -- a token whose audience list doesn't include
+    'authenticated' must still be rejected, not accepted just because
+    the claim is present and non-empty."""
+    token = _sign(_valid_claims(aud=["other-service", "another-service"]))
+    _assert_rejected(api_client, token)
+
+
+def test_missing_authorization_header_rejected(api_client):
+    """No Authorization header at all -- distinct from an empty/malformed
+    one. FastAPI's own required-header validation intercepts this before
+    _verify_bearer ever runs (422, not 401), but it must still never
+    reach protected data. Documents the actual current status code so a
+    future change that silently drops this requirement gets caught."""
+    resp = api_client.get("/v2/rifles")
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+def test_authorization_header_without_bearer_prefix_rejected(api_client):
+    """A raw token with no 'Bearer ' scheme prefix at all -- must be
+    rejected by _verify_bearer's own startswith check, not passed
+    through to verify_token()."""
+    resp = api_client.get("/v2/rifles", headers={"Authorization": "some-raw-token-value"})
+    assert resp.status_code == 401, f"expected 401, got {resp.status_code}: {resp.text}"
+
+
+def test_lowercase_bearer_prefix_rejected(api_client):
+    """The scheme check is case-sensitive on purpose (matches the HTTP
+    Bearer spec and Supabase clients' actual casing) -- 'bearer' in
+    lowercase must not be treated as equivalent to 'Bearer'."""
+    resp = api_client.get("/v2/rifles", headers={"Authorization": "bearer some-token"})
+    assert resp.status_code == 401, f"expected 401, got {resp.status_code}: {resp.text}"
