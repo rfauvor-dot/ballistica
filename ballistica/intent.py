@@ -265,13 +265,27 @@ _TOOLS = [
                         "not be treated as small talk. Whatever details were actually said get "
                         "extracted automatically once this fires (bullet weight/type, powder, charge, "
                         "etc.) -- only the fields still missing get asked for afterward, so this never "
-                        "throws away information that was already volunteered.",
+                        "throws away information that was already volunteered. Do NOT route here just "
+                        "because the word 'load' was used as a verb -- 'load a six millimeter arc' or "
+                        "'I want to load my new rifle, it's a 6mm ARC' is someone describing a whole "
+                        "GUN (a caliber, manufacturer, or rifle-level description, with no bullet "
+                        "weight/powder/charge mentioned) and belongs in start_rifle_setup instead, even "
+                        "though 'load' is the verb they used. Found live (2026-09-15): natural phrasings "
+                        "like 'I want to load a six millimeter arc' were misrouted here about half the "
+                        "time, which then asked bullet-weight/powder questions for a rifle that was "
+                        "never even registered. The signal is what's being described (a gun vs. "
+                        "ammunition specifics), never the bare verb 'load' by itself.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "start_rifle_setup",
         "description": "Begin a guided voice interview to add a new rifle "
-                        "(e.g. 'set up a new rifle', 'let's build a new rifle profile').",
+                        "(e.g. 'set up a new rifle', 'let's build a new rifle profile'). Also covers "
+                        "'load' used as a verb meaning 'add this gun to the app' -- 'load a six "
+                        "millimeter arc', 'I want to load my six millimeter arc', 'put a 6mm ARC into "
+                        "the app' -- whenever what follows is a caliber/manufacturer/rifle-level "
+                        "description and not bullet weight/powder/charge specifics (that combination "
+                        "is start_load_setup instead, see its description).",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
