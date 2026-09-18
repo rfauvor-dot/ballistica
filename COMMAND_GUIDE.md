@@ -65,6 +65,7 @@ mid-string at the line or at the bench setting things up.
 |---|---|
 | "switch to 23.5gr H335" / "switch to my heavier load" | Changes the active **load** on the current rifle (fuzzy match — natural descriptions work via the LLM fallback, not just exact names) |
 | "switch rifle to AR-15 20in Faxon" | Changes the active **rifle** (checked before the plain "switch to" pattern, so "switch rifle to X" never gets misread as a load switch) |
+| "change rifles" / "switch loads" (no name given) | Asks which one you mean (added 2026-09-18) — previously this got misread as a status question and just re-read back whatever was already active, which looked exactly like the switch request had been ignored |
 
 **Quirk worth knowing:** this only *selects among rifles/loads that
 already exist*. There's no voice command to delete a single load (see

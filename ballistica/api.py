@@ -504,37 +504,56 @@ def get_waiver(response: Response) -> dict:
     }
 
 
-_GRAIN_ABBREVIATION_RE = re.compile(r"(\d+\.?\d*)\s*gr\b")
-
-
-def _expand_grain_abbreviation(text: str) -> str:
-    """"77gr"/"21.0gr" read out loud by TTS as "seventy-seven grrr" --
-    real report, 2026-09-18 (Rick's own words: "when she says grains,
-    because it's GR, she goes grr, and it kind of messes up her
-    speech"). The number-spelled-out cases already go through
-    _speak_field() in cli.py ("77.0" -> "77 grain bullet") and were
-    always fine -- this is specifically the raw "Ngr" shorthand, which
-    shows up in more places than any one f-string could patch: load/
-    rifle NAMES Rick has already saved with it in them ("21.0gr H335"),
-    free-text bullet_type values, and _status()'s own formatting.
-    Normalizing once, right here at the single point every spoken reply
-    already funnels through, fixes all of those at once instead of
-    hunting down each source individually -- and stays correct for any
-    future one instead of needing to be re-applied every time a new
-    reply string is added somewhere else in the app.
-
-    Only fires immediately after a number with a word boundary right
-    after "gr" (re.compile's \\b), so this can't misfire on an ordinary
-    word that happens to start with "gr" ("great", "grip") -- those
-    never have a digit immediately before them."""
+def _plural_unit_replacer(singular: str, plural: str):
     def _replace(m: re.Match) -> str:
         value = m.group(1)
         try:
-            plural = float(value) != 1.0
+            is_singular = float(value) == 1.0
         except ValueError:
-            plural = True
-        return f"{value} {'grains' if plural else 'grain'}"
-    return _GRAIN_ABBREVIATION_RE.sub(_replace, text)
+            is_singular = False
+        return f"{value} {singular if is_singular else plural}"
+    return _replace
+
+
+# Checked in this exact order: "inHg" must be tried before the bare "in"
+# pattern below it, or "in" would consume the front of "inHg" first and
+# leave a mangled, unmatched "Hg" behind in the output.
+_UNIT_ABBREVIATIONS_FOR_SPEECH = [
+    (re.compile(r"(\d+\.?\d*)\s*inHg\b"), "inch of mercury", "inches of mercury"),
+    (re.compile(r"(\d+\.?\d*)\s*gr\b"), "grain", "grains"),
+    (re.compile(r"(\d+\.?\d*)\s*yd\b"), "yard", "yards"),
+    (re.compile(r"(\d+\.?\d*)\s*in\b"), "inch", "inches"),
+    (re.compile(r"(\d+\.?\d*)\s*ft\b"), "foot", "feet"),
+    (re.compile(r"(\d+\.?\d*)\s*F\b"), "degree", "degrees"),
+]
+
+
+def _expand_unit_abbreviations_for_speech(text: str) -> str:
+    """A raw unit letter stuck directly onto a number ("77gr", "36.0yd",
+    "3.0in", "29.92inHg") gets read by TTS as a mangled run-on instead
+    of a proper word -- real report, 2026-09-18. First caught with
+    grains specifically (Rick's own words: "when she says grains,
+    because it's GR, she goes grr"); a second report the same day
+    ("zero three six point zero eye" for a zero-distance/barrel-length
+    figure) traced to the identical shape one field over -- a rifle
+    NAME or a zero_distance_yd value with "yd"/"in" stuck directly on
+    the number the same way "gr" was. Rather than patch one unit at a
+    time and wait for the next report, every raw abbreviation actually
+    produced anywhere in this app's spoken text (_status() in cli.py,
+    and any rifle/load NAME Rick has already saved with one baked in,
+    like "20in Faxon" or "21.0gr H335") gets normalized here, once, at
+    the single point every spoken reply already funnels through --
+    the already-spelled-out cases (_speak_field() in cli.py, "77 grain
+    bullet") were never affected by this and stay exactly as they are.
+
+    Only fires immediately after a number with a word boundary right
+    after the abbreviation, so this can't misfire on an ordinary word
+    that happens to start with one of these letters ("great", "grip",
+    "inch" typed out already) -- those never have a digit immediately
+    before them."""
+    for pattern, singular, plural in _UNIT_ABBREVIATIONS_FOR_SPEECH:
+        text = pattern.sub(_plural_unit_replacer(singular, plural), text)
+    return text
 
 
 @app.post("/voice/speak")
@@ -549,7 +568,7 @@ def voice_speak(request: Request, payload: VoiceSpeakIn):
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
-    text = _expand_grain_abbreviation(text)
+    text = _expand_unit_abbreviations_for_speech(text)
     try:
         client = get_openai_client()
         result = client.audio.speech.create(

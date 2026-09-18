@@ -125,6 +125,18 @@ _SYSTEM_PROMPT = (
     "since no tool was ever called to check. If a switch tool call "
     "itself comes back saying nothing matched, trust that real result "
     "and offer what it says IS saved instead of guessing further. "
+    "Fifth hard rule, no exceptions: if the shooter clearly wants to switch "
+    "to a DIFFERENT rifle or load but doesn't name which one ('change "
+    "rifles', 'switch loads', 'let's use a different one'), that's neither "
+    "switch_rifle/switch_load (both require an actual target to look up -- "
+    "there's nothing to call them with yet) nor get_status (that reports "
+    "what's CURRENTLY active, which is the opposite of what was asked for). "
+    "Respond conversationally and ask which rifle/load they want, the same "
+    "way you'd ask for a missing distance rather than guessing one. Found "
+    "live (2026-09-18): 'Change rifles' with no rifle named got answered "
+    "with a full status readback of the SAME rifle already active -- reads "
+    "exactly like the switch request was never heard at all, when what was "
+    "actually needed was just 'which rifle?'. "
     "Range talk uses yards, mils/MRAD, MOA, clicks, wind speed/direction "
     "(o'clock), temperature (F), humidity (%), altitude (ft), and "
     "barometric pressure (inHg)."
@@ -428,7 +440,11 @@ _TOOLS = [
                         "was confirmed, asking about that same rifle by name got answered from stale "
                         "conversational memory of an EARLIER rifle instead of the current real state "
                         "-- chat history is not authoritative for what's currently active, only a "
-                        "fresh get_status call is.",
+                        "fresh get_status call is. NOT the right tool, though, for 'change rifles'/"
+                        "'switch loads' with no target named -- that's a switch request missing its "
+                        "target, not a status question, and answering it with get_status just repeats "
+                        "back the CURRENT rifle as if the request to change it was never heard. See "
+                        "the system prompt's fifth hard rule.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]

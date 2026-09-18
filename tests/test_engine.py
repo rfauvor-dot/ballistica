@@ -1799,30 +1799,56 @@ def test_transcription_echo_detection():
     assert not api_module._looks_like_transcription_echo("")
 
 
-def test_grain_abbreviation_expanded_for_speech():
-    """Real feedback, 2026-09-18 (Rick's own words): "when she says
+def test_unit_abbreviations_expanded_for_speech():
+    """Real feedback, 2026-09-18, two reports the same day traced to the
+    identical root cause. First (Rick's own words): "when she says
     grains, because it's GR, she goes grr, and it kind of messes up her
-    speech." The already-spelled-out cases (_speak_field() in cli.py,
-    "77 grain bullet") were always fine -- this is specifically the raw
-    "Ngr" shorthand, which shows up in more places than any one f-string
-    could patch: load/rifle NAMES already saved with it in them ("21.0gr
-    H335"), free-text bullet_type values, and _status()'s own
-    formatting. Fixed once, at the single point every spoken reply
-    already funnels through (/voice/speak), rather than hunting down
-    each source individually."""
-    from ballistica.api import _expand_grain_abbreviation
+    speech." Second, after that was fixed just for grains: "a zero
+    distance or barrel-length figure being rendered as something like
+    'zero three six point zero eye'" -- the same shape one field over
+    (a rifle NAME or zero_distance_yd value with "in"/"yd" stuck
+    directly on the number, the same way "gr" was). The already-
+    spelled-out cases (_speak_field() in cli.py, "77 grain bullet")
+    were never affected by either report -- this is specifically the
+    raw abbreviation shorthand, which shows up in more places than any
+    one f-string could patch: load/rifle NAMES already saved with one
+    baked in ("21.0gr H335", "20in Faxon"), free-text bullet_type
+    values, and _status()'s own formatting. Fixed once, at the single
+    point every spoken reply already funnels through (/voice/speak),
+    covering every unit abbreviation this app actually produces rather
+    than patching one at a time as each gets separately reported."""
+    from ballistica.api import _expand_unit_abbreviations_for_speech as f
 
-    assert _expand_grain_abbreviation("77gr, BC 0.362") == "77 grains, BC 0.362"
-    assert _expand_grain_abbreviation("Switched you over to the 21.0gr H335.") == \
+    assert f("77gr, BC 0.362") == "77 grains, BC 0.362"
+    assert f("Switched you over to the 21.0gr H335.") == \
         "Switched you over to the 21.0 grains H335."
-    assert _expand_grain_abbreviation("bullet, 77gr Sierra MatchKing (SMK)") == \
+    assert f("bullet, 77gr Sierra MatchKing (SMK)") == \
         "bullet, 77 grains Sierra MatchKing (SMK)"
-    # Singular, not "1 grains".
-    assert _expand_grain_abbreviation("1gr charge") == "1 grain charge"
-    # An ordinary word that happens to start with "gr" must never be
-    # touched -- only a number immediately followed by "gr" qualifies.
-    assert _expand_grain_abbreviation("great grip gravy") == "great grip gravy"
-    assert _expand_grain_abbreviation("") == ""
+    # The exact real _status() line, all five raw abbreviations in one
+    # string, including "inHg" -- which must expand to "inches of
+    # mercury" whole, not get its "in" prefix eaten by the bare-"in"
+    # rule and leave a stray "Hg" behind.
+    assert f("Rifle: AR-15 20in Faxon (scope height 3.0in, click value 1.0 mrad)\n"
+              "Load: Sierra MatchKing -- 77.0gr, BC 0.362 G1, 2800 fps, zero 36.0yd\n"
+              "Conditions: 59F, 29.92inHg, 0% RH, 0ft") == (
+        "Rifle: AR-15 20 inches Faxon (scope height 3.0 inches, click value 1.0 mrad)\n"
+        "Load: Sierra MatchKing -- 77.0 grains, BC 0.362 G1, 2800 fps, zero 36.0 yards\n"
+        "Conditions: 59 degrees, 29.92 inches of mercury, 0% RH, 0 feet"
+    )
+    # Singular, not "1 grains"/"1 inches"/etc., for every unit.
+    assert f("1gr charge") == "1 grain charge"
+    assert f("1yd zero") == "1 yard zero"
+    assert f("1in barrel") == "1 inch barrel"
+    assert f("1ft altitude") == "1 foot altitude"
+    # Already-spelled-out text (a rifle named with the full word, not
+    # the abbreviation) must be left completely alone -- no digit
+    # immediately precedes "inch" here, so nothing should fire.
+    assert f("Rifle: 16 inch 223 Wylde Faxon") == "Rifle: 16 inch 223 Wylde Faxon"
+    # Ordinary words that happen to start with one of these letter
+    # sequences must never be touched -- only a number immediately
+    # followed by the abbreviation qualifies.
+    assert f("great grip gravy inch feet fine") == "great grip gravy inch feet fine"
+    assert f("") == ""
 
 
 def test_calibration_session_dict_round_trip_preserves_all_state():
