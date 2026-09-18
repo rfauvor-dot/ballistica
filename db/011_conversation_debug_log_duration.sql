@@ -1,0 +1,23 @@
+-- Adds a per-turn timing column to conversation_debug_log (2026-09-18,
+-- per Rick's own "any way we can speed up the responses" ask). Reviewing
+-- the log to answer that turned up real routing bugs but no real timing
+-- answer, because nothing before this recorded how long a turn actually
+-- took, only what was said and what handled it. This column is filled
+-- in going forward by v2_voice_query (api.py), timing just the
+-- BallisticaCLI.handle() call itself -- not the Supabase hydrate/
+-- dehydrate round trips around it, which are a fixed per-request cost
+-- regardless of intent path -- so a slow row here means the turn's own
+-- classification/handling was slow, not network/DB overhead.
+--
+-- Nullable and additive only: existing rows keep duration_ms = null
+-- (no backfill, no way to reconstruct a timing that was never
+-- measured), and supabase_store.py's log_conversation_turn() only sends
+-- this column when it has a real value, so nothing breaks against a
+-- project that hasn't run this migration yet -- same best-effort
+-- tolerance as every other piece of this table.
+--
+-- Same temporary, current-build-phase status as the table itself
+-- (db/010_conversation_debug_log.sql) -- drops along with it once the
+-- app is stable and this stops earning its keep.
+
+alter table public.conversation_debug_log add column duration_ms integer;

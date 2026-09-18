@@ -497,6 +497,89 @@ def test_delete_rifle_voice_flow_requires_explicit_confirmation(tmp_path):
     assert cli._pending_delete is None
 
 
+def test_ambiguous_rifle_switch_resolves_by_ordinal_or_name_answer(tmp_path):
+    """Real range-log bug (2026-09-18): switch_rifle's 'That could be X,
+    Y. Which one do you mean?' used to ask its question and then forget
+    it ever asked -- the next utterance, even a direct answer like "the
+    second one", got freshly (and wrongly) classified instead of
+    resolved against the candidates just offered. Nine confused turns in
+    the real log before the shooter gave up and just said the full name.
+    This must resolve on the very next turn, by ordinal or by name."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+    from ballistica.profiles import Rifle
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    store.add_rifle(Rifle(name="300 Blackout Suppressor", scope_height_in=2.5), make_active=False)
+    store.add_rifle(Rifle(name="300 Blackout Subsonic", scope_height_in=2.5), make_active=False)
+    cli = BallisticaCLI(store)
+
+    ask = cli.handle("switch rifle to 300 blackout")
+    assert "which one do you mean" in ask.lower()
+    assert cli._pending_rifle_switch == ["300 Blackout Suppressor", "300 Blackout Subsonic"]
+
+    switched = cli.handle("The second one.")
+    assert "switched you over to the 300 blackout subsonic" in switched.lower()
+    assert store.active_rifle_name == "300 Blackout Subsonic"
+    assert cli._pending_rifle_switch is None
+
+    # Same disambiguation, resolved by the one distinctive word instead
+    # of an ordinal -- a realistic, natural way to answer that isn't a
+    # verbatim repeat of the full stored name either.
+    cli.handle("switch rifle to 300 blackout")
+    switched2 = cli.handle("the suppressor one")
+    assert store.active_rifle_name == "300 Blackout Suppressor"
+    assert cli._pending_rifle_switch is None
+
+
+def test_ambiguous_rifle_switch_cancel_or_unresolved_answer(tmp_path):
+    """An explicit cancel clears the pending question without switching
+    anything; an answer that doesn't match any offered candidate
+    re-surfaces the same options rather than guessing wrong or silently
+    dropping the request."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+    from ballistica.profiles import Rifle
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    store.add_rifle(Rifle(name="300 Blackout Suppressor", scope_height_in=2.5), make_active=False)
+    store.add_rifle(Rifle(name="300 Blackout Subsonic", scope_height_in=2.5), make_active=False)
+    cli = BallisticaCLI(store)
+    original_active = store.active_rifle_name
+
+    cli.handle("switch rifle to 300 blackout")
+    cancelled = cli.handle("never mind")
+    assert "never mind" in cancelled.lower()
+    assert cli._pending_rifle_switch is None
+    assert store.active_rifle_name == original_active
+
+    cli.handle("switch rifle to 300 blackout")
+    reasked = cli.handle("hang on, let me think")
+    assert "which one do you mean" in reasked.lower()
+    assert cli._pending_rifle_switch is not None
+    assert store.active_rifle_name == original_active
+
+
+def test_ambiguous_load_switch_resolves_by_ordinal_answer(tmp_path):
+    """Same disambiguation-memory fix as rifle switch, one level down --
+    switching loads on the default profile's two H335 candidates."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    rifle = store.get_active_rifle()
+
+    ask = cli.handle("switch to H335")
+    assert "which one do you want" in ask.lower()
+    assert cli._pending_load_switch is not None
+
+    switched = cli.handle("the first one")
+    assert "21.0gr h335" in switched.lower()
+    assert rifle.active_load_name == "21.0gr H335"
+    assert cli._pending_load_switch is None
+
+
 def test_top_level_intent_interrupts_a_stuck_modal_session(tmp_path):
     """Regression, found live (2026-09-05), deployed to main 2026-09-06
     after being confirmed still live-broken in production despite having
@@ -1527,6 +1610,104 @@ def test_hydrate_dehydrate_round_trips_atmosphere_and_wind(tmp_path):
     api_module._hydrate_cli(fresh, {})
     assert fresh.atmosphere == STANDARD_ATMOSPHERE
     assert fresh.wind == WindCondition()
+
+
+def test_hydrate_dehydrate_round_trips_pending_switch_disambiguation(tmp_path):
+    """Regression guard for the same class of bug pending_delete/
+    pending_setup were already covered for above (2026-09-18, added
+    alongside the switch_rifle/switch_load disambiguation fix in
+    cli.py): every voice turn hydrates a brand-new BallisticaCLI from
+    persisted conversation_state, so a 'which one do you mean?' question
+    that set _pending_rifle_switch/_pending_load_switch in-process would
+    still be silently lost the moment it crossed the stateless-per-
+    request API boundary unless this round trip carries it too -- the
+    fix in cli.py would work in a single long-lived process and then
+    quietly do nothing in production, which is exactly the gap this
+    guards against."""
+    import ballistica.api as api_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    cli._pending_rifle_switch = ["300 Blackout Suppressor", "300 Blackout Subsonic"]
+    cli._pending_rifle_switch_at = 1234.5
+    cli._pending_load_switch = ["21.0gr H335", "23.5gr H335"]
+    cli._pending_load_switch_at = 6789.0
+
+    state = api_module._dehydrate_cli(cli)
+    restored = BallisticaCLI(store)
+    api_module._hydrate_cli(restored, state)
+    assert restored._pending_rifle_switch == cli._pending_rifle_switch
+    assert restored._pending_rifle_switch_at == cli._pending_rifle_switch_at
+    assert restored._pending_load_switch == cli._pending_load_switch
+    assert restored._pending_load_switch_at == cli._pending_load_switch_at
+
+    # No prior pending state -- must fall back to None, not crash.
+    fresh = BallisticaCLI(store)
+    api_module._hydrate_cli(fresh, {})
+    assert fresh._pending_rifle_switch is None
+    assert fresh._pending_load_switch is None
+
+
+def test_awaiting_response_true_during_pending_switch_disambiguation(tmp_path):
+    """Same bug shape the debug-log commit already fixed once for
+    pending_calibration_start/pending_setup_kind (2026-09-06): Session
+    Mode's continuous listening relies on awaiting_response to know
+    whether to keep the mic open for the next answer without the wake
+    word. Leaving the new pending states out of this would mean Session
+    Mode drops out of listening right after asking 'which one do you
+    mean?', silently defeating the disambiguation fix for exactly the
+    hands-free flow it matters most for."""
+    import ballistica.api as api_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    cli._pending_rifle_switch = ["300 Blackout Suppressor", "300 Blackout Subsonic"]
+    awaiting = (
+        cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+        or cli._pending_calibration_start or cli._pending_setup_kind is not None
+        or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+    )
+    assert awaiting is True
+
+
+def test_transcription_echo_detection():
+    """Real production bug (2026-09-18, found reviewing the conversation
+    debug log): the exact transcription bias prompt -- word for word,
+    sometimes with its leading label, sometimes without -- showed up
+    FOUR separate times across two real sessions logged as if Rick had
+    said it. He hadn't; this is the transcription model hallucinating
+    its own bias prompt back on unclear/quiet audio instead of
+    reporting no speech. One of those four even got misdiagnosed
+    elsewhere in this codebase (cli.py's _CALIBRATION_TRIGGER_MAX_POS
+    comment) as "a long vocabulary-recitation utterance" someone
+    actually said. Both hallucination shapes actually observed in
+    production must be caught; genuine short commands must not be."""
+    import ballistica.api as api_module
+
+    # Both variants seen verbatim in the real conversation_debug_log.
+    assert api_module._looks_like_transcription_echo(
+        "Ballistics and rifle terminology: MOA, MRAD, elevation, windage, "
+        "zero, drag coefficient, chronograph, calibers like 5.7x28mm or "
+        "6.5 Creedmoor, powder charge, muzzle velocity, H335 powder, "
+        "Sierra MatchKing."
+    )
+    assert api_module._looks_like_transcription_echo(
+        "MOA, MRAD, elevation, windage, zero, drag coefficient, "
+        "chronograph, calibers like 5.7x28mm or 6.5 Creedmoor, powder "
+        "charge, muzzle velocity, H335 powder, Sierra MatchKing."
+    )
+    # Genuine short commands sharing a handful of domain words with the
+    # prompt must never be caught by this -- it's a whole-phrase echo
+    # check, not a keyword blocklist.
+    assert not api_module._looks_like_transcription_echo("625 yards, get solution")
+    assert not api_module._looks_like_transcription_echo("switch rifle to the AR-15")
+    assert not api_module._looks_like_transcription_echo("what's my drag coefficient")
+    assert not api_module._looks_like_transcription_echo("")
 
 
 def test_calibration_session_dict_round_trip_preserves_all_state():

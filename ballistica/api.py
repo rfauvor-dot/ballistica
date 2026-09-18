@@ -22,6 +22,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -535,6 +537,37 @@ _TRANSCRIBE_PROMPT = (
     "6.5 Creedmoor, powder charge, muzzle velocity, H335 powder, "
     "Sierra MatchKing."
 )
+# Real conversation-log bug (2026-09-18, found reviewing production
+# turns): this exact prompt -- word for word, sometimes with the
+# "Ballistics and rifle terminology:" lead-in, sometimes without --
+# showed up FOUR separate times across two days logged as if it were
+# something said aloud. It wasn't; this is a known failure mode of
+# prompt-biased transcription models (this one included): on quiet,
+# unclear, or cut-off audio, the model can echo its own bias prompt
+# back as "what it heard" instead of reporting no speech. Every prior
+# occurrence of this exact text got treated as real input -- one of
+# them even got mis-analyzed in cli.py (_CALIBRATION_TRIGGER_MAX_POS)
+# as "a long vocabulary-recitation utterance" someone actually said,
+# when it was this same hallucination the whole time. Derived from
+# _TRANSCRIBE_PROMPT itself (not a separately hardcoded copy) so this
+# stays in sync if the prompt text ever changes; the leading label is
+# stripped because that's the part that varies between observed
+# hallucinations, while the comma-separated term list itself has been
+# identical, in order, every time.
+_TRANSCRIBE_PROMPT_ECHO_CORE = _TRANSCRIBE_PROMPT.split(":", 1)[1].strip()
+
+
+def _looks_like_transcription_echo(text: str) -> bool:
+    """True if `text` is essentially just the transcription bias prompt
+    echoed back -- see _TRANSCRIBE_PROMPT_ECHO_CORE above. A normalized
+    substring check, not an exact-string one: real speech containing
+    this many domain terms back to back in this exact order is not a
+    realistic thing to say, so this stays safe against false positives
+    on genuine input while still catching both hallucination variants
+    actually observed in production."""
+    def _normalize(s: str) -> str:
+        return " ".join(re.sub(r"[^\w\s]", "", s).lower().split())
+    return _normalize(_TRANSCRIBE_PROMPT_ECHO_CORE) in _normalize(text)
 
 
 @app.post("/voice/transcribe")
@@ -560,7 +593,14 @@ async def voice_transcribe(request: Request, audio: UploadFile = File(...)):
         )
     except openai.OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}")
-    return {"text": result.text}
+    text = result.text
+    if _looks_like_transcription_echo(text):
+        # See _TRANSCRIBE_PROMPT_ECHO_CORE above: this is the model
+        # hallucinating its own bias prompt back, not real speech --
+        # treated as no speech detected rather than passed through as
+        # if Rick actually said his own vocabulary hint list.
+        text = ""
+    return {"text": text}
 
 
 # ------------------------------------------------------------ multi-tenant
@@ -1013,6 +1053,20 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     cli._pending_setup_kind = pending_setup["kind"] if pending_setup else None
     cli._pending_setup_text = pending_setup["text"] if pending_setup else ""
     cli._pending_setup_at = pending_setup["at"] if pending_setup else 0.0
+    # Same class of state as pending_delete/pending_setup above --
+    # added 2026-09-18 alongside the switch_rifle/switch_load
+    # disambiguation fix in cli.py. Without this round trip, "which one
+    # do you mean?" would still get asked correctly on one request, but
+    # the answer to it would arrive on a brand-new CLI that never heard
+    # the question -- the exact bug this whole fix exists to close,
+    # just moved from "in-process state" to "state that doesn't survive
+    # the stateless-per-request API."
+    pending_rifle_switch = state.get("pending_rifle_switch")
+    cli._pending_rifle_switch = pending_rifle_switch["candidates"] if pending_rifle_switch else None
+    cli._pending_rifle_switch_at = pending_rifle_switch["at"] if pending_rifle_switch else 0.0
+    pending_load_switch = state.get("pending_load_switch")
+    cli._pending_load_switch = pending_load_switch["candidates"] if pending_load_switch else None
+    cli._pending_load_switch_at = pending_load_switch["at"] if pending_load_switch else 0.0
     # Open-ended conversational memory (2026-09-05) -- plain list of
     # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
     # from_dict() round-trip needed like the session objects above.
@@ -1041,6 +1095,14 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
             {"kind": cli._pending_setup_kind, "text": cli._pending_setup_text, "at": cli._pending_setup_at}
             if cli._pending_setup_kind else None
         ),
+        "pending_rifle_switch": (
+            {"candidates": cli._pending_rifle_switch, "at": cli._pending_rifle_switch_at}
+            if cli._pending_rifle_switch else None
+        ),
+        "pending_load_switch": (
+            {"candidates": cli._pending_load_switch, "at": cli._pending_load_switch_at}
+            if cli._pending_load_switch else None
+        ),
         "chat_history": cli._chat_history,
         "atmosphere": dataclasses.asdict(cli.atmosphere),
         "wind": dataclasses.asdict(cli.wind),
@@ -1065,12 +1127,23 @@ def v2_voice_query(
     cli = BallisticaCLI(user_store)
     _hydrate_cli(cli, user_store.get_conversation_state())
 
+    # Wraps only handle() itself, not the hydrate/dehydrate Supabase
+    # round trips around it (2026-09-18, added per Rick's own "is there
+    # any way we can speed up the responses" ask): those DB calls are a
+    # fixed cost paid on every turn regardless of what the turn actually
+    # was, while handle()'s own duration is the part that varies by
+    # intent path -- near-instant for a fast_path regex match, real
+    # latency for anything that falls through to an LLM classification
+    # call. Isolating just this leg is what makes "is it actually slow,
+    # and where" answerable with real numbers instead of a guess.
+    _turn_started = time.perf_counter()
     try:
         reply = cli.handle(payload.text)
     except SystemExit:
         reply = "Ending session."
     except (KeyError, ValueError) as exc:
         reply = _msg(exc)
+    duration_ms = round((time.perf_counter() - _turn_started) * 1000)
 
     user_store.set_conversation_state(**_dehydrate_cli(cli))
     # Temporary per-turn debug log (2026-09-06, current build phase --
@@ -1079,12 +1152,13 @@ def v2_voice_query(
     # migration not yet applied to this Supabase project) must never
     # break the actual voice reply the shooter is waiting on.
     try:
-        user_store.log_conversation_turn(payload.text, cli._last_tool_name, reply or "")
+        user_store.log_conversation_turn(payload.text, cli._last_tool_name, reply or "", duration_ms)
     except Exception:
         pass
     awaiting_response = (
         cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
         or cli._pending_calibration_start or cli._pending_setup_kind is not None
+        or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
     )
     return VoiceQueryOut(
         reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,

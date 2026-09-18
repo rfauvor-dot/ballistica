@@ -2086,3 +2086,129 @@ both deletes now rather than queuing them; Build found the same root
 cause independently affected loads, fixed both together, and verified
 against the real API and a real account, not just new unit tests in
 isolation.
+
+---
+
+## 28. Real conversation-log review: disambiguation memory + transcription echo + turn timing (2026-09-18)
+
+Rick asked two things after learning the per-turn conversation debug log
+existed (§27's sibling feature, `conversation_debug_log`, built
+2026-09-06): "is there any way we can improve on getting her to catch
+what I'm asking the first time" and "is there any way we can speed up
+the process of her responses." Rather than guess, the actual last two
+sessions' logs (50 real turns, 09-16 and 09-17) were pulled via
+`GET /v2/debug/conversation-log` against Rick's real account and read
+end to end. Two concrete, sourced bugs came out of that, not
+speculation -- both fixed, plus a foundation for answering the speed
+question with real numbers next time instead of a guess.
+
+**Bug 1 -- disambiguation questions got asked and then forgotten.** Real
+sequence, 09-17 ~21:33: *"Now pull up the AR-15 fax in 20 inch."* →
+correctly asked *"That could be 20in .223 Wylde AR-15 (Faxon, 5R), AR-15
+20-inch Faxon. Which one do you mean?"* → answered *"The second one."*
+→ instead of resolving that question, the system started an unrelated
+flow (*"Set up a new rifle? Say yes to begin."*), and the confusion
+cascaded for 9 turns (~2.5 minutes) before Rick just re-said the full
+rifle name. Root cause: `_switch_rifle()`/`_switch_load()` (cli.py) ask
+"which one do you mean?" on an ambiguous match but never recorded that
+they were waiting on an answer -- unlike rifle delete
+(`_request_delete_rifle_by_query()`), which already tracks
+`_pending_delete`/`_pending_delete_at` for exactly this reason. The next
+utterance got freshly classified from scratch with no memory of the
+question just asked.
+
+Fixed by giving switch the same pending-gate shape delete already had,
+just N-way instead of yes/no: `_pending_rifle_switch`/
+`_pending_load_switch` hold the exact candidate name list the question
+offered; the next turn is checked against it first
+(`_handle_rifle_switch_confirm`/`_handle_load_switch_confirm` in
+cli.py, dispatched in `handle()` before general classification).
+Resolution (`_resolve_pending_choice`) tries, in order: an ordinal
+("the second one"/"1st"/"2nd"/.../"4th" -- deliberately word-based, and
+deliberately excluding bare "one"/"two"/"three" as index words, since
+"the one I usually use" is a plausible real answer that isn't an
+ordinal at all); an exact or substring name repeat; then word-overlap
+scoring against just the offered candidates (so "the suppressor one"
+picks the one candidate sharing a real word, without needing the full
+name repeated) -- resolving to `None`, and re-surfacing the same
+options, rather than guessing, whenever it can't tell. An explicit
+cancel word clears the gate outright. Also wired into the two places
+`_pending_delete` already had to be: `_hydrate_cli`/`_dehydrate_cli`
+(api.py) round-trip it across the stateless-per-request API boundary
+-- every voice turn builds a brand-new `BallisticaCLI`, so without this
+the fix would work in-process and then silently do nothing in
+production, the exact failure mode of the original bug just moved --
+and `awaiting_response` in `v2_voice_query`, so Session Mode's
+continuous listening stays live waiting for the answer instead of
+dropping back to needing the wake word (the identical gap the
+debug-log commit already closed once for
+`pending_calibration_start`/`pending_setup_kind`).
+
+**Bug 2 -- the transcription was sometimes hearing itself, not Rick.**
+The exact sentence fed to `gpt-4o-transcribe` as its domain-vocabulary
+bias prompt (`_TRANSCRIBE_PROMPT`, api.py) -- word for word, sometimes
+with its "Ballistics and rifle terminology:" lead-in and sometimes
+without -- showed up **four separate times** across the two sessions
+reviewed, logged as if it were something said aloud. It wasn't; this is
+a known failure mode of prompt-biased transcription models: on quiet,
+unclear, or cut-off audio, the model can echo its own bias prompt back
+as "what it heard" instead of reporting no speech. One of those four
+occurrences had already been seen and misdiagnosed, in this exact
+codebase (cli.py's `_CALIBRATION_TRIGGER_MAX_POS` comment, 2026-09-07),
+as "a long vocabulary-recitation utterance" Rick actually said -- the
+fix at the time (requiring "chronograph" to appear early in the
+utterance to count as a real calibration trigger) patched around the
+symptom without ever identifying the actual source.
+
+Fixed at the source: `_looks_like_transcription_echo()` (api.py) does a
+normalized substring check of the transcribed text against
+`_TRANSCRIBE_PROMPT_ECHO_CORE` (derived from `_TRANSCRIBE_PROMPT`
+itself, not a separately hardcoded copy, so it can't drift out of sync
+if the prompt text ever changes). `/voice/transcribe` returns empty
+text when it fires, which the existing frontend flow (index.html) was
+already built to treat exactly like genuine silence -- an audible
+"Didn't catch that, say again" on the ordinary wake-word path, nothing
+audible in Session Mode -- and, since `/voice/query` is never called
+for empty `heardText`, the hallucinated text no longer reaches
+`handle()` or gets written into the debug log either. No frontend
+changes were needed; the existing silence-handling path already did
+exactly the right thing, it just never used to receive this case as
+silence.
+
+**Turn timing, for the speed question.** The debug log had no timing
+field at all -- reviewing it could show *what* got misrouted but
+nothing about *how long* any turn actually took, so the honest answer
+to "can we speed it up" was "not from this data." `v2_voice_query`
+(api.py) now times just the `cli.handle()` call itself (not the
+Supabase hydrate/dehydrate round trips around it, which are a fixed
+per-request cost regardless of intent path) and passes it to
+`log_conversation_turn()`'s new optional `duration_ms` parameter
+(supabase_store.py), stored via a new, additive `duration_ms` column
+(`db/011_conversation_debug_log_duration.sql` -- **pending Rick's
+action in the Supabase SQL Editor**, same manual-DDL constraint as
+every migration in this project). Nullable, and only sent when
+present, so this doesn't break logging against a project that hasn't
+run the migration yet -- same best-effort tolerance the whole table
+already has. Isolating just `handle()`'s own duration is what will make
+the next speed review answerable with real numbers (was this turn slow
+because it fell through to an LLM classification call, or was it
+already fast_path and the delay was elsewhere in the pipeline) instead
+of another guess from timestamps.
+
+**Verified:** all three fixes covered by new unit tests
+(`tests/test_engine.py`) -- ordinal/name/word-overlap resolution,
+cancel, and re-ask-on-no-match for both rifle and load switch; the
+hydrate/dehydrate round trip for the two new pending fields
+specifically (the exact gap that would have silently defeated the fix
+in production); `awaiting_response` including the new pending states;
+and both hallucination shapes actually observed in production being
+caught by `_looks_like_transcription_echo()` while ordinary short
+commands sharing a few domain words are not. Full suite green.
+
+**Owning lens:** Rick asked a diagnostic question ("go back and see...
+and see if there's any way we can improve"), not a demand for a
+specific fix; Build used the debug-logging infrastructure exactly as
+designed -- reading real production turns instead of reproducing blind
+-- named two concrete, sourced bugs with real turn-by-turn evidence
+before proposing anything, and only implemented after Rick said to go
+ahead.

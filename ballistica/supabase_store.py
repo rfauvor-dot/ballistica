@@ -193,20 +193,32 @@ class SupabaseProfileStore(ProfileStore):
             headers={"Prefer": "resolution=merge-duplicates"},
         )
 
-    def log_conversation_turn(self, input_text: str, tool_name: str, reply_text: str) -> None:
+    def log_conversation_turn(
+        self, input_text: str, tool_name: str, reply_text: str, duration_ms: int | None = None,
+    ) -> None:
         """Temporary per-turn debug log (2026-09-06, current build phase
         only -- see db/010_conversation_debug_log.sql). An append-only
         row per voice turn, RLS-scoped the same way as everything else
         in this class (the user's own access token, never service-role),
         so it carries the same real isolation guarantee, not just an
-        application-level filter."""
-        self._rest(
-            "POST", "conversation_debug_log",
-            json={
-                "user_id": self.user_id, "input_text": input_text,
-                "tool_name": tool_name, "reply_text": reply_text,
-            },
-        )
+        application-level filter.
+
+        duration_ms added 2026-09-18, per Rick's own "any way we can
+        speed up the responses" ask -- reviewing this log to answer that
+        question turned up nothing, because nothing before this recorded
+        how long a turn actually took, only what was said. Optional and
+        appended only when present (db/011_conversation_debug_log_
+        duration.sql, same manual-migration constraint as every table
+        here) so this call doesn't start failing against a project that
+        hasn't run that migration yet -- same reasoning as every other
+        best-effort piece of this log."""
+        payload = {
+            "user_id": self.user_id, "input_text": input_text,
+            "tool_name": tool_name, "reply_text": reply_text,
+        }
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        self._rest("POST", "conversation_debug_log", json=payload)
 
     def get_recent_conversation_log(self, limit: int = 50) -> list[dict]:
         """Most recent rows first -- for pulling up what actually

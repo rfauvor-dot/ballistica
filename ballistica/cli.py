@@ -232,6 +232,35 @@ _CONFIRM_YES_WORD_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|s
 _CONFIRM_DELETE_YES_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|delete( it)?|do it|go ahead)\b")
 _NEGATED_CONFIRM_RE = re.compile(r"\b(not|isn.t|wasn.t|ain.t)\b[\w\s]{0,15}\b(correct|right)\b")
 
+# Answering a "which one do you mean?" disambiguation prompt (switch_rifle/
+# switch_load) by ordinal (2026-09-18, real range-log bug: "The second one"
+# answering "That could be X, Y. Which one do you mean?" got dropped
+# entirely -- the disambiguation question never recorded that it was
+# waiting on an answer, so the next utterance was freshly classified from
+# scratch and landed on an unrelated intent). Deliberately word-based, not
+# digit-based ("first"/"1st", not a bare "1") and deliberately excludes
+# "one"/"two"/"three" as bare number words -- "the one I usually use" is a
+# plausible real answer that isn't an ordinal at all, and misreading it as
+# "pick candidate #1" would be worse than not resolving it.
+_ORDINAL_CHOICE_WORDS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+}
+_CANCEL_WORD_RE = re.compile(r"^(cancel|never ?mind|stop|abort|forget it|quit|exit)\b")
+# Stripped from a disambiguation answer before word-overlap scoring
+# (_resolve_pending_choice) -- words a real spoken answer naturally
+# carries ("the Wylde one") that are never themselves the distinctive
+# word telling two candidates apart. Deliberately a different, smaller
+# list than profiles.py's _QUERY_FILLER_WORDS: that one strips "one"
+# too, correct for full-catalog search but wrong here -- "one" is
+# handled by the earlier ordinal check instead, so leaving it out here
+# would make a plain "one" itself an (empty, harmless) token, not a bug,
+# but keeping this list separate avoids coupling to a filler set tuned
+# for a different matching strategy.
+_DISAMBIGUATION_FILLER_WORDS = {"the", "a", "an", "it", "this", "that", "one"}
+
 _CALIBRATION_WORD_RE = re.compile(r"\bcalibrat(?:e|ion)\b|\bchrono(?:graph)?\b")
 # How far into the utterance "calibrate"/"chronograph" has to appear to
 # count as an actual command, not just a mention. Found live (2026-09-07):
@@ -473,6 +502,19 @@ class BallisticaCLI:
         self._calibration: _CalibrationSession | None = None
         self._pending_delete: str | None = None
         self._pending_delete_at: float = 0.0
+        # Disambiguation gates for switch_rifle/switch_load (2026-09-18,
+        # real range-log bug -- see _ORDINAL_CHOICE_WORDS above): "That
+        # could be X, Y. Which one do you mean?" used to ask its question
+        # and then forget it ever asked, so the next utterance -- even a
+        # direct answer like "the second one" -- got freshly classified
+        # from scratch instead of resolved against the candidates just
+        # offered. Same pending-gate shape as _pending_delete above, just
+        # N-way instead of yes/no: holds the exact candidate name list so
+        # the very next turn is checked against it first.
+        self._pending_rifle_switch: list[str] | None = None
+        self._pending_rifle_switch_at: float = 0.0
+        self._pending_load_switch: list[str] | None = None
+        self._pending_load_switch_at: float = 0.0
         # Confirmation gate before a calibration session actually starts
         # (2026-09-06, range retest): start_calibration is one of several
         # tools the LLM can call via tool_choice="auto" alongside ordinary
@@ -558,6 +600,10 @@ class BallisticaCLI:
             self._calibration = None
         if self._pending_delete is not None and now - self._pending_delete_at > _SESSION_STALE_SECONDS:
             self._pending_delete = None
+        if self._pending_rifle_switch is not None and now - self._pending_rifle_switch_at > _SESSION_STALE_SECONDS:
+            self._pending_rifle_switch = None
+        if self._pending_load_switch is not None and now - self._pending_load_switch_at > _SESSION_STALE_SECONDS:
+            self._pending_load_switch = None
         if self._pending_calibration_start and now - self._pending_calibration_start_at > _SESSION_STALE_SECONDS:
             self._pending_calibration_start = False
         if self._pending_setup_kind is not None and now - self._pending_setup_at > _SESSION_STALE_SECONDS:
@@ -681,6 +727,16 @@ class BallisticaCLI:
             self._pending_delete_at = time.time()
             self._last_tool_name = "delete_confirm"
             return self._handle_delete_confirm(t)
+
+        if self._pending_rifle_switch is not None:
+            self._pending_rifle_switch_at = time.time()
+            self._last_tool_name = "switch_rifle_confirm"
+            return self._handle_rifle_switch_confirm(t)
+
+        if self._pending_load_switch is not None:
+            self._pending_load_switch_at = time.time()
+            self._last_tool_name = "switch_load_confirm"
+            return self._handle_load_switch_confirm(t)
 
         if self._pending_calibration_start:
             self._pending_calibration_start_at = time.time()
@@ -946,13 +1002,88 @@ class BallisticaCLI:
             rifle = self.store.get_active_rifle()
             candidates = rifle.find_load_matches(query) or []
             options = candidates if candidates else list(rifle.loads.values())
-            names = ", ".join(o.name for o in options)
             if not options:
                 return f"No loads saved yet on the {rifle.name}."
+            names = [o.name for o in options]
+            # See _ORDINAL_CHOICE_WORDS above: remember that this question
+            # was asked so the very next answer resolves against it,
+            # instead of getting freshly (and wrongly) classified.
+            self._pending_load_switch = names
+            self._pending_load_switch_at = time.time()
+            listed = ", ".join(names)
             return (f"I'm not finding exactly one load matching '{query}' on the "
-                    f"{rifle.name} -- here's what's saved: {names}. Which one do you want?")
+                    f"{rifle.name} -- here's what's saved: {listed}. Which one do you want?")
         self.store.save()
         return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
+
+    def _resolve_pending_choice(self, candidates: list[str], text: str) -> str | None:
+        """Resolves a follow-up answer to a 'which one do you mean?' prompt
+        against the EXACT candidate list that prompt just offered -- an
+        ordinal ("the second one"), a name repeated back whole or in
+        part, or just the one distinctive word that actually tells the
+        candidates apart ("the Wylde one"). Deliberately scoped to only
+        the offered candidates, never the full rifle/load set, so this
+        can only ever pick something that was actually on the table,
+        never silently jump to something else entirely. Returns None
+        (not a guess) when it can't resolve confidently -- either no
+        candidate shares any real word with the answer, or more than one
+        ties for the best match -- so the caller re-asks instead of
+        picking wrong.
+
+        Word-overlap, not the stricter all-tokens-must-match rule
+        find_rifle_matches()/find_load_matches() use for full-catalog
+        search: this only ever chooses among a small, already-known
+        candidate list, so favoring the candidate sharing the most real
+        words with the answer is safe here in a way it wouldn't be
+        searching the whole saved set."""
+        low = text.lower().strip()
+        for word, idx in _ORDINAL_CHOICE_WORDS.items():
+            if idx < len(candidates) and re.search(rf"\b{word}\b", low):
+                return candidates[idx]
+        exact = [c for c in candidates if c.strip().lower() == low]
+        if len(exact) == 1:
+            return exact[0]
+        contained = [c for c in candidates if c.lower() in low or low in c.lower()]
+        if len(contained) == 1:
+            return contained[0]
+        answer_words = {w for w in re.findall(r"[a-z0-9]+", low) if w not in _DISAMBIGUATION_FILLER_WORDS}
+        if answer_words:
+            scored = []
+            for c in candidates:
+                overlap = len(answer_words & set(re.findall(r"[a-z0-9]+", c.lower())))
+                if overlap:
+                    scored.append((overlap, c))
+            if len(scored) == 1:
+                return scored[0][1]
+            if len(scored) > 1:
+                scored.sort(key=lambda pair: pair[0], reverse=True)
+                if scored[0][0] > scored[1][0]:
+                    return scored[0][1]
+        return None
+
+    def _handle_rifle_switch_confirm(self, text: str) -> str:
+        candidates = self._pending_rifle_switch or []
+        if _CANCEL_WORD_RE.match(text.lower().strip()):
+            self._pending_rifle_switch = None
+            return "Okay, never mind."
+        chosen = self._resolve_pending_choice(candidates, text)
+        if chosen is None:
+            listed = ", ".join(candidates)
+            return f"Didn't catch which one -- {listed}. Which one do you mean?"
+        self._pending_rifle_switch = None
+        return self._switch_rifle(chosen)
+
+    def _handle_load_switch_confirm(self, text: str) -> str:
+        candidates = self._pending_load_switch or []
+        if _CANCEL_WORD_RE.match(text.lower().strip()):
+            self._pending_load_switch = None
+            return "Okay, never mind."
+        chosen = self._resolve_pending_choice(candidates, text)
+        if chosen is None:
+            listed = ", ".join(candidates)
+            return f"Didn't catch which one -- {listed}. Which one do you want?"
+        self._pending_load_switch = None
+        return self._switch_load(chosen)
 
     def _switch_rifle(self, query: str, new_load_fields: dict | None = None) -> str:
         # Live demo bug (2026-09-06): this used to let find_rifle()'s bare
@@ -970,8 +1101,13 @@ class BallisticaCLI:
             candidates = self.store.find_rifle_matches(query) or []
             if not candidates:
                 return f"I couldn't find anything matching '{query}'. You may need to check the name in Settings."
-            names = ", ".join(r.name for r in candidates)
-            return f"That could be {names}. Which one do you mean?"
+            names = [r.name for r in candidates]
+            # See _ORDINAL_CHOICE_WORDS above: remember that this question
+            # was asked so the very next answer resolves against it,
+            # instead of getting freshly (and wrongly) classified.
+            self._pending_rifle_switch = names
+            self._pending_rifle_switch_at = time.time()
+            return f"That could be {', '.join(names)}. Which one do you mean?"
         self.store.save()
         switched = f"Switched you over to the {rifle.name}."
         if new_load_fields:
