@@ -77,6 +77,12 @@ Limitations) — only whole rifles.
 | "set conditions temp 90 pressure 29.92 altitude 1200 humidity 40" | Exact-phrase fast path — requires all four numbers |
 | "it's about 90 out" / "pressure's 29.8, altitude's 4000 feet" | Natural phrasing via the LLM fallback — **merges** into whatever's already set; you only have to state what actually changed |
 | "set wind 10 mph from 3 o'clock" | Sets wind speed + clock direction — **always fully replaces** the wind, both by exact phrase and by natural language (there's no partial "just update the speed" for wind the way there is for conditions) |
+| "1000 yards, wind, 10 miles an hour, four o'clock, get solution" | Wind stated in the SAME breath as a range request (added 2026-09-18) — the wind gets applied before the solution is computed, and the reply starts with "Wind's 10 mph out of 4 o'clock" so you can hear it registered, not just the resulting numbers. Works for both "X yards" and "drop at X yards" phrasing, natural units (mph or "miles an hour"), and a spoken clock word or a digit |
+
+**Not sure what she's currently set to?** Say "status" — reads back the
+active rifle, load, atmospheric conditions, and current wind together,
+so you can always confirm what's actually stored before trusting a
+solution.
 
 **Important, verified gap:** conditions/wind set this way live in the
 **voice session's own memory** and carry forward for later voice

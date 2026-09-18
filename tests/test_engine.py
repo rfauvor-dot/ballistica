@@ -397,6 +397,69 @@ def test_repeat_solution_reuses_last_drop_without_recalculating(tmp_path):
     assert "Elevation" not in windage
 
 
+def test_embedded_wind_in_a_range_request_updates_wind_and_confirms(tmp_path):
+    """Real report, 2026-09-18 (Rick's own words: wind "doesn't update"
+    and "I don't know that she's actually hearing that"). Root cause,
+    reproduced live before this fix: both the "drop at X yards" and
+    bare-yards fast paths fire the instant they see a range number and
+    return immediately -- so "1000 yards, wind, 10 miles an hour, four
+    o'clock, get solution", said all in one breath (the natural way
+    Rick actually talks to it), computed a solution off whatever wind
+    was already set and never looked at the rest of the sentence.
+    Confirmed live against the real API: identical windage with and
+    without the wind clause present, versus a real change once wind was
+    set as its own separate command first.
+
+    Fixed by pulling an embedded wind clause out of the SAME utterance
+    before computing the solution, and prepending a spoken confirmation
+    -- covers natural units (mph and "miles an hour") and a spoken
+    clock word ("four o'clock", not just a digit), for both range
+    trigger phrasings."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    baseline = cli.handle("1000 yards, get solution")
+    assert "Windage, left 0.0" in baseline or "Windage, right 0.0" in baseline
+
+    combined = cli.handle("1000 yards, wind, 10 miles an hour, four o'clock, get solution")
+    assert combined.startswith("Wind's 10 mph out of 4 o'clock. ")
+    assert "Solution, 1000 yards" in combined
+    assert combined != f"Wind's 10 mph out of 4 o'clock. {baseline}"  # windage must differ, not just be relabeled
+    assert cli.wind == WindCondition(speed_mph=10.0, clock_deg=120.0)
+
+    # "drop at X yards" phrasing, digit-form clock and bare "mph" --
+    # the OTHER range trigger, and the OTHER way of saying speed/clock.
+    cli2 = BallisticaCLI(store)
+    reply2 = cli2.handle("drop at 500 yards, wind 12 mph from 9 o'clock")
+    assert reply2.startswith("Wind's 12 mph out of 9 o'clock. ")
+    assert cli2.wind == WindCondition(speed_mph=12.0, clock_deg=270.0)
+
+
+def test_range_request_without_wind_clause_is_unaffected(tmp_path):
+    """Regression guard: no wind clause in the utterance must mean no
+    confirmation prefix and no wind change -- the embedded-wind fix
+    must never fire on an ordinary solution request, including one that
+    happens to mention "wind" without the mph/o'clock shape a real wind
+    statement has."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    original_wind = cli.wind
+
+    plain = cli.handle("500 yards, get solution")
+    assert not plain.startswith("Wind's")
+    assert cli.wind == original_wind
+
+    mentions_wind_word_only = cli.handle("what does windage mean, 500 yards")
+    assert not mentions_wind_word_only.startswith("Wind's")
+    assert cli.wind == original_wind
+
+
 def test_voice_query_signals_awaiting_response_during_conversation(tmp_path):
     """Regression: the voice frontend used to always drop back to
     wake-word-only listening after one question/answer exchange, which

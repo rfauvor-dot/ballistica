@@ -249,6 +249,32 @@ _ORDINAL_CHOICE_WORDS = {
     "fourth": 3, "4th": 3,
 }
 _CANCEL_WORD_RE = re.compile(r"^(cancel|never ?mind|stop|abort|forget it|quit|exit)\b")
+
+# Real report, 2026-09-18 (Rick's own words: "wind doesn't update" and "I
+# don't know she's actually hearing that"): the bare-yards fast path below
+# fires the instant it sees "<N> yards" anywhere in the utterance and
+# returns immediately -- so "1000 yards, wind, 10 miles an hour, four
+# o'clock, get solution", said all in one breath (confirmed the natural
+# way Rick actually talks to it), computed a solution using whatever wind
+# was ALREADY set and never looked at the rest of the sentence at all.
+# Reproduced live: identical windage with and without the wind clause
+# present in the same utterance, versus a real change once wind was set
+# as its own separate command first. _EMBEDDED_WIND_RE pulls a wind
+# clause out of a longer utterance -- deliberately looser than
+# _set_wind's own exact "set wind X mph from Y o'clock" fast path (that
+# one still exists, unchanged, for saying wind on its own): natural
+# units ("miles an hour" as well as "mph") and a spoken clock word
+# ("four o'clock", not just a digit), with a short, bounded run of
+# words/punctuation allowed between the pieces so "wind, 10 miles an
+# hour, four o'clock" and "wind 10 mph from 4 o'clock" both match.
+_CLOCK_WORD_TO_HOUR = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+_EMBEDDED_WIND_RE = re.compile(
+    r"\bwind\b.{0,10}?(\d+\.?\d*)\s*(?:mph|miles?(?:\s+per|\s+an)\s+hour)"
+    r".{0,20}?(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*o.?clock\b"
+)
 # Stripped from a disambiguation answer before word-overlap scoring
 # (_resolve_pending_choice) -- words a real spoken answer naturally
 # carries ("the Wylde one") that are never themselves the distinctive
@@ -772,7 +798,7 @@ class BallisticaCLI:
 
         m = re.search(r"drop at ([\d.]+)\s*(?:yd|yard|yards)", low)
         if m:
-            return self._drop_at(float(m.group(1)))
+            return self._drop_at_applying_embedded_wind(float(m.group(1)), low)
 
         m = re.search(r"^table(?:\s+to\s+([\d.]+)\s*(?:yd|yard|yards))?"
                        r"(?:\s+every\s+([\d.]+)\s*(?:yd|yard|yards))?", low)
@@ -866,7 +892,7 @@ class BallisticaCLI:
         if "zero" not in low:
             m = re.search(r"(\d+\.?\d*)\s*(?:yd|yrd|yard|yards)\b", low)
             if m:
-                return self._drop_at(float(m.group(1)))
+                return self._drop_at_applying_embedded_wind(float(m.group(1)), low)
 
         # Last resort: every fast, free, exact pattern above missed.
         # Rather than keep discovering and patching one rigid regex at a
@@ -1117,6 +1143,38 @@ class BallisticaCLI:
     def _set_wind(self, speed_mph: float, clock_hours: float) -> str:
         self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
         return f"Got it -- wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock."
+
+    def _extract_embedded_wind(self, text: str) -> tuple[float, float] | None:
+        """See _EMBEDDED_WIND_RE above for why this exists. Returns
+        (speed_mph, clock_hours) if a wind clause is found anywhere in
+        `text`, else None -- never raises on a malformed clock word,
+        since a failed embedded parse should just mean "no wind clause
+        here," not break the range request it's embedded in."""
+        m = _EMBEDDED_WIND_RE.search(text)
+        if not m:
+            return None
+        clock_raw = m.group(2)
+        clock_hours = _CLOCK_WORD_TO_HOUR.get(clock_raw)
+        if clock_hours is None:
+            clock_hours = float(clock_raw)
+        return float(m.group(1)), clock_hours
+
+    def _drop_at_applying_embedded_wind(self, range_yd: float, text: str) -> str:
+        """Wraps _drop_at() for the two fast-path range triggers below
+        ("drop at X yards" and the bare-yards fallback) -- applies a
+        wind clause embedded in the SAME utterance first (see
+        _EMBEDDED_WIND_RE above), and prepends a short confirmation
+        sentence so the reply itself proves what was actually heard,
+        not just the resulting numbers. Directly answers Rick's own
+        second complaint ("I don't know that she's actually hearing
+        that") the same way _set_wind()'s own reply already does when
+        wind is set on its own."""
+        embedded = self._extract_embedded_wind(text)
+        if embedded is None:
+            return self._drop_at(range_yd)
+        speed_mph, clock_hours = embedded
+        self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
+        return f"Wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock. {self._drop_at(range_yd)}"
 
     def _update_rifle_fields(self, fields: dict) -> str:
         """Edits fields on the ACTIVE rifle's existing saved profile --
