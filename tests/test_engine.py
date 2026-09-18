@@ -1761,7 +1761,7 @@ def test_awaiting_response_true_during_pending_switch_disambiguation(tmp_path):
         cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
         or cli._pending_calibration_start or cli._pending_setup_kind is not None
         or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
-        or (cli._last_tool_name == "converse" and reply.rstrip().endswith("?"))
+        or (cli._last_tool_name == "converse" and "?" in reply)
     )
     assert awaiting is True
 
@@ -1776,10 +1776,24 @@ def test_awaiting_response_true_for_a_converse_question_with_no_structured_state
     Session Mode that meant the mic could drop back to sleep right
     after asking, the same bug shape as the pending_calibration_start/
     pending_setup_kind gap the debug-log commit already fixed once.
-    v2_voice_query's own awaiting_response formula (api.py) now adds:
-    _last_tool_name == "converse" and the reply ends in "?"."""
+
+    First version of this fix checked reply.rstrip().endswith("?") --
+    caught live (2026-09-18) still returning False for a real,
+    deployed reply: "Which rifle? Just tell me the caliber,
+    manufacturer, or name of the one you want." The system prompt caps
+    replies at "2-3 short sentences," and the actual question is
+    routinely NOT the last one. v2_voice_query's own awaiting_response
+    formula (api.py) now checks "?" anywhere in the reply instead."""
     import ballistica.cli as cli_module
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    def _awaiting(cli, reply):
+        return (
+            cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+            or cli._pending_calibration_start or cli._pending_setup_kind is not None
+            or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+            or (cli._last_tool_name == "converse" and "?" in reply)
+        )
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
@@ -1791,13 +1805,21 @@ def test_awaiting_response_true_for_a_converse_question_with_no_structured_state
     )
     reply = cli.handle("Change rifles")
     assert cli._last_tool_name == "converse"
-    awaiting = (
-        cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
-        or cli._pending_calibration_start or cli._pending_setup_kind is not None
-        or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
-        or (cli._last_tool_name == "converse" and reply.rstrip().endswith("?"))
+    assert _awaiting(cli, reply) is True
+
+    # The exact real reply that broke the first (endswith-only) version
+    # of this fix, live: the question is the FIRST sentence, not the
+    # last.
+    monkeypatch.setattr(
+        cli_module, "extract_intent",
+        lambda text, history=None: (
+            "converse",
+            {"reply": "Which rifle? Just tell me the caliber, manufacturer, or name of the one you want."},
+        ),
     )
-    assert awaiting is True
+    reply_multi = cli.handle("Change rifles")
+    assert cli._last_tool_name == "converse"
+    assert _awaiting(cli, reply_multi) is True
 
     # An ordinary converse reply that ISN'T a question (small talk, a
     # plain acknowledgment) must not falsely hold the mic open waiting
@@ -1812,13 +1834,7 @@ def test_awaiting_response_true_for_a_converse_question_with_no_structured_state
     # above rather than short-circuiting on an earlier fast_path match.
     reply2 = cli.handle("rough day at the range")
     assert cli._last_tool_name == "converse"
-    awaiting2 = (
-        cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
-        or cli._pending_calibration_start or cli._pending_setup_kind is not None
-        or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
-        or (cli._last_tool_name == "converse" and reply2.rstrip().endswith("?"))
-    )
-    assert awaiting2 is False
+    assert _awaiting(cli, reply2) is False
 
 
 def test_transcription_echo_detection():
