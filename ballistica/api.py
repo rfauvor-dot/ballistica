@@ -1208,10 +1208,28 @@ def v2_voice_query(
         user_store.log_conversation_turn(payload.text, cli._last_tool_name, reply or "", duration_ms)
     except Exception:
         pass
+    # Every structured pending gate above (setup/calibration/delete/
+    # switch-disambiguation/etc.) already tracks itself, so a real
+    # question from one of those was always covered here. The gap
+    # (2026-09-18, found live verifying the "Change rifles" fix):
+    # converse -- genuine free-form LLM replies, e.g. "Which rifle do
+    # you want to switch to?" answering an unnamed switch request --
+    # asks a real question too, but sets no structured state at all, so
+    # this was always False for it. In Session Mode that meant the mic
+    # could drop back to sleep the instant a clarifying question like
+    # that was asked, requiring the wake word again just to answer it.
+    # A converse reply ending in "?" is a reliable enough signal here --
+    # this is Ballistica's own LLM-generated text, governed by the
+    # system prompt's plain-sentence formatting rule, not a transcript
+    # that punctuation could be missing or garbled from. Scoped to
+    # _last_tool_name == "converse" specifically so this never doubles
+    # up with (or masks a regression in) any of the structured gates
+    # above, which remain the source of truth for their own turns.
     awaiting_response = (
         cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
         or cli._pending_calibration_start or cli._pending_setup_kind is not None
         or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+        or (cli._last_tool_name == "converse" and reply.rstrip().endswith("?"))
     )
     return VoiceQueryOut(
         reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,

@@ -1756,12 +1756,69 @@ def test_awaiting_response_true_during_pending_switch_disambiguation(tmp_path):
     cli = BallisticaCLI(store)
 
     cli._pending_rifle_switch = ["300 Blackout Suppressor", "300 Blackout Subsonic"]
+    reply = ""
     awaiting = (
         cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
         or cli._pending_calibration_start or cli._pending_setup_kind is not None
         or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+        or (cli._last_tool_name == "converse" and reply.rstrip().endswith("?"))
     )
     assert awaiting is True
+
+
+def test_awaiting_response_true_for_a_converse_question_with_no_structured_state(tmp_path, monkeypatch):
+    """The gap found live verifying the "Change rifles" fix (2026-09-18):
+    every structured pending gate (setup/calibration/delete/switch-
+    disambiguation/etc.) tracks itself and was already covered above,
+    but converse -- genuine free-form LLM replies, like "Which rifle do
+    you want to switch to?" answering an unnamed switch request -- asks
+    a real question too while setting no structured state at all. In
+    Session Mode that meant the mic could drop back to sleep right
+    after asking, the same bug shape as the pending_calibration_start/
+    pending_setup_kind gap the debug-log commit already fixed once.
+    v2_voice_query's own awaiting_response formula (api.py) now adds:
+    _last_tool_name == "converse" and the reply ends in "?"."""
+    import ballistica.cli as cli_module
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+
+    monkeypatch.setattr(
+        cli_module, "extract_intent",
+        lambda text, history=None: ("converse", {"reply": "Which rifle do you want to switch to?"}),
+    )
+    reply = cli.handle("Change rifles")
+    assert cli._last_tool_name == "converse"
+    awaiting = (
+        cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+        or cli._pending_calibration_start or cli._pending_setup_kind is not None
+        or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+        or (cli._last_tool_name == "converse" and reply.rstrip().endswith("?"))
+    )
+    assert awaiting is True
+
+    # An ordinary converse reply that ISN'T a question (small talk, a
+    # plain acknowledgment) must not falsely hold the mic open waiting
+    # for an answer nothing is actually asking for.
+    monkeypatch.setattr(
+        cli_module, "extract_intent",
+        lambda text, history=None: ("converse", {"reply": "Anytime."}),
+    )
+    # "rough day at the range" matches no fast-path pattern (no
+    # yardage, no switch/new/delete keyword, no wind/status trigger),
+    # so this genuinely exercises the converse path via the monkeypatch
+    # above rather than short-circuiting on an earlier fast_path match.
+    reply2 = cli.handle("rough day at the range")
+    assert cli._last_tool_name == "converse"
+    awaiting2 = (
+        cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
+        or cli._pending_calibration_start or cli._pending_setup_kind is not None
+        or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+        or (cli._last_tool_name == "converse" and reply2.rstrip().endswith("?"))
+    )
+    assert awaiting2 is False
 
 
 def test_transcription_echo_detection():
