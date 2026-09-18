@@ -52,6 +52,9 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
             "setting up your rifle and equipment, checking a load and its velocity, and long-range "
             "shooting and spotting. You can come back to any of them, anytime, as many times as "
             "you like.",
+            "If you're ever not sure what's currently active, just say status, and I'll read back "
+            "your rifle, your load, your conditions, and your wind, all together. And if you "
+            "forget how to say something, just say help, and I'll list what I support.",
             "That's the basics. Let's get you shooting.",
         ),
     ),
@@ -61,19 +64,27 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
         paragraphs=(
             "This section covers setting up a new rifle in Ballistica, along with the equipment "
             "details that go with it.",
-            "To start, just tell me you want to add a new rifle. I'll ask you for the details "
-            "naturally, one at a time if I need to, or you can rattle them all off at once if "
-            "that's easier, either way works.",
+            "To start, just say new rifle, add a rifle, or set up a rifle. I'll ask you for the "
+            "details naturally, one at a time if I need to, or you can rattle them all off at once "
+            "if that's easier, either way works.",
             "Here's what I'll need: the rifle's name, whatever you want to call it. The caliber. "
             "The barrel length. The barrel twist rate. And your scope details, things like turret "
             "click value and reticle type, if you want ballistic solutions dialed into your "
             "specific glass.",
             "You can set up as many rifles as you own. Each one gets its own profile, and each one "
-            "can have its own loads tied to it, so switching between rifles is as simple as saying "
-            "which one you want to use.",
+            "can have its own loads tied to it. Switching between them is as simple as saying "
+            "switch rifle to, and the name, like switch rifle to the two two three Wylde. If more "
+            "than one matches, or you don't name one at all, I'll ask which one you mean instead "
+            "of guessing.",
             "If you ever need to check or change a rifle's details later, just ask me to pull up "
             "that rifle by name, or ask what's on file for it. You can update any field at any "
-            "time, nothing is locked in once you save it.",
+            "time, nothing is locked in once you save it, just say the correction directly, "
+            "something like the scope height is actually two point six inches, or change the "
+            "twist rate to one in seven, and it's saved right then, no need to redo the whole "
+            "setup.",
+            "If you ever need to remove a rifle entirely, just say delete, remove, or get rid of, "
+            "and the name. I'll read back exactly what I'm about to remove and ask you to confirm "
+            "before anything's actually gone.",
             "Once your rifle is set up, you're ready to add loads to it, which is covered in the "
             "next section, checking a load and its velocity.",
         ),
@@ -84,23 +95,33 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
         paragraphs=(
             "This section covers setting up a load, and how Ballistica helps you verify and "
             "calibrate its actual velocity out of your rifle.",
-            "A load is tied to a specific rifle. To set one up, tell me you want to add a load, "
-            "and I'll walk you through the details, powder, charge weight, bullet weight and type, "
-            "primer, case, and seating depth, whatever you have. Just like rifle setup, you can "
-            "give it to me all at once or piece by piece.",
+            "A load is tied to a specific rifle. To set one up, just say new load, add a load, or "
+            "set up a load, and I'll walk you through the details, powder, charge weight, bullet "
+            "weight and type, primer, case, and seating depth, whatever you have. Just like rifle "
+            "setup, you can give it to me all at once or piece by piece.",
+            "Once you've got more than one load saved on a rifle, switching between them is just "
+            "as easy, say switch to, and whatever actually tells them apart, the grain weight, the "
+            "bullet type, the powder, like switch to the seventy seven grain, or switch to the "
+            "green tip.",
             "When a load is first created, Ballistica uses published book data as its starting "
             "reference for velocity, if a match is available. That's a starting point only, it's "
             "not a substitute for verifying your actual velocity out of your actual rifle.",
             "That's where calibration comes in. At the range, once you're set up and firing that "
-            "load through a chronograph, tell me you're starting a calibration string. Then, as "
-            "each shot goes downrange, just call out the reading, shot one, twenty seven fifty, "
-            "shot two, twenty seven sixty, and so on. I'll keep a running average as you go, and "
-            "I'll flag anything that looks like an outlier rather than quietly folding it into "
+            "load through a chronograph, just say start calibration, or let's chrono this load. "
+            "Then, as each shot goes downrange, just call out the reading, shot one, twenty seven "
+            "fifty, shot two, twenty seven sixty, and so on. If a reading looks wrong, say discard "
+            "that, or throw out that one, and I'll drop it. I'll keep a running average as you go, "
+            "and I'll flag anything that looks like an outlier rather than quietly folding it into "
             "your average.",
-            "You can ask me for the current average at any point mid-string. When you're done, "
-            "tell me the string is finished, and I'll lock in that trued average as the calibrated "
-            "velocity for that load, replacing the book estimate for every future calculation "
-            "using it.",
+            "You can ask for average at any point mid-string to hear where things stand. When "
+            "you're done, just say that's all, or end calibration, and I'll lock in that trued "
+            "average as the calibrated velocity for that load, replacing the book estimate for "
+            "every future calculation using it. If you ever need to walk away from a string "
+            "without saving anything, say cancel, or never mind, and it's like it never happened.",
+            "If you ever need to correct a load's details later without running a whole new "
+            "calibration string, just say it directly, something like change the muzzle velocity "
+            "to seventeen fifty, or the zero is actually fifteen yards, and it's saved "
+            "immediately.",
             "One more thing worth remembering, every load and every velocity figure in Ballistica, "
             "whether it's book data or your own calibrated number, is a reference tool. Always "
             "verify against a published manufacturer manual before loading or firing anything, and "
@@ -119,7 +140,9 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
             "Once you've got a rifle and a calibrated or book-spec load selected, just tell me the "
             "distance to your target, and ask for a solution. Something like, distance four "
             "hundred yards, get solution, works, but you don't have to be rigid about it, natural "
-            "phrasing works too.",
+            "phrasing works too. If you want the bigger picture instead of one range at a time, "
+            "say table, or table to eight hundred yards, and I'll read back a full drop and "
+            "windage table instead of a single line.",
             "I'll give you back your elevation and windage corrections. If you miss what I said, "
             "or you just want it again, ask me to repeat the solution, or repeat just the windage, "
             "or repeat just the elevation, and I'll give you that piece again without repeating "
@@ -130,10 +153,18 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
             "location, and Ballistica pulls temperature, humidity, altitude, and pressure "
             "automatically from the nearest weather station to you. Wind still needs your own "
             "call either way, since GPS has no way of knowing which direction you're actually "
-            "facing.",
+            "facing. You can also state the wind right alongside your distance, in the same "
+            "breath, something like distance eight hundred yards, wind ten miles an hour out of "
+            "four o'clock, get solution, and I'll apply it and read it back before giving you the "
+            "numbers, so you always know it registered. If you just want to confirm the current "
+            "wind without the full readout, ask for a wind check.",
             "If you need to switch loads or rifles mid-session, just tell me which one you want, "
             "and I'll switch context immediately, your dialed corrections and history stay tied to "
-            "the right rifle and load automatically.",
+            "the right rifle and load automatically. If there's more than one match, or you don't "
+            "name one at all, I'll ask which one you mean rather than guess. And you're never "
+            "stuck in the middle of anything either, if you're setting up a new rifle or running a "
+            "calibration string and you suddenly need a solution, just ask for one, and I'll drop "
+            "what I was doing and get it for you.",
             "While you're actually shooting, I keep my responses short and precise on purpose, "
             "confirming your numbers, then getting out of your way, rather than talking over your "
             "rhythm at the line.",
