@@ -660,7 +660,17 @@ function getKnownAccountEmail() {
 }
 
 async function signUp(email, password, waiverInfo) {
-  const data = await supabaseAuthCall('/signup', {
+  // redirect_to explicitly set to wherever this page is actually
+  // running (2026-09-18, real report: the confirmation email's link
+  // pointed at http://localhost:3000, a dead address for anyone not
+  // on the machine that originally set up the Supabase project --
+  // that's the project's own leftover default Site URL, which nothing
+  // here ever overrode). window.location.origin rather than a
+  // hardcoded production URL so this keeps working correctly in local
+  // dev too, and doesn't silently go stale again if the app ever moves
+  // domains -- same fix applied to /recover below for the identical
+  // gap in the password-reset email.
+  const data = await supabaseAuthCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin)}`, {
     email, password,
     data: {
       waiver_accepted: true, waiver_version: waiverInfo.waiver_version,
@@ -2255,7 +2265,8 @@ document.getElementById('changePasswordBtn').addEventListener('click', async () 
   const btn = document.getElementById('changePasswordBtn');
   btn.disabled = true;
   try {
-    await supabaseAuthCall('/recover', { email });
+    // Same redirect_to fix as signUp() above, same gap otherwise.
+    await supabaseAuthCall(`/recover?redirect_to=${encodeURIComponent(window.location.origin)}`, { email });
     flash(okEl, `Password reset link sent to ${email}.`);
   } catch (e) {
     flash(errorEl, e.message);

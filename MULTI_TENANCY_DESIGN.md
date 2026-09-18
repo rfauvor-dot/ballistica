@@ -2212,3 +2212,67 @@ designed -- reading real production turns instead of reproducing blind
 -- named two concrete, sourced bugs with real turn-by-turn evidence
 before proposing anything, and only implemented after Rick said to go
 ahead.
+
+---
+
+## 29. Real onboarding walkthrough + broken confirmation/reset-email redirect (2026-09-18)
+
+Rick asked, plainly: "do we have this set up where I can actually put
+somebody on their own system to run?" Rather than answer from what was
+already known to be built, this was tested end to end with a genuine
+new disposable account (not either fixture account) through the real
+production app: create-account form -> waiver gate (full text,
+checkbox-gated, exactly as designed) -> account created empty and
+fully isolated (added a test rifle, confirmed no cross-account
+visibility) -> self-service "Delete my account" in the danger zone,
+confirmed the account and its data were actually gone afterward. All
+of it worked. The RISK_REGISTER.md note from 2026-08-29 flagging
+self-service deletion as blocked on an unset `SUPABASE_SERVICE_ROLE_
+KEY` is now stale -- it works.
+
+**One real, found-live bug in that walkthrough:** the "check your
+email to finish creating your account" confirmation email is real and
+arrives correctly, but the link inside it redirects to
+`http://localhost:3000` -- dead for anyone not on whatever machine
+originally set up the Supabase project. Confirmed this doesn't
+actually block anything (signed in and used the account fully before
+ever touching that link), so it's not a hard blocker, but a new user
+who does click it -- which the app's own message tells them to do --
+lands on a broken page with no way back into the app and no clear
+signal that the account is actually fine. The identical gap exists in
+"Change password" (`/recover`), which is a more serious version of the
+same bug: someone locked out and trying to reset a forgotten password
+hits the exact same dead link right when they need it to work.
+
+**Root cause, confirmed by reading the code, not assumed:** both
+`signUp()` and the change-password handler (index.html) call
+Supabase's raw Auth REST API (`supabaseAuthCall`, a plain `fetch` to
+`/auth/v1/...`) and never pass a `redirect_to` parameter at all --
+Supabase falls back to the project's own configured default Site URL
+when none is given, and that default is still set to `localhost:3000`
+from whenever the project was first set up. Nothing in this app's code
+was ever pointing it anywhere -- there was no override to find.
+
+**Fixed in index.html:** both `/signup` and `/recover` calls now pass
+`redirect_to=` explicitly, computed from `window.location.origin`
+rather than a hardcoded production URL -- keeps working correctly in
+local dev too, and doesn't silently go stale again if the app ever
+moves domains (a custom domain, a different host) without needing a
+matching code change.
+
+**Still possibly needed, Rick's side:** Supabase Auth can also enforce
+an allow-list of permitted redirect URLs at the project level
+(Dashboard -> Authentication -> URL Configuration -> Redirect URLs) --
+if `https://ballistica.onrender.com` isn't already on that list, the
+explicit `redirect_to` this fix now sends could be rejected or
+silently ignored in favor of the same stale default, independent of
+anything in this app's code. Verified after deploy whether the app-
+side fix alone was sufficient or whether this dashboard step is also
+required -- see the live verification note below.
+
+**Owning lens:** Rick asked a direct yes/no operational question;
+Build answered it by actually running the flow a new person would run,
+not by reciting what was designed to work -- which is exactly what
+surfaced a real bug neither the design doc nor the test suite would
+have caught, since nothing in this app has JS-level test coverage for
+the auth screens at all.

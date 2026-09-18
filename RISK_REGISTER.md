@@ -118,6 +118,17 @@ a decision on migrating Rick's existing single-tenant data into his
 real account, whenever he's ready to treat that account as permanent
 rather than for testing.
 
+**Update 2026-09-18:** the full new-account flow was actually run end
+to end for the first time (a genuine new signup, not either fixture
+account), answering Rick's direct "can I put somebody on their own
+system to run" -- yes. Self-service deletion in particular: the
+`SUPABASE_SERVICE_ROLE_KEY` caveat above is now stale, it works. One
+real bug found in that same walkthrough and fixed: the confirmation
+and password-reset emails linked to `http://localhost:3000`, the
+Supabase project's own leftover default redirect, never overridden by
+this app's code -- see MULTI_TENANCY_DESIGN.md §29 for the full
+root-cause and fix.
+
 **Owning lens:** Build scoped and shipped the technical approach; Chief of
 Staff to track the account-creation/migration decision and the pending
 Supabase migration with Rick; Finance/Marketing already confirmed this
