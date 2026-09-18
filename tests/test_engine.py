@@ -460,6 +460,32 @@ def test_range_request_without_wind_clause_is_unaffected(tmp_path):
     assert cli.wind == original_wind
 
 
+def test_wind_check_reads_back_only_wind_not_full_status(tmp_path):
+    """Real feedback, 2026-09-18: "status" reading back the whole
+    rifle/load/conditions block is right ONCE at the start of a session
+    ("it would be nice when we start, I could verify"), but exactly the
+    wrong amount of information mid-string, when all that's actually
+    being confirmed is the wind ("if we're doing windage, we shouldn't
+    have to go through the whole list"). "status" itself must keep
+    working exactly as before; the new wind-only phrasings are strictly
+    additive."""
+    from ballistica.cli import BallisticaCLI, bootstrap_default_profile
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    bootstrap_default_profile(store)
+    cli = BallisticaCLI(store)
+    cli.handle("set wind 10 mph from 4 oclock")
+
+    for phrase in ("wind check", "check wind", "check the wind",
+                    "what's my wind", "whats the wind", "current wind", "wind status"):
+        reply = cli.handle(phrase)
+        assert reply == "Wind: 10 mph @ 4 o'clock", phrase
+        assert "Rifle:" not in reply and "Load:" not in reply
+
+    full = cli.handle("status")
+    assert "Rifle:" in full and "Load:" in full and "Wind: 10 mph @ 4 o'clock" in full
+
+
 def test_voice_query_signals_awaiting_response_during_conversation(tmp_path):
     """Regression: the voice frontend used to always drop back to
     wake-word-only listening after one question/answer exchange, which
@@ -1771,6 +1797,32 @@ def test_transcription_echo_detection():
     assert not api_module._looks_like_transcription_echo("switch rifle to the AR-15")
     assert not api_module._looks_like_transcription_echo("what's my drag coefficient")
     assert not api_module._looks_like_transcription_echo("")
+
+
+def test_grain_abbreviation_expanded_for_speech():
+    """Real feedback, 2026-09-18 (Rick's own words): "when she says
+    grains, because it's GR, she goes grr, and it kind of messes up her
+    speech." The already-spelled-out cases (_speak_field() in cli.py,
+    "77 grain bullet") were always fine -- this is specifically the raw
+    "Ngr" shorthand, which shows up in more places than any one f-string
+    could patch: load/rifle NAMES already saved with it in them ("21.0gr
+    H335"), free-text bullet_type values, and _status()'s own
+    formatting. Fixed once, at the single point every spoken reply
+    already funnels through (/voice/speak), rather than hunting down
+    each source individually."""
+    from ballistica.api import _expand_grain_abbreviation
+
+    assert _expand_grain_abbreviation("77gr, BC 0.362") == "77 grains, BC 0.362"
+    assert _expand_grain_abbreviation("Switched you over to the 21.0gr H335.") == \
+        "Switched you over to the 21.0 grains H335."
+    assert _expand_grain_abbreviation("bullet, 77gr Sierra MatchKing (SMK)") == \
+        "bullet, 77 grains Sierra MatchKing (SMK)"
+    # Singular, not "1 grains".
+    assert _expand_grain_abbreviation("1gr charge") == "1 grain charge"
+    # An ordinary word that happens to start with "gr" must never be
+    # touched -- only a number immediately followed by "gr" qualifies.
+    assert _expand_grain_abbreviation("great grip gravy") == "great grip gravy"
+    assert _expand_grain_abbreviation("") == ""
 
 
 def test_calibration_session_dict_round_trip_preserves_all_state():

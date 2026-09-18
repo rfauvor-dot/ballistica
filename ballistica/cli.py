@@ -48,7 +48,8 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
                                                 "skip" to pass on an optional field
   start calibration                         -- chrono the active load; read shots as numbers,
                                                 "average", "discard that", "end calibration"
-  status                                    -- show active rifle/load/atmosphere
+  status                                    -- show active rifle/load/atmosphere/wind
+  wind check / check wind / what's my wind  -- wind alone, not the full status dump
   list rifles / list loads
   help
   quit
@@ -790,6 +791,15 @@ class BallisticaCLI:
             return random.choice(["Anytime.", "You got it.", "That's what I'm here for."])
         if low == "status":
             return self._status()
+        # Wind-only status (2026-09-18, real feedback: reading back the
+        # whole rifle/load/conditions block is right ONCE at the start of
+        # a session, but exactly the wrong amount of information when
+        # what's actually being confirmed mid-string is just the wind).
+        # Checked before "list rifles"/"list loads" below since none of
+        # those literal-match phrases overlap with this one.
+        if re.search(r"\bwind\s*check\b|\bcheck\s*(?:the\s*)?wind\b|"
+                     r"\bwhat.?s\s*(?:my|the)\s*wind\b|\bcurrent\s*wind\b|\bwind\s*status\b", low):
+            return self._wind_status()
         if low == "list rifles":
             return "\n".join(self.store.rifles.keys()) or "No rifles configured."
         if low == "list loads":
@@ -1770,6 +1780,17 @@ class BallisticaCLI:
             f"{self.atmosphere.humidity_pct:.0f}% RH, {self.atmosphere.altitude_ft:.0f}ft\n"
             f"Wind: {self.wind.speed_mph:.0f} mph @ {self.wind.clock_deg / 30:g} o'clock"
         )
+
+    def _wind_status(self) -> str:
+        """Wind alone, not the full rifle/load/conditions dump -- real
+        feedback (2026-09-18): "status" is genuinely useful once, at the
+        start of a session, but reading the whole rifle and load back
+        every time is exactly the wrong amount of information when all
+        that's actually being checked mid-string is the wind. Same
+        one-line wind format "status" already uses, just without
+        everything ahead of it."""
+        self._last_reply_is_readout = True
+        return f"Wind: {self.wind.speed_mph:.0f} mph @ {self.wind.clock_deg / 30:g} o'clock"
 
     def _drop_at(self, range_yd: float) -> str:
         solver, rifle, load = self.solver()

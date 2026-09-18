@@ -504,6 +504,39 @@ def get_waiver(response: Response) -> dict:
     }
 
 
+_GRAIN_ABBREVIATION_RE = re.compile(r"(\d+\.?\d*)\s*gr\b")
+
+
+def _expand_grain_abbreviation(text: str) -> str:
+    """"77gr"/"21.0gr" read out loud by TTS as "seventy-seven grrr" --
+    real report, 2026-09-18 (Rick's own words: "when she says grains,
+    because it's GR, she goes grr, and it kind of messes up her
+    speech"). The number-spelled-out cases already go through
+    _speak_field() in cli.py ("77.0" -> "77 grain bullet") and were
+    always fine -- this is specifically the raw "Ngr" shorthand, which
+    shows up in more places than any one f-string could patch: load/
+    rifle NAMES Rick has already saved with it in them ("21.0gr H335"),
+    free-text bullet_type values, and _status()'s own formatting.
+    Normalizing once, right here at the single point every spoken reply
+    already funnels through, fixes all of those at once instead of
+    hunting down each source individually -- and stays correct for any
+    future one instead of needing to be re-applied every time a new
+    reply string is added somewhere else in the app.
+
+    Only fires immediately after a number with a word boundary right
+    after "gr" (re.compile's \\b), so this can't misfire on an ordinary
+    word that happens to start with "gr" ("great", "grip") -- those
+    never have a digit immediately before them."""
+    def _replace(m: re.Match) -> str:
+        value = m.group(1)
+        try:
+            plural = float(value) != 1.0
+        except ValueError:
+            plural = True
+        return f"{value} {'grains' if plural else 'grain'}"
+    return _GRAIN_ABBREVIATION_RE.sub(_replace, text)
+
+
 @app.post("/voice/speak")
 @limiter.limit("20/minute")
 def voice_speak(request: Request, payload: VoiceSpeakIn):
@@ -516,6 +549,7 @@ def voice_speak(request: Request, payload: VoiceSpeakIn):
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
+    text = _expand_grain_abbreviation(text)
     try:
         client = get_openai_client()
         result = client.audio.speech.create(
