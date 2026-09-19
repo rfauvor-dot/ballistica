@@ -588,6 +588,18 @@ scoped initially as a qualitative nudge ("wind's picked up," "wind's
 shifted") rather than attempting a precise number, given even human
 experts read it that way.
 
+**Effective range is magnification-dependent, needs empirical
+characterization, not assumption (Rick, 2026-09-18):** how far out any
+of these three cues stays reliably readable scales with the scope's
+actual magnification at the time -- a lower-power setting resolves
+less fine detail (windsock texture, individual leaves/branches, mirage
+structure) at a given distance than a higher-power one, the same
+resolving-power relationship as the rangefinding item below. The
+Minotaur's own 12-60x range gives a built-in way to test this for
+real once it's in hand: sweep magnification at a few known distances
+and find where each cue actually stops being reliably readable, rather
+than assuming a number from a spec sheet.
+
 **Not scoped as an actual build yet** -- hardware (camera rig) not
 physically in hand at time of writing; this entry exists so the next
 session has real material instead of a dangling cross-reference to dig
@@ -631,6 +643,18 @@ counting mil-dot subtensions by eye.
   no ML training data required in principle, unlike the wind-reading
   item above. One of the more tractable camera features on this whole
   list.
+
+**Effective range is magnification-dependent, needs empirical
+characterization, not assumption (Rick, 2026-09-18):** target-edge
+detection needs enough resolved pixels on the target to work reliably,
+so the max usable distance scales with magnification -- Rick's own
+rough expectation going in is something like a 25x-class setting
+holding up to roughly 500-600 yards versus a 36-55x-class setting
+reaching toward 1000, but that's a starting expectation to test, not a
+number to build around yet. Same empirical-characterization plan as
+the wind-reading item above: sweep the Minotaur's own 12-60x range at
+a few known distances once it's in hand and find the actual falloff
+point rather than assuming one.
 
 **Not scoped as an actual build yet** -- hardware not physically in
 hand at time of writing.
