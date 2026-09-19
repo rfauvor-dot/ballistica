@@ -206,22 +206,45 @@ nothing had been built at all. Corrected component-by-component status:
   command -- none of it is genuine implicit context-switch detection
   from open narration, which is still the real, unbuilt Medium-Large
   piece.
-- **Component 4 (Relaxed Mode toggle + hard mute) -- PARTIALLY done.**
-  The on/off toggle exists (component 1's button + spoken end-phrase).
-  A true MUTE -- pausing capture without ending the session or fully
-  disabling voice -- does not exist in any form yet; today the only
-  controls are "disable voice" (full teardown) or "end session mode"
-  (drops back to wake-word mode). Rick's call, 2026-09-19: mute should
-  be reachable both by voice and by a physical/tap control, voice
-  preferred ("the whole idea is about talking to the app") but a tap
-  control has to exist as the fallback for whenever voice isn't
-  viable. Not yet built.
+- **Component 4 (Relaxed Mode toggle + hard mute) -- DONE, 2026-09-19.**
+  The on/off toggle existed already (component 1's button + spoken
+  end-phrase). The actual mute -- pausing capture in place without
+  ending the session, reachable by voice OR tap per Rick's call --
+  is now built: `SESSION_MODE_MUTE_RE`/`SESSION_MODE_UNMUTE_RE` in
+  `ballistica/web/index.html`, a `#muteBtn` enabled only during Session
+  Mode, and `startMuteListening()`/`stopMuteListening()` -- a second
+  free, on-device recognizer (same no-cost mechanism as the idle
+  "Ballistica" wake-word listener) that listens ONLY for the unmute
+  phrase while paused, so capture genuinely stops (no Whisper, no LLM
+  call) rather than just going silent on the reply side. `muteBtn`
+  works identically to the voice phrase; either one flips a flag that
+  `runSessionModeLoop`'s own loop notices and acts on (mic release,
+  spoken confirmation, starting/stopping the listener), so a tap works
+  even mid-utterance -- worst case it takes effect at the end of
+  whatever's already being recorded, not instantly mid-recording.
+  Verified: mute/unmute regexes tested against real phrases and
+  realistic ballistics commands (no false positives, no
+  cross-contamination with the start/end phrases either), JS syntax
+  checked, app loads and signs in clean in the browser preview with no
+  console errors, initial disabled state on `#muteBtn` confirmed to
+  match `#sessionModeBtn`'s existing pattern. Not yet live-mic tested
+  (same caveat as every voice feature -- the browser sandbox used to
+  verify this has no real microphone to test the actual recognizer
+  against).
 
-**Owning lenses:** Build (component 2, the real remaining engineering
-investment; component 4's actual mute control), Finance (cost estimate
-above still holds, may warrant a RISK_REGISTER.md entry if
-continuous-listening cost turns out material once component 2 is real
-usage, not just component 1's already-shipped continuous capture).
+**All four Session Mode components now built except the hard one.**
+Only component 2 (session-state tracker + implicit context-switch
+detection from open narration) remains -- see its description above,
+still the real Medium-Large engineering investment. Component 3
+(confidence-gated reply policy) was scoped as depending on a
+confidence signal component 2 would produce, so it's realistically
+blocked on 2 as well, not independently startable.
+
+**Owning lenses:** Build (component 2, the one real remaining
+engineering investment), Finance (cost estimate above still holds, may
+warrant a RISK_REGISTER.md entry if continuous-listening cost turns
+out material once component 2 is real usage, not just today's
+continuous-capture-plus-mute).
 
 ---
 

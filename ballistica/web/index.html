@@ -207,6 +207,7 @@
   .voice-panel .readout-line.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   #enableVoiceBtn { margin-top: 8px; }
   #sessionModeBtn { margin-top: 8px; margin-left: 8px; }
+  #muteBtn { margin-top: 8px; margin-left: 8px; }
   #voiceUnsupported { display: none; color: var(--error-text); font-size: 13px; margin-top: 6px; }
 </style>
 </head>
@@ -316,6 +317,7 @@
     <div class="readout-line" id="voiceReadout"></div>
     <button id="enableVoiceBtn" class="primary">Enable voice ("Ballistica")</button>
     <button id="sessionModeBtn" disabled>Start session mode</button>
+    <button id="muteBtn" disabled>Mute</button>
     <div id="voiceUnsupported">This browser doesn't support wake-word listening (needs Chrome). Use the manual controls below instead.</div>
   </div>
 
@@ -1488,17 +1490,49 @@ const SESSION_MODE_END_RE =
 const SESSION_MODE_START_RE =
   /\b(start session mode|start session|session mode on|let'?s go hands.?free|go hands.?free)\b/i;
 
+// Mute control, added 2026-09-19 per Rick's explicit call: gates audio
+// CAPTURE itself while muted (recording stops entirely, not just
+// replies), reachable by voice OR tap -- voice preferred ("the whole
+// idea is about talking to the app"), tap as the required fallback for
+// whenever voice isn't viable. Distinct from ending Session Mode: mute
+// pauses in place and expects to resume, without losing the session.
+// Deliberately NOT "mute" as a bare single word -- too easy to
+// false-trigger off ordinary range chatter; multi-word phrases only.
+const SESSION_MODE_MUTE_RE =
+  /\b(mute yourself|go on mute|pause listening|hold on a (second|sec|moment))\b/i;
+// Heard only by the free on-device wake-word-style recognizer while
+// paused (see startMuteListening()) -- never sent to paid STT, which
+// is the entire point of muting in the first place. Avoids "go ahead"
+// deliberately: that phrase is also used elsewhere in this file's
+// spoken acks, and could otherwise risk the app hearing its own TTS
+// output as an unmute command if mic/speaker echo ever leaks between
+// them (mitigated further by only starting this listener AFTER the
+// mute confirmation has finished playing, not concurrently with it).
+const SESSION_MODE_UNMUTE_RE =
+  /\b(unmute|un-mute|resume listening|keep listening|i'?m back)\b/i;
+const SESSION_MODE_MUTE_PHRASES = [
+  "Muted. Say unmute, or tap, when you're ready.",
+  "Going quiet. Tap or say unmute to bring me back.",
+];
+const SESSION_MODE_UNMUTE_PHRASES = [
+  "Back with you.",
+  "Listening again.",
+];
+
 let voiceEnabled = false;
-let voiceState = 'off'; // off | idle | acknowledging | listening | processing | speaking
+let voiceState = 'off'; // off | idle | acknowledging | listening | processing | speaking | muted
 let wakeRecognition = null;
+let muteRecognition = null;
 let sessionWakeCount = 0;
 let sessionModeEnabled = false;
+let sessionModeMuted = false;
 
 const voiceStateEl = document.getElementById('voiceState');
 const voiceHeardEl = document.getElementById('voiceHeard');
 const voiceReadoutEl = document.getElementById('voiceReadout');
 const enableVoiceBtn = document.getElementById('enableVoiceBtn');
 const sessionModeBtn = document.getElementById('sessionModeBtn');
+const muteBtn = document.getElementById('muteBtn');
 const voiceUnsupportedEl = document.getElementById('voiceUnsupported');
 
 // How long a spoken numeric readout (elevation/windage, etc.) stays on
@@ -1788,6 +1822,52 @@ function startWakeListening() {
   wakeRecognition.start();
 }
 
+// Session Mode mute: the free, on-device recognizer that listens ONLY
+// for the unmute phrase while paused -- same mechanism/cost profile as
+// startWakeListening() above (nothing sent to any paid API), just
+// watching for a different phrase and gated on voiceState === 'muted'
+// instead of 'idle'. This is what makes muting actually free: capture
+// stops entirely (recordCommand/Whisper/the LLM query never run) while
+// this lightweight local recognizer is the only thing listening.
+function startMuteListening() {
+  const SR = getSpeechRecognition();
+  if (!SR) return; // no on-device speech support -- the mute button (tap) still works without it
+  muteRecognition = new SR();
+  muteRecognition.continuous = true;
+  muteRecognition.interimResults = true;
+  muteRecognition.lang = 'en-US';
+
+  muteRecognition.onresult = (event) => {
+    if (voiceState !== 'muted') return;
+    let heard = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      heard += event.results[i][0].transcript;
+    }
+    if (SESSION_MODE_UNMUTE_RE.test(heard)) {
+      try { muteRecognition.stop(); } catch (e) {}
+      sessionModeMuted = false;
+      muteBtn.textContent = 'Mute';
+    }
+  };
+
+  muteRecognition.onend = () => {
+    if (voiceState === 'muted') {
+      try { muteRecognition.start(); } catch (e) {}
+    }
+  };
+
+  muteRecognition.onerror = () => {
+    // routine no-speech timeouts etc.; onend restarts it while still muted
+  };
+
+  muteRecognition.start();
+}
+
+function stopMuteListening() {
+  if (muteRecognition) { try { muteRecognition.stop(); } catch (e) {} }
+  muteRecognition = null;
+}
+
 // One record -> transcribe -> query -> speak cycle. Returns
 // {continueConversation, hadSpeech}: continueConversation is true if the
 // backend says we're mid-conversation (guided load/rifle setup, chrono
@@ -1859,6 +1939,13 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     }
     if (SESSION_MODE_START_RE.test(heardText)) {
       return { continueConversation: false, hadSpeech: true, heardText, sessionModeAction: 'start' };
+    }
+    // Mute only means anything inside Session Mode's own loop (see
+    // runSessionModeLoop) -- checked here regardless of caller anyway,
+    // same reasoning as start/end above: no reason to waste a backend
+    // call on a phrase that's never a real ballistics query either way.
+    if (SESSION_MODE_MUTE_RE.test(heardText)) {
+      return { continueConversation: false, hadSpeech: true, heardText, sessionModeAction: 'mute' };
     }
 
     if (!heardText) {
@@ -2007,13 +2094,52 @@ async function runSessionModeLoop() {
   voiceState = 'acknowledging';
   setVoiceState('Session mode -- starting', true);
   await speak(SESSION_MODE_ON_PHRASES[Math.floor(Math.random() * SESSION_MODE_ON_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
+  sessionModeMuted = false;
+  muteBtn.disabled = false;
+  muteBtn.textContent = 'Mute';
 
   let endedBySpeech = false;
   while (sessionModeEnabled && voiceEnabled) {
+    // Paused: mic released, no capture/transcribe/query running at all
+    // (the whole point of mute -- see SESSION_MODE_MUTE_RE's comment).
+    // sessionModeMuted can flip false either from startMuteListening()'s
+    // own recognizer hearing the unmute phrase, or from muteBtn's click
+    // handler -- both just flip the flag; this loop is what actually
+    // acts on the transition, polling rather than blocking on an event
+    // so a tap works immediately regardless of what's mid-flight.
+    if (sessionModeMuted) {
+      if (voiceState !== 'muted') {
+        releaseMicStream();
+        voiceState = 'muted';
+        setVoiceState('Session mode -- muted', true);
+        await speak(SESSION_MODE_MUTE_PHRASES[Math.floor(Math.random() * SESSION_MODE_MUTE_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
+        // Listener starts only after the confirmation finishes playing,
+        // not concurrently -- see SESSION_MODE_UNMUTE_RE's comment on
+        // why (avoids the app's own TTS output risking a self-triggered
+        // unmute if mic/speaker echo ever leaks between them).
+        startMuteListening();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      continue;
+    }
+    if (voiceState === 'muted') {
+      // Just transitioned out of mute (flag flipped by the recognizer
+      // or the button while the poll above was mid-wait).
+      stopMuteListening();
+      voiceState = 'listening';
+      setVoiceState('Session mode -- listening', true);
+      await speak(SESSION_MODE_UNMUTE_PHRASES[Math.floor(Math.random() * SESSION_MODE_UNMUTE_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
+      continue;
+    }
+
     const { sessionModeAction } = await runConversationTurn({ speakOnSilence: false });
     if (sessionModeAction === 'end') {
       endedBySpeech = true;
       break;
+    }
+    if (sessionModeAction === 'mute') {
+      sessionModeMuted = true;
+      muteBtn.textContent = 'Unmute';
     }
   }
 
@@ -2021,9 +2147,13 @@ async function runSessionModeLoop() {
     await loadRifles();
   } catch (e) {}
 
+  stopMuteListening();
   releaseMicStream();
   sessionModeEnabled = false;
+  sessionModeMuted = false;
   sessionModeBtn.textContent = 'Start session mode';
+  muteBtn.disabled = true;
+  muteBtn.textContent = 'Mute';
 
   // voiceEnabled going false already has its own sign-off (the disable
   // button's own handler) -- don't speak a second one on top of it here.
@@ -2077,6 +2207,8 @@ enableVoiceBtn.addEventListener('click', async () => {
     sessionModeEnabled = false; // lets runSessionModeLoop's while condition exit on its own
     voiceState = 'off';
     if (wakeRecognition) { try { wakeRecognition.stop(); } catch (e) {} }
+    stopMuteListening();
+    sessionModeMuted = false;
     releaseWakeLock();
     releaseMicStream();
     setVoiceState('Voice: off');
@@ -2084,6 +2216,8 @@ enableVoiceBtn.addEventListener('click', async () => {
     enableVoiceBtn.textContent = 'Enable voice ("Ballistica")';
     sessionModeBtn.disabled = true;
     sessionModeBtn.textContent = 'Start session mode';
+    muteBtn.disabled = true;
+    muteBtn.textContent = 'Mute';
     // Fire-and-forget: the toggle and mic should go quiet right away,
     // the sign-off just plays out over it rather than blocking the UI.
     if (hadSession) {
@@ -2128,6 +2262,24 @@ sessionModeBtn.addEventListener('click', () => {
   sessionModeEnabled = true;
   sessionModeBtn.textContent = 'End session mode';
   runSessionModeLoop();
+});
+
+muteBtn.addEventListener('click', () => {
+  if (!sessionModeEnabled) return; // shouldn't be reachable -- disabled outside Session Mode
+  // Just flips the flag (and the button label for instant feedback) --
+  // runSessionModeLoop's own poll notices on its next iteration and does
+  // the real work (mic release/reacquire, spoken confirmation, starting/
+  // stopping the free unmute listener), same pattern as ending Session
+  // Mode above. Works identically whether Session Mode is mid-turn,
+  // mid-recording, or idle -- worst case it takes effect at the end of
+  // whatever utterance is already in flight, not mid-recording.
+  if (sessionModeMuted) {
+    sessionModeMuted = false;
+    muteBtn.textContent = 'Mute';
+  } else {
+    sessionModeMuted = true;
+    muteBtn.textContent = 'Unmute';
+  }
 });
 
 const authEmailInput = document.getElementById('authEmail');
