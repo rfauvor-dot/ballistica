@@ -37,7 +37,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 import httpx
 import jwt
 import openai
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -1416,7 +1416,7 @@ def v2_status(user_store: SupabaseProfileStore = Depends(_get_user_store)):
 
 @app.get("/v2/debug/conversation-log")
 def v2_debug_conversation_log(
-    limit: int = 50, user_store: SupabaseProfileStore = Depends(_get_user_store),
+    limit: int = Query(50, ge=1, le=1000), user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
     """Temporary, current-build-phase only (2026-09-06) -- see
     db/010_conversation_debug_log.sql and log_conversation_turn()'s own

@@ -585,3 +585,24 @@ def test_profile_voice_id_and_display_name_update_independently(user_a, api_clie
         assert r.status_code == 422
     finally:
         api_client.patch("/v2/profile", headers=headers, json={"display_name": "reset", "voice_id": "shimmer"})
+
+
+def test_conversation_log_endpoint_bounds_limit_and_is_per_user(user_a, user_b, api_client):
+    """The conversation-log download button (2026-09-19) is this endpoint's
+    first real caller. limit is bounded (1-1000), and each account sees
+    only its own turns -- RLS, not an app-level filter."""
+    _, token_a = user_a
+    _, token_b = user_b
+    ha = {"Authorization": f"Bearer {token_a}"}
+    for bad in (0, -1, 1001):
+        assert api_client.get(f"/v2/debug/conversation-log?limit={bad}", headers=ha).status_code == 422
+
+    marker = "isolation-log-marker-7f3a"
+    assert api_client.post("/v2/voice/query", headers=ha, json={"text": f"hello {marker}"}).status_code == 200
+    mine = api_client.get("/v2/debug/conversation-log?limit=50", headers=ha)
+    assert mine.status_code == 200
+    assert any(marker in t["input_text"] for t in mine.json()["turns"])
+
+    theirs = api_client.get("/v2/debug/conversation-log?limit=1000", headers={"Authorization": f"Bearer {token_b}"})
+    assert theirs.status_code == 200
+    assert not any(marker in t["input_text"] for t in theirs.json()["turns"])

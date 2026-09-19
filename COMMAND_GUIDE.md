@@ -345,6 +345,15 @@ for the range. As of this cutover, it requires signing in first.
     (e.g. "22.5gr H335"). Re-importing a rifle that already exists only
     ever adds/updates loads on it — it never overwrites the rifle's own
     saved details.
+  - **Download conversation log (added 2026-09-19):** saves your most
+    recent ~500 voice turns as a plain text file, oldest first — for
+    each one, what Ballistica *heard* (the speech-to-text transcript),
+    which handler took it (regex fast path, the LLM, the Session Mode
+    tracker, a confirmation gate), the reply, and how long it took.
+    Audio itself is never kept anywhere, so this is a record of what
+    the app understood, not a recording. It only ever contains your own
+    account's turns; send the file to whoever's reviewing a session
+    rather than sharing a password.
   - **Download my data first (in Danger Zone, right above Delete my
     account):** the same export, specifically surfaced as the thing to
     do before you delete everything.

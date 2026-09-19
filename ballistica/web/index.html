@@ -287,6 +287,7 @@
           <div class="panel-body">
             <button id="exportDataBtn">Export my data (CSV)</button>
             <button id="openImportBtn" style="margin-top:8px;">Import rifles / loads</button>
+            <button id="downloadConversationLogBtn" style="margin-top:8px;">Download conversation log</button>
             <div id="importExportError"></div>
           </div>
         </details>
@@ -2582,6 +2583,67 @@ async function handleExportClick(errorElId) {
     flash(errorEl, e.message);
   }
 }
+// Conversation log download (2026-09-19, Rick's ask: he wanted me to
+// "go back over and listen to" a range session). Audio is never kept --
+// only the per-turn text log (what was heard, which handler took it, the
+// reply, timing) -- and it's readable only with the signed-in account's
+// own token, so the shooter downloads it here and hands over the file
+// instead of anyone needing their password. Oldest turn first, since
+// that's the order a session actually happened in.
+function buildConversationLogText(turns) {
+  const ordered = [...turns].reverse();
+  const lines = [
+    'Ballistica conversation log',
+    `${ordered.length} turn${ordered.length === 1 ? '' : 's'}, oldest first. Times are local to the device that downloaded this.`,
+    'HEARD is the speech-to-text transcript (what Ballistica thought you said), not audio.',
+    '',
+  ];
+  for (const t of ordered) {
+    const when = t.created_at ? new Date(t.created_at).toLocaleString() : 'unknown time';
+    const ms = t.duration_ms != null ? `, ${t.duration_ms} ms` : '';
+    lines.push(`[${when}] (${t.tool_name || 'unknown'}${ms})`);
+    lines.push(`  HEARD: ${t.input_text}`);
+    lines.push(`  REPLY: ${t.reply_text}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+async function downloadConversationLog() {
+  const token = await getValidAccessToken();
+  if (!token) throw new Error('Signed out -- please sign in again.');
+  const res = await fetch('/v2/debug/conversation-log?limit=500', { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).detail || ''; } catch (e) {}
+    throw new Error(detail || `Couldn't get the log (HTTP ${res.status})`);
+  }
+  const { turns } = await res.json();
+  if (!turns.length) throw new Error('No conversation turns recorded yet.');
+  const blob = new Blob([buildConversationLogText(turns)], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ballistica-conversation-log-${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+document.getElementById('downloadConversationLogBtn').addEventListener('click', async () => {
+  const errorEl = document.getElementById('importExportError');
+  hide(errorEl);
+  const btn = document.getElementById('downloadConversationLogBtn');
+  btn.disabled = true;
+  try {
+    await downloadConversationLog();
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.getElementById('exportDataBtn').addEventListener('click', () => handleExportClick('importExportError'));
 document.getElementById('exportBeforeDeleteBtn').addEventListener('click', () => handleExportClick('deleteAccountError'));
 
