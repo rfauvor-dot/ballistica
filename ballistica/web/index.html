@@ -1479,6 +1479,14 @@ const SESSION_MODE_OFF_PHRASES = [
 // wake-word turn or a Session Mode turn).
 const SESSION_MODE_END_RE =
   /\b(end session|that'?s it for (today|now)|stop listening|session'?s? over|we'?re done( for)? (today|now))\b/i;
+// Voice-triggered start, added 2026-09-19 per Rick's explicit call: Session
+// Mode should be startable both by tapping the button AND by voice ("the
+// whole idea is about talking to the app"), not tap-only as it shipped
+// 2026-09-05. Checked from the ordinary wake-word path (handleWakeWord),
+// symmetric with SESSION_MODE_END_RE being checked from inside Session
+// Mode's own loop.
+const SESSION_MODE_START_RE =
+  /\b(start session mode|start session|session mode on|let'?s go hands.?free|go hands.?free)\b/i;
 
 let voiceEnabled = false;
 let voiceState = 'off'; // off | idle | acknowledging | listening | processing | speaking
@@ -1836,6 +1844,23 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     const heardText = (transcribeData.text || '').trim();
     voiceHeardEl.textContent = heardText ? `Heard: "${heardText}"` : '';
 
+    // Session Mode start/end phrases are a frontend-only concept (the
+    // backend has no idea what Session Mode is) -- checked here, before
+    // the backend round-trip, not after: checking after would mean
+    // "end session" (or now "start session mode") gets sent to
+    // /v2/voice/query as if it were a real query first, spoken back
+    // whatever improvised reply the conversational layer gives it, and
+    // ONLY THEN would the loop notice the phrase and act on it. Caught
+    // while wiring the new start phrase in below -- fixed for both,
+    // since duplicating a known-avoidable double-reply into new code
+    // would just be carrying the same bug forward.
+    if (SESSION_MODE_END_RE.test(heardText)) {
+      return { continueConversation: false, hadSpeech: true, heardText, sessionModeAction: 'end' };
+    }
+    if (SESSION_MODE_START_RE.test(heardText)) {
+      return { continueConversation: false, hadSpeech: true, heardText, sessionModeAction: 'start' };
+    }
+
     if (!heardText) {
       if (speakOnSilence) {
         voiceState = 'speaking';
@@ -1911,10 +1936,29 @@ async function handleWakeWord() {
   // behaving.
   let keepGoing = true;
   let turns = 0;
+  let sessionModeRequested = false;
   const MAX_TURNS = 20;
   while (keepGoing && voiceEnabled && turns < MAX_TURNS) {
-    ({ continueConversation: keepGoing } = await runConversationTurn());
+    const turnResult = await runConversationTurn();
+    keepGoing = turnResult.continueConversation;
+    if (turnResult.sessionModeAction === 'start') {
+      sessionModeRequested = true;
+      break;
+    }
     turns++;
+  }
+
+  // Voice-triggered Session Mode start (2026-09-19, per Rick): hand off
+  // to runSessionModeLoop() the same way the button's own click handler
+  // does -- it owns the mic lifecycle from here (including eventually
+  // calling releaseMicStream()/startWakeListening() itself once Session
+  // Mode ends), so this function returns immediately rather than falling
+  // through to its own normal end-of-turn cleanup below.
+  if (sessionModeRequested && voiceEnabled) {
+    sessionModeEnabled = true;
+    sessionModeBtn.textContent = 'End session mode';
+    await runSessionModeLoop();
+    return;
   }
 
   // The rifle/load panels were only ever loaded once, at page load --
@@ -1966,8 +2010,8 @@ async function runSessionModeLoop() {
 
   let endedBySpeech = false;
   while (sessionModeEnabled && voiceEnabled) {
-    const { hadSpeech, heardText } = await runConversationTurn({ speakOnSilence: false });
-    if (hadSpeech && SESSION_MODE_END_RE.test(heardText)) {
+    const { sessionModeAction } = await runConversationTurn({ speakOnSilence: false });
+    if (sessionModeAction === 'end') {
       endedBySpeech = true;
       break;
     }

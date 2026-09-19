@@ -161,15 +161,67 @@ spreadsheet format and ran it through the existing desktop import today —
 reconstructed spreadsheet stands as the reference template for converting
 future freeform-narrated sessions the same way.
 
-**Status:** Backlog — feasibility, pipeline-gap analysis, and cost estimate
-all done. Only remaining open question is whether Rick wants build-effort
-(engineering time/complexity) sized separately from the per-session running
-cost above. Import-tool ask closed — already-built infra handled it.
+**Status correction, 2026-09-19 -- this entry was stale.** Everything
+above still describes the real remaining scope correctly, but the file
+never got updated to reflect that **component 1 actually shipped the
+same day it was scoped** (2026-09-05, commit `a2ffdf3`, live-voice
+tested, 152 tests passing at the time) -- this file kept reading as if
+nothing had been built at all. Corrected component-by-component status:
+- **Component 1 (continuous capture) -- DONE.** `runSessionModeLoop()`
+  in `ballistica/web/index.html`: loops the existing tested VAD capture
+  for a whole session, no wake word between commands, stays silent on
+  ordinary quiet stretches. Session toggle button, ack/sign-off phrases,
+  spoken "end session" phrase to drop back to wake-word mode -- all
+  real and live-tested.
+  - **2026-09-19 addition:** start was tap-only until today. Rick's
+    call: should be startable by voice too ("the whole idea is about
+    talking to the app"), not just the button. Added
+    `SESSION_MODE_START_RE`, checked in the same place
+    `SESSION_MODE_END_RE` already was, wired into `handleWakeWord()` so
+    a spoken "start session mode" (or "let's go hands free," etc.) from
+    ordinary wake-word listening hands off into the same
+    `runSessionModeLoop()` the button triggers. Fixed a small real bug
+    found while wiring this in: both phrases used to be checked AFTER
+    the backend `/v2/voice/query` round-trip, so saying "end session"
+    got sent to the conversational layer as a real query first (an
+    improvised reply got spoken) before the loop noticed the phrase and
+    exited -- both phrases are now caught before the backend call,
+    for both start and end. Verified: regex tested against real
+    start/end phrases and realistic ballistics commands (no false
+    positives, no cross-contamination between the two patterns) and
+    against the actual literals served by the running app, not a
+    reimplementation; JS syntax-checked; app loads clean, no console
+    errors. Not yet live-mic tested (same caveat as every voice feature
+    -- needs a real range/room test).
+- **Components 2 (session-state tracker) and 3 (confidence-gated reply
+  policy) -- NOT built,** confirmed directly from `runSessionModeLoop`'s
+  own code comment: "does not add any session-wide entity tracking or a
+  confidence-gated speak policy... every recognized utterance still
+  gets dispatched and replied to exactly as it would via a one-off
+  wake-word command." Some adjacent robustness fixes landed the same
+  day (rifle fuzzy-matching by caliber/barrel/twist/scope, pre-filling
+  setup fields volunteered in the trigger utterance, a plain
+  switch-rifle command now also carrying new-load fields said in the
+  same breath) but these all still require an explicit recognized
+  command -- none of it is genuine implicit context-switch detection
+  from open narration, which is still the real, unbuilt Medium-Large
+  piece.
+- **Component 4 (Relaxed Mode toggle + hard mute) -- PARTIALLY done.**
+  The on/off toggle exists (component 1's button + spoken end-phrase).
+  A true MUTE -- pausing capture without ending the session or fully
+  disabling voice -- does not exist in any form yet; today the only
+  controls are "disable voice" (full teardown) or "end session mode"
+  (drops back to wake-word mode). Rick's call, 2026-09-19: mute should
+  be reachable both by voice and by a physical/tap control, voice
+  preferred ("the whole idea is about talking to the app") but a tap
+  control has to exist as the fallback for whenever voice isn't
+  viable. Not yet built.
 
-**Owning lenses:** Build (pipeline changes, import tool), Finance (cost
-estimate once real numbers land — may warrant a RISK_REGISTER.md entry if
-continuous-listening cost turns out material, not filed there yet since no
-decision has been made and the proposed mode is explicitly opt-in/bounded).
+**Owning lenses:** Build (component 2, the real remaining engineering
+investment; component 4's actual mute control), Finance (cost estimate
+above still holds, may warrant a RISK_REGISTER.md entry if
+continuous-listening cost turns out material once component 2 is real
+usage, not just component 1's already-shipped continuous capture).
 
 ---
 
