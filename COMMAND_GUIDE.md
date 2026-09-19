@@ -188,6 +188,57 @@ outlier — more than 40fps AND more than 2 standard deviations off the
 average so far) gets flagged in the reply, but is still recorded, not
 rejected — you'd still need to say "discard that" to drop it.
 
+## 9a. Session Mode (hands-free range logging — added 2026-09-19)
+
+Session Mode keeps listening for a whole range session with **no wake
+word between commands**. It's opt-in (default behavior stays
+wake-word-per-command, so it doesn't pick up other people's range
+talk), and it's a frontend mode — the backend only learns it's on
+through a flag sent with each voice turn.
+
+| Say / tap | What happens |
+|---|---|
+| tap **Start session mode**, or say "Ballistica, start session mode" / "let's go hands free" | Starts continuous listening |
+| tap **End session mode**, or say "end session" / "that's it for today" / "stop listening" / "we're done for now" | Ends it, reads back a recap of everything logged, and returns to wake-word mode |
+| tap **Mute**, or say "mute yourself" / "go on mute" / "pause listening" / "hold on a second" | Pauses capture entirely — nothing is recorded or sent to any paid speech/LLM service while muted |
+| tap **Unmute**, or say "unmute" / "resume listening" / "keep listening" / "I'm back" | Resumes. (A tap takes effect at the end of whatever's already being recorded, not mid-recording) |
+
+**The session tracker.** While Session Mode is on, plain narration is
+understood without a command:
+
+- "okay now the SBR with the 110 Lil Gun" — switches the active rifle
+  and/or load from narration alone. Only a **unique** match counts; if
+  it could be more than one saved rifle/load it asks which. If it isn't
+  saved at all it says so and offers to set it up.
+- "1150, 1162, 1148" or "chrono says 1150" — logs each reading against
+  the rifle and load in focus and reads back "1150, shot 1." (a
+  statistical outlier is flagged but kept). Numbers outside 400–5000
+  fps are refused, never logged.
+- "scratch that" / "no that last one was 1152" — tosses or corrects the
+  **most recent** reading only. A correction pointing at an earlier one
+  ("that first one was 1152", "the second shot was...") is refused with
+  a spoken explanation and nothing is changed — editing an earlier
+  reading isn't supported, and guessing would silently change the wrong
+  number.
+- **If you switch to a different rifle that has several loads and don't
+  say which load,** the readings are held and it asks which load —
+  it never assumes the rifle's last-used load, because a wrong guess
+  would silently corrupt the data.
+- "session summary" / "how many shots" — counts, average, and spread
+  per load.
+- "save velocities" — proposes the per-load averages (needs at least 3
+  readings on a load) and saves only after you say yes, with the same
+  chrono-verified note calibration writes. **Nothing is ever written to
+  a saved load without that explicit yes.** Saved loads leave the log
+  so they can't be saved twice.
+
+Logged readings survive ending Session Mode and stay saveable for up to
+12 hours; readings held waiting on a which-rifle/which-load answer are
+dropped after 5 minutes. While a reading (a 3–5 digit number) is in the
+sentence, Session Mode won't treat "chrono" or "again" as the
+calibration/repeat commands — the bare commands ("start calibration",
+"repeat elevation") still work exactly as before.
+
 ## 10. Status, listing, help
 
 | Say | What happens |
@@ -364,11 +415,12 @@ for the range. As of this cutover, it requires signing in first.
 
 Verified absent from the code, not just undocumented:
 
-- **No shot log.** There's no feature to log individual shots fired,
-  hits/misses, or corrections during live fire for later review.
-  Chronograph "calibration" only records shot **velocities** in memory
-  during that one session, and only the resulting average gets saved —
-  individual shot readings aren't persisted anywhere.
+- **No permanent shot log.** There's no feature to log hits/misses or
+  corrections during live fire for later review. Chronograph
+  calibration and Session Mode (§9a) only record shot **velocities**;
+  only the resulting average gets saved to a load, and unsaved Session
+  Mode readings are only kept temporarily (up to 12 hours) — individual
+  readings aren't archived anywhere permanent.
 - **No way to switch the active load from the web app** — only by
   voice, or by re-saving a load through the form.
 - **No in-app disclaimer/liability language** anywhere in the product —

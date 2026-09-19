@@ -193,19 +193,48 @@ nothing had been built at all. Corrected component-by-component status:
     reimplementation; JS syntax-checked; app loads clean, no console
     errors. Not yet live-mic tested (same caveat as every voice feature
     -- needs a real range/room test).
-- **Components 2 (session-state tracker) and 3 (confidence-gated reply
-  policy) -- NOT built,** confirmed directly from `runSessionModeLoop`'s
-  own code comment: "does not add any session-wide entity tracking or a
-  confidence-gated speak policy... every recognized utterance still
-  gets dispatched and replied to exactly as it would via a one-off
-  wake-word command." Some adjacent robustness fixes landed the same
-  day (rifle fuzzy-matching by caliber/barrel/twist/scope, pre-filling
-  setup fields volunteered in the trigger utterance, a plain
-  switch-rifle command now also carrying new-load fields said in the
-  same breath) but these all still require an explicit recognized
-  command -- none of it is genuine implicit context-switch detection
-  from open narration, which is still the real, unbuilt Medium-Large
-  piece.
+- **Component 2 (session-state tracker) -- DONE, 2026-09-19.** Full
+  design record: MULTI_TENANCY_DESIGN.md §31. While Session Mode is on,
+  narration is understood without a command: "okay now the SBR with the
+  110 Lil Gun, 1150, 1162" switches rifle/load and logs the readings;
+  "scratch that" / "no that was 1152" corrects the last one. One new
+  LLM tool (`log_session_observation`, only offered in Session Mode)
+  REPORTS what was said; deterministic code in `cli.py` decides
+  everything that matters -- unique-match-only rifle/load resolution
+  (else it asks), a 400-5000 fps plausibility gate, and what gets
+  logged. Readings live in a `_SessionLog` (round-tripped through the
+  existing conversation_state JSON, no migration), and nothing ever
+  touches a saved load until an explicit, confirmed "save velocities"
+  (>= 3 readings per load; same chrono-verified note calibration
+  writes). New `POST /v2/session/end` returns a spoken recap. Two
+  silent-data-corruption hazards found and closed while building
+  (fast paths -- "chrono says 1150" started a modal calibration,
+  "again, 1162" re-read the last solution -- stealing narration; and
+  readings landing on a rifle's last-used load after a switch, now
+  asked about instead of guessed) -- both regression-tested. A third
+  turned up in the end-to-end run: "that FIRST one was 1152" got
+  applied to the LAST reading despite a prompt telling the model not
+  to; now refused in code. Only the most recent reading can be
+  corrected -- editing an earlier one is NOT built.
+  Verified: 33 new tests (LLM stubbed, pinning the deterministic
+  side), full suite passing, the whole flow through the real HTTP
+  endpoints (real Supabase, real model, separate stateless requests), and the REAL model exercised against
+  realistic narration -- switch+readings, spoken-word numbers, chrono
+  narration, discard/replace all route to the tracker; solutions,
+  wind, and load switches still go to their own tools; chatter and a
+  passing mention of another rifle stay conversation. (A real gap that
+  check found and fixed: a bare "scratch that" had nothing to refer to
+  until the model was told the last logged reading.) **Not yet
+  live-mic tested at a range**, same caveat as every voice feature --
+  the real risks left are STT mishearing numbers/names in noise, which
+  no amount of text-level testing can characterize.
+- **Component 3 (confidence-gated reply policy) -- NOT built, and now
+  unblocked.** Every observation still gets a short spoken readback
+  ("1150, shot 3."). That's deliberately kept for now as the
+  STT-error check on numbers rather than going silent by default --
+  worth deciding what's actually worth interrupting for from real range
+  transcripts (the per-turn debug log already captures them), not
+  guessing up front.
 - **Component 4 (Relaxed Mode toggle + hard mute) -- DONE, 2026-09-19.**
   The on/off toggle existed already (component 1's button + spoken
   end-phrase). The actual mute -- pausing capture in place without
@@ -232,19 +261,16 @@ nothing had been built at all. Corrected component-by-component status:
   verify this has no real microphone to test the actual recognizer
   against).
 
-**All four Session Mode components now built except the hard one.**
-Only component 2 (session-state tracker + implicit context-switch
-detection from open narration) remains -- see its description above,
-still the real Medium-Large engineering investment. Component 3
-(confidence-gated reply policy) was scoped as depending on a
-confidence signal component 2 would produce, so it's realistically
-blocked on 2 as well, not independently startable.
+**Session Mode: components 1, 2, and 4 built; only component 3 left.**
+The next real step isn't more code -- it's a range session. Component 3
+should be designed from what the tracker actually gets wrong and gets
+right in the field.
 
-**Owning lenses:** Build (component 2, the one real remaining
-engineering investment), Finance (cost estimate above still holds, may
-warrant a RISK_REGISTER.md entry if continuous-listening cost turns
-out material once component 2 is real usage, not just today's
-continuous-capture-plus-mute).
+**Owning lenses:** Build (component 3, once there's range data),
+Finance (cost estimate above still holds -- component 2 adds one Haiku
+call per unmatched utterance, already inside the estimate's LLM
+extraction line; may warrant a RISK_REGISTER.md entry if
+continuous-listening cost turns out material in real use).
 
 ---
 

@@ -2364,3 +2364,89 @@ plumbing, the male-voice pick) rather than trusting an eight-day-old
 note, and in the process caught a real gap between what the backlog
 said was still needed and what was actually already sitting in
 production undocumented.
+
+
+---
+
+## 31. Session Mode tracker -- component 2 (2026-09-19)
+
+Session Mode (continuous, no-wake-word listening) shipped 2026-09-05 as
+components 1/4 only: every utterance still needed a recognized command.
+This is the piece BACKLOG.md called the real remaining engineering
+investment -- narration ("okay now the SBR with the 110 Lil Gun, 1150,
+1162") understood without a command, logged, and never trusted with a
+guess.
+
+**Design rule, applied everywhere below: the LLM only REPORTS what was
+narrated; deterministic code has the final say.** `intent.py` gained one
+tool, `log_session_observation` (rifle_query, load_query,
+velocities_fps, discard_last_reading, replace_last_reading_fps), offered
+ONLY while Session Mode is on -- `extract_intent(session_context=None)`
+is byte-for-byte the pre-existing call, so wake-word behavior can't
+shift. `cli.py` then decides: which saved rifle/load a spoken name
+matches (unique match only; else the existing disambiguation gates ask),
+whether a number is a plausible velocity (400-5000 fps -- a
+transcription slip like "1150" -> 150 never reaches the log), and what
+gets logged.
+
+**State:** `_SessionLog` (readings in order, each tagged rifle+load, plus
+`unassigned` held readings) round-trips through the existing
+conversation_state JSON via `_hydrate_cli`/`_dehydrate_cli` -- no
+migration needed. It deliberately outlives Session Mode (12 hours) so
+readings stay saveable afterward. `VoiceQueryIn.session_mode` is the only
+way the backend learns Session Mode is on; a new
+`POST /v2/session/end` returns a spoken recap when the frontend leaves
+it.
+
+**Nothing is written to a saved load without an explicit yes.**
+"save velocities" builds per-pairing averages (>= 3 readings each),
+holds them in `_pending_session_save` (another confirmation gate in the
+same shape as delete/setup/calibration), and only `update_load_velocity`
+on "yes" -- with the same chrono-verified note calibration writes. Saved
+pairings leave the log so they can't be saved twice.
+
+**Three real hazards found and closed while building, all silent-data-
+corruption shaped:**
+1. *Fast paths stealing narration.* "chrono says 1150" matched the
+   calibration fast path (trigger word inside the first 30 chars) and
+   started a modal calibration session before the tracker ever saw it;
+   "and again, 1162" matched the repeat-last-solution fast path. In
+   Session Mode an utterance carrying a 3-5 digit number now skips
+   both. Bare commands with no number in them are untouched, and
+   outside Session Mode nothing changed at all (regression-tested).
+2. *Guessing the load after a rifle switch.* First version attached held
+   readings to whichever load the newly-selected rifle happened to have
+   active -- caught by its own test failing. A wrong guess there logs
+   real readings against the wrong load with nothing to reveal it. Now:
+   auto-attach only when the rifle has exactly one load; otherwise ask
+   which load (reusing the load-disambiguation gate) and hold the
+   readings until answered (dropped after 5 minutes so an unanswered
+   question can't attach to a later, unrelated switch). If an ambiguous
+   rifle AND a named load arrive together, readings are dropped with a
+   spoken "read them again" rather than held on a guess.
+
+3. *A correction silently applied to the wrong reading.* Found in the
+   end-to-end run against the real model: "no wait, that FIRST one was
+   1152" was mapped onto replace-the-LAST-reading -- changing a
+   different number than the shooter meant, with only the reply's
+   "Changed 1148 to 1152" to reveal it. A prompt instruction not to
+   (added first) did not hold -- confirmed by re-running it live -- so
+   the refusal is now enforced in code: a correction whose sentence
+   points at an earlier reading (first/second/earlier/N shots ago...) is
+   declined with a spoken explanation, and any NEW readings in the same
+   breath are still logged. Only the most recent reading can be
+   corrected; editing an earlier one isn't built.
+
+**Verified:** `tests/test_session_tracker.py` (33 tests, LLM stubbed --
+they pin the deterministic side), the full suite, the real model on
+realistic narration, and the whole flow through the real HTTP endpoints
+(real Supabase, separate stateless requests, disposable rifle, cleaned up
+after); the new endpoint is
+in the fail-closed auth test; see BACKLOG.md for the live-LLM check and
+what is still untested (real microphone at a range).
+
+**Not built (component 3):** the confidence-gated reply policy. Every
+observation still gets a short spoken readback ("1150, shot 3.") --
+deliberately kept as the STT-error check for numbers rather than going
+silent by default, until there's real range data on what's worth
+interrupting for.

@@ -406,6 +406,78 @@ _SESSION_STALE_SECONDS = 300
 # BallisticaCLI._chat_history).
 _CHAT_HISTORY_MAX_TURNS = 6
 
+# Session Mode tracker (component 2, 2026-09-19). A range day is far longer
+# than a modal setup/calibration flow, so the log gets its own, much longer
+# staleness window -- but not unbounded: readings from an abandoned session
+# days ago must never be offered up to save against today's loads.
+_SESSION_LOG_STALE_SECONDS = 12 * 3600
+# A muzzle velocity is only worth saving from a real string, not one
+# stray reading -- same spirit as calibration wanting several shots.
+_MIN_READINGS_TO_SAVE = 3
+# A correction that points at a reading other than the most recent one
+# ("that first one was 1152"). Only the last reading can be corrected, and
+# the model was confirmed live (2026-09-19) to map such a sentence onto
+# "replace the last reading" anyway despite being told not to -- so the
+# refusal is enforced here in code, not left to the prompt.
+_EARLIER_READING_REF_RE = re.compile(
+    r"\b(first|second|third|fourth|fifth|sixth|earlier|before that|previous(?:ly)?|prior|"
+    r"(?:one|two|three|four|five|six) (?:shots?|readings?|ones?) (?:ago|back)|\d+(?:st|nd|rd|th))\b"
+)
+# Sanity bounds on a spoken chronograph reading (fps). A transcription
+# slip ("eleven fifty" -> 11.50, "1150" -> 150) must never reach the log
+# as if it were real data.
+_MIN_PLAUSIBLE_FPS = 400.0
+_MAX_PLAUSIBLE_FPS = 5000.0
+
+
+class _SessionLog:
+    """Session Mode's running record of a range session: which rifle/load
+    is in focus and every chronograph reading logged against a rifle+load
+    pairing, in order. Nothing here touches a saved load's velocity --
+    that only happens via an explicit, confirmed "save velocities" (see
+    BallisticaCLI._request_save_session_velocities), for the same reason
+    calibration confirms before saving: a misheard number is a silent,
+    hard-to-notice data corruption. Round-trips through to_dict()/
+    from_dict() like the setup/calibration sessions."""
+
+    def __init__(self) -> None:
+        self.readings: list[dict] = []  # {"rifle": str, "load": str, "fps": float}, in order logged
+        # Readings stated in the same breath as an ambiguous rifle/load
+        # ("the 300 blackout, 1150, 1162" with two matching rifles) --
+        # held here, not dropped and not guessed onto a pairing, until the
+        # disambiguation answer says which one they belong to.
+        self.unassigned: list[float] = []
+        self.unassigned_at = 0.0
+        self.started_at = time.time()
+        self.last_activity = time.time()
+
+    def to_dict(self) -> dict:
+        return {
+            "readings": self.readings, "unassigned": self.unassigned,
+            "unassigned_at": self.unassigned_at,
+            "started_at": self.started_at, "last_activity": self.last_activity,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "_SessionLog":
+        log = cls()
+        log.readings = data.get("readings") or []
+        log.unassigned = data.get("unassigned") or []
+        log.unassigned_at = data.get("unassigned_at", 0.0)
+        log.started_at = data.get("started_at", log.started_at)
+        log.last_activity = data.get("last_activity", log.last_activity)
+        return log
+
+    def hold(self, velocities: list[float]) -> None:
+        self.unassigned.extend(velocities)
+        self.unassigned_at = time.time()
+
+    def grouped(self) -> dict[tuple[str, str], list[float]]:
+        groups: dict[tuple[str, str], list[float]] = {}
+        for r in self.readings:
+            groups.setdefault((r["rifle"], r["load"]), []).append(r["fps"])
+        return groups
+
 
 class _SetupSession:
     """In-progress voice interview for a new load or rifle -- nothing's
@@ -599,6 +671,19 @@ class BallisticaCLI:
         # "that" refers to without every terse command bloating the
         # context sent to the LLM on every single turn.
         self._chat_history: list[dict] = []
+        # Session Mode tracker (component 2). _session_mode is set per
+        # request by api.py from the frontend's own Session Mode flag (the
+        # backend otherwise has no idea whether a turn came from Session
+        # Mode) -- it only gates whether the observation tool is offered to
+        # the LLM. _session_log persists across requests via
+        # hydrate/dehydrate and deliberately outlives Session Mode itself,
+        # so unsaved readings survive until explicitly saved or stale.
+        self._session_mode: bool = False
+        self._session_log: _SessionLog | None = None
+        # Confirmation gate for "save velocities": the exact per-pairing
+        # averages about to be written, held until the shooter says yes.
+        self._pending_session_save: list[dict] | None = None
+        self._pending_session_save_at: float = 0.0
 
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
@@ -636,6 +721,17 @@ class BallisticaCLI:
         if self._pending_setup_kind is not None and now - self._pending_setup_at > _SESSION_STALE_SECONDS:
             self._pending_setup_kind = None
             self._pending_setup_text = ""
+        if self._pending_session_save is not None and now - self._pending_session_save_at > _SESSION_STALE_SECONDS:
+            self._pending_session_save = None
+        if self._session_log is not None and now - self._session_log.last_activity > _SESSION_LOG_STALE_SECONDS:
+            self._session_log = None
+        # Readings held awaiting a rifle/load answer follow the short
+        # modal window, not the day-long log window -- an unanswered
+        # question from minutes ago must not attach to a later, unrelated
+        # switch.
+        if (self._session_log is not None and self._session_log.unassigned
+                and now - self._session_log.unassigned_at > _SESSION_STALE_SECONDS):
+            self._session_log.unassigned = []
 
     def _requests_different_top_level_task(self, low: str) -> bool:
         """Whether `low` unambiguously asks for a different top-level task
@@ -775,6 +871,11 @@ class BallisticaCLI:
             self._last_tool_name = "setup_start_confirm"
             return self._handle_setup_start_confirm(t)
 
+        if self._pending_session_save is not None:
+            self._pending_session_save_at = time.time()
+            self._last_tool_name = "session_save_confirm"
+            return self._handle_session_save_confirm(t)
+
         if low in ("help", "?"):
             return HELP_TEXT
         if low in ("quit", "exit"):
@@ -800,6 +901,18 @@ class BallisticaCLI:
         if re.search(r"\bwind\s*check\b|\bcheck\s*(?:the\s*)?wind\b|"
                      r"\bwhat.?s\s*(?:my|the)\s*wind\b|\bcurrent\s*wind\b|\bwind\s*status\b", low):
             return self._wind_status()
+        # Session log commands (component 2). Explicit and deterministic,
+        # so they work in ordinary wake-word mode too -- readings logged
+        # in Session Mode stay saveable afterward.
+        # No digit allowed: "save the velocity as 1150" is a field
+        # correction (update_load_field's job), not a request to save the
+        # logged session readings.
+        if re.search(r"\bsave\b.*\b(velocit\w*|readings|chrono(?:graph)?(?: data)?)\b", low) and not re.search(
+            r"\d", low
+        ):
+            return self._request_save_session_velocities()
+        if re.search(r"\bsession\s+(summary|recap|log)\b|\bhow many (?:shots|readings)\b", low):
+            return self._session_summary()
         if low == "list rifles":
             return "\n".join(self.store.rifles.keys()) or "No rifles configured."
         if low == "list loads":
@@ -822,7 +935,17 @@ class BallisticaCLI:
         # right after a load/condition switch that hasn't been re-queried
         # yet. Checked with word boundaries so it doesn't fire on unrelated
         # phrases that happen to contain "again".
-        if re.search(r"\b(repeat|again)\b", low):
+        # In Session Mode, an utterance carrying a velocity-sized number
+        # ("chrono says 1150", "and again, 1162") is narration for the
+        # session tracker, not a command -- without this, the
+        # calibration-word and repeat/again fast paths below would grab
+        # it first (starting a modal calibration session, or re-reading
+        # the last solution) before the tracker ever saw it. Deliberately
+        # only when a 3-5 digit number is present: bare command phrases
+        # ("start calibration", "repeat elevation") carry none and keep
+        # working exactly as before.
+        session_reading = bool(self._session_mode and re.search(r"\b\d{3,5}(?:\.\d+)?\b", low))
+        if not session_reading and re.search(r"\b(repeat|again)\b", low):
             if re.search(r"\bwindage\b", low):
                 return self._repeat("windage")
             if re.search(r"\belevation\b", low):
@@ -837,7 +960,7 @@ class BallisticaCLI:
         if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b", low):
             return self._start_setup("rifle", t)
 
-        if _looks_like_calibration_command(low):
+        if not session_reading and _looks_like_calibration_command(low):
             return self._start_calibration()
 
         m = re.search(r"\b(?:delete|remove|get rid of)\b\s*(?:the\s+)?(.*)", low)
@@ -910,7 +1033,13 @@ class BallisticaCLI:
         # only decides *which* command was meant and *what* the
         # parameters are -- the actual math still runs through the same
         # deterministic functions every other path above uses.
-        result = extract_intent(t, history=self._chat_history)
+        # session_context is only passed in Session Mode, and only as a
+        # kwarg when set -- outside it this is the exact same call as
+        # before Session Mode existed.
+        intent_kwargs = {}
+        if self._session_mode:
+            intent_kwargs["session_context"] = self._session_context()
+        result = extract_intent(t, history=self._chat_history, **intent_kwargs)
         if result is None:
             return "Didn't understand that. Type 'help' for supported commands."
         return self._dispatch_intent(*result, original_text=t)
@@ -957,7 +1086,7 @@ class BallisticaCLI:
                 delete_query = str(args.get("query") or "")
             elif name not in ("set_conditions", "get_status", "converse", "update_rifle_field",
                                "update_load_field", "start_load_setup", "start_rifle_setup",
-                               "start_calibration"):
+                               "start_calibration", "log_session_observation"):
                 return "Didn't understand that. Type 'help' for supported commands."
         except (KeyError, ValueError, TypeError):
             return "Didn't understand that. Type 'help' for supported commands."
@@ -993,6 +1122,13 @@ class BallisticaCLI:
             return self._update_load_fields(args)
         if name == "delete_rifle":
             return self._request_delete_rifle_by_query(delete_query)
+        if name == "log_session_observation":
+            # Only meaningful in Session Mode (the tool is only offered
+            # then) -- ignored otherwise rather than logging into a
+            # session the shooter never started.
+            if not self._session_mode:
+                return "Didn't understand that. Type 'help' for supported commands."
+            return self._apply_session_observation(args, original_text)
         if name == "converse":
             reply = str(args.get("reply") or "").strip()
             if not reply:
@@ -1107,7 +1243,33 @@ class BallisticaCLI:
             listed = ", ".join(candidates)
             return f"Didn't catch which one -- {listed}. Which one do you mean?"
         self._pending_rifle_switch = None
-        return self._switch_rifle(chosen)
+        reply = self._switch_rifle(chosen)
+        # Readings held while this was ambiguous (Session Mode) attach now
+        # -- only if the switch really resolved rather than re-asking.
+        if self._pending_rifle_switch is None:
+            reply += self._resolve_held_readings_after_rifle_switch()
+        return reply
+
+    def _resolve_held_readings_after_rifle_switch(self) -> str:
+        """Readings held during a rifle disambiguation only ever attach to
+        a load the shooter has actually pinned down: automatically when the
+        rifle has exactly one load, otherwise by asking which load first
+        (reusing the load-disambiguation gate). Landing them on whatever
+        load that rifle happened to have active would be a guess -- and a
+        wrong guess is silent data corruption."""
+        log = self._session_log
+        if log is None or not log.unassigned:
+            return ""
+        try:
+            rifle = self.store.get_active_rifle()
+        except ValueError:
+            return ""
+        if len(rifle.loads) > 1:
+            names = list(rifle.loads.keys())
+            self._pending_load_switch = names
+            self._pending_load_switch_at = time.time()
+            return f" Which load are the {len(log.unassigned)} held readings on -- {', '.join(names)}?"
+        return self._flush_unassigned_velocities()
 
     def _handle_load_switch_confirm(self, text: str) -> str:
         candidates = self._pending_load_switch or []
@@ -1119,7 +1281,10 @@ class BallisticaCLI:
             listed = ", ".join(candidates)
             return f"Didn't catch which one -- {listed}. Which one do you want?"
         self._pending_load_switch = None
-        return self._switch_load(chosen)
+        reply = self._switch_load(chosen)
+        if self._pending_load_switch is None:
+            reply += self._flush_unassigned_velocities()
+        return reply
 
     def _switch_rifle(self, query: str, new_load_fields: dict | None = None) -> str:
         # Live demo bug (2026-09-06): this used to let find_rifle()'s bare
@@ -1741,6 +1906,283 @@ class BallisticaCLI:
             return f"Tossed {removed:.0f}. No shots left."
         avg, _ = self._calibration_stats()
         return f"Tossed {removed:.0f}. Average {avg:.0f}."
+
+    # ------------------------------------------------------------------
+    # Session Mode tracker (component 2, 2026-09-19)
+    #
+    # The LLM only REPORTS what was narrated (intent.py's
+    # log_session_observation); everything below is deterministic and has
+    # the final say -- which saved rifle/load a spoken name actually
+    # matches (unique match only, else ask), whether a number is a
+    # plausible velocity, and what gets logged. Nothing here writes to a
+    # saved load's velocity: readings only ever accumulate in the
+    # session log until an explicit, confirmed "save velocities".
+
+    def _session_context(self) -> dict:
+        rifles = {name: list(r.loads.keys()) for name, r in self.store.rifles.items()}
+        active_rifle = active_load = None
+        try:
+            rifle = self.store.get_active_rifle()
+            active_rifle, active_load = rifle.name, rifle.active_load_name
+        except ValueError:
+            pass
+        last_reading = None
+        if self._session_log is not None and self._session_log.readings:
+            last = self._session_log.readings[-1]
+            last_reading = {"fps": last["fps"], "rifle": last["rifle"], "load": last["load"],
+                            "count": len(self._session_log.readings)}
+        return {"rifles": rifles, "active_rifle": active_rifle, "active_load": active_load,
+                "last_reading": last_reading}
+
+    def _short_load_label(self, rifle_name: str, load_name: str, multiple_rifles: bool) -> str:
+        return f"{load_name} on the {rifle_name}" if multiple_rifles else load_name
+
+    def _apply_session_observation(self, args: dict, original_text: str) -> str:
+        if self._session_log is None:
+            self._session_log = _SessionLog()
+        log = self._session_log
+        log.last_activity = time.time()
+
+        rifle_q = str(args.get("rifle_query") or "").strip()
+        load_q = str(args.get("load_query") or "").strip()
+        velocities: list[float] = []
+        rejected: list[float] = []
+        for v in args.get("velocities_fps") or []:
+            try:
+                fps = float(v)
+            except (TypeError, ValueError):
+                continue
+            (velocities if _MIN_PLAUSIBLE_FPS <= fps <= _MAX_PLAUSIBLE_FPS else rejected).append(fps)
+
+        notes: list[str] = []
+
+        # --- context switch: rifle -------------------------------------
+        rifle_changed = False
+        if rifle_q:
+            matches = self.store.find_rifle_matches(rifle_q) or []
+            if not matches:
+                dropped = (f" I didn't log those {len(velocities)} readings." if velocities else "")
+                return (f"I don't have a rifle saved matching '{rifle_q}'.{dropped} "
+                        f"{self._request_start_setup('rifle', original_text)}")
+            if len(matches) > 1:
+                names = [r.name for r in matches]
+                self._pending_rifle_switch = names
+                self._pending_rifle_switch_at = time.time()
+                if velocities and load_q:
+                    # A load was named too, and this rifle answer alone
+                    # wouldn't settle which load the readings belong to --
+                    # holding them would risk landing on the wrong one.
+                    held = f" I didn't log those {len(velocities)} readings, so read them again once we're on the right load."
+                elif velocities:
+                    log.hold(velocities)
+                    held = f" I'm holding those {len(velocities)} readings."
+                else:
+                    held = ""
+                return f"That could be {', '.join(names)}.{held} Which one do you mean?"
+            if matches[0].name != self.store.get_active_rifle().name:
+                self.store.set_active_rifle(matches[0].name)
+                self.store.save()
+                notes.append(f"{matches[0].name}.")
+                rifle_changed = True
+
+        # --- context switch: load --------------------------------------
+        try:
+            rifle = self.store.get_active_rifle()
+        except ValueError:
+            return "No active rifle yet -- set one up first."
+        if load_q:
+            load_matches = rifle.find_load_matches(load_q) or []
+            if not load_matches:
+                dropped = (f" I didn't log those {len(velocities)} readings." if velocities else "")
+                return (f"I don't have a load matching '{load_q}' on the {rifle.name}.{dropped} "
+                        f"{self._request_start_setup('load', original_text)}")
+            if len(load_matches) > 1:
+                names = [m.name for m in load_matches]
+                log.hold(velocities)
+                self._pending_load_switch = names
+                self._pending_load_switch_at = time.time()
+                held = f" I'm holding those {len(velocities)} readings." if velocities else ""
+                return f"That could be {', '.join(names)}.{held} Which one do you want?"
+            if load_matches[0].name != rifle.active_load_name:
+                self.store.set_active_load(load_matches[0].name)
+                self.store.save()
+                notes.append(f"{load_matches[0].name}.")
+
+        # --- corrections to the most recent reading --------------------
+        wants_correction = bool(args.get("discard_last_reading")) or args.get("replace_last_reading_fps") is not None
+        if wants_correction and _EARLIER_READING_REF_RE.search(original_text.lower()):
+            notes.append("I can only correct the most recent reading -- say 'that last one was' and the "
+                         "number, or 'scratch that'. I left everything as it was.")
+            args = {k: v for k, v in args.items()
+                    if k not in ("discard_last_reading", "replace_last_reading_fps")}
+        if args.get("discard_last_reading"):
+            if log.readings:
+                removed = log.readings.pop()
+                notes.append(f"Tossed {removed['fps']:.0f}.")
+            else:
+                notes.append("Nothing to toss yet.")
+        replacement = args.get("replace_last_reading_fps")
+        if replacement is not None:
+            try:
+                new_fps = float(replacement)
+            except (TypeError, ValueError):
+                new_fps = None
+            if new_fps is None or not (_MIN_PLAUSIBLE_FPS <= new_fps <= _MAX_PLAUSIBLE_FPS):
+                notes.append("That corrected number doesn't sound like a velocity, so I left the last reading alone.")
+            elif not log.readings:
+                notes.append("No reading to correct yet.")
+            else:
+                old = log.readings[-1]["fps"]
+                log.readings[-1]["fps"] = new_fps
+                notes.append(f"Changed {old:.0f} to {new_fps:.0f}.")
+
+        # A different rifle with several loads and none named: the rifle's
+        # currently-active load is a guess at best, so hold the readings
+        # and ask which load rather than log them somewhere possibly wrong.
+        if velocities and rifle_changed and not load_q and len(rifle.loads) > 1:
+            names = list(rifle.loads.keys())
+            log.hold(velocities)
+            self._pending_load_switch = names
+            self._pending_load_switch_at = time.time()
+            notes.append(f"Which load are those {len(velocities)} readings on -- {', '.join(names)}?")
+            velocities = []
+
+        # --- log new readings against the (now resolved) rifle/load ----
+        if velocities:
+            load_name = rifle.active_load_name
+            if load_name is None or load_name not in rifle.loads:
+                log.hold(velocities)
+                notes.append(f"No load selected on the {rifle.name}, so I'm holding {len(velocities)} readings -- which load?")
+            else:
+                prior = [r["fps"] for r in log.readings if r["rifle"] == rifle.name and r["load"] == load_name]
+                for fps in velocities:
+                    outlier = ""
+                    if len(prior) >= 3:
+                        mean = sum(prior) / len(prior)
+                        stdev = (sum((s - mean) ** 2 for s in prior) / len(prior)) ** 0.5
+                        deviation = abs(fps - mean)
+                        if deviation > 40 and deviation > 2 * stdev:
+                            outlier = " -- that one's an outlier"
+                    log.readings.append({"rifle": rifle.name, "load": load_name, "fps": fps})
+                    prior.append(fps)
+                    notes.append(f"{fps:.0f}, shot {len(prior)}{outlier}.")
+        if rejected:
+            spoken = ", ".join(f"{r:g}" for r in rejected)
+            notes.append(f"I heard {spoken} but that doesn't sound like a velocity, so I didn't log it.")
+
+        if not notes:
+            return "Got it."
+        return " ".join(notes)
+
+    def _flush_unassigned_velocities(self) -> str:
+        """Attaches readings held during a rifle/load disambiguation to
+        whatever pairing is now active -- called only right after the
+        shooter's answer actually resolved the switch, so they can't land
+        on a guessed pairing. Returns a short note to append to the reply
+        ("" if nothing was held)."""
+        log = self._session_log
+        if log is None or not log.unassigned:
+            return ""
+        try:
+            rifle = self.store.get_active_rifle()
+            load_name = rifle.active_load_name
+        except ValueError:
+            return ""
+        if load_name is None or load_name not in rifle.loads:
+            return ""
+        held, log.unassigned = log.unassigned, []
+        for fps in held:
+            log.readings.append({"rifle": rifle.name, "load": load_name, "fps": fps})
+        log.last_activity = time.time()
+        return f" Logged the {len(held)} held readings on the {load_name}."
+
+    def _session_groups(self) -> list[tuple[str, str, list[float]]]:
+        if self._session_log is None:
+            return []
+        return [(r, l, v) for (r, l), v in self._session_log.grouped().items()]
+
+    def _session_summary(self, closing: bool = False) -> str:
+        groups = self._session_groups()
+        held = len(self._session_log.unassigned) if self._session_log else 0
+        if not groups and not held:
+            return "" if closing else "Nothing logged yet this session."
+        multiple_rifles = len({g[0] for g in groups}) > 1
+        total = sum(len(g[2]) for g in groups)
+        parts = [f"{total} reading{'s' if total != 1 else ''} logged."]
+        for rifle_name, load_name, fps in groups:
+            avg = sum(fps) / len(fps)
+            spread = max(fps) - min(fps) if len(fps) > 1 else 0.0
+            label = self._short_load_label(rifle_name, load_name, multiple_rifles)
+            parts.append(f"{len(fps)} on the {label}, average {avg:.0f}, spread {spread:.0f}.")
+        if held:
+            parts.append(f"{held} held readings not yet assigned to a load.")
+        if any(len(g[2]) >= _MIN_READINGS_TO_SAVE for g in groups):
+            parts.append("Say save velocities to store the averages.")
+        return " ".join(parts)
+
+    def end_session_summary(self) -> str:
+        """Called by api.py when the frontend leaves Session Mode: turns
+        the tracker off (no more observation tool) and returns a spoken
+        recap -- "" if nothing was logged. The log itself is kept so the
+        readings stay saveable afterward."""
+        self._session_mode = False
+        return self._session_summary(closing=True)
+
+    def _request_save_session_velocities(self) -> str:
+        eligible = []
+        short = []
+        for rifle_name, load_name, fps in self._session_groups():
+            if len(fps) >= _MIN_READINGS_TO_SAVE:
+                avg = sum(fps) / len(fps)
+                spread = max(fps) - min(fps)
+                eligible.append({"rifle": rifle_name, "load": load_name, "avg": avg, "n": len(fps), "spread": spread})
+            else:
+                short.append(f"{load_name} ({len(fps)})")
+        if not eligible:
+            if short:
+                return (f"Need at least {_MIN_READINGS_TO_SAVE} readings on a load to save an average -- "
+                        f"only have {', '.join(short)}.")
+            return "Nothing logged to save yet."
+        self._pending_session_save = eligible
+        self._pending_session_save_at = time.time()
+        multiple_rifles = len({e["rifle"] for e in eligible}) > 1
+        listed = "; ".join(
+            f"{self._short_load_label(e['rifle'], e['load'], multiple_rifles)} {e['avg']:.0f} over {e['n']} shots"
+            for e in eligible
+        )
+        skipped = f" Skipping {', '.join(short)}, too few readings." if short else ""
+        return f"Save these as the new velocities? {listed}.{skipped} Say yes to save."
+
+    def _handle_session_save_confirm(self, text: str) -> str:
+        low = text.lower().strip()
+        entries = self._pending_session_save or []
+        self._pending_session_save = None
+        if not (_CONFIRM_YES_WORD_RE.match(low) or (
+            re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
+        )):
+            return "Okay, not saving. The readings are still logged."
+        saved, failed = [], []
+        for e in entries:
+            try:
+                load = self.store.update_load_velocity(e["rifle"], e["load"], e["avg"])
+            except (KeyError, ValueError):
+                failed.append(e["load"])
+                continue
+            chrono_note = (f"Chrono-verified: {e['n']} shots, avg {e['avg']:.0f} fps, "
+                           f"spread {e['spread']:.0f} fps.")
+            load.notes = f"{load.notes} {chrono_note}".strip() if load.notes else chrono_note
+            saved.append(e)
+        self.store.save()
+        # Saved pairings leave the log so they can't be saved twice.
+        if self._session_log is not None and saved:
+            done = {(e["rifle"], e["load"]) for e in saved}
+            self._session_log.readings = [
+                r for r in self._session_log.readings if (r["rifle"], r["load"]) not in done
+            ]
+        reply = "Saved. " + " ".join(f"{e['load']} is now {e['avg']:.0f} feet per second." for e in saved) if saved else ""
+        if failed:
+            reply = (reply + " " if reply else "") + f"Couldn't find {', '.join(failed)} anymore, so those weren't saved."
+        return reply
 
     def _apply_conditions_update(
         self, temp_f: float | None = None, pressure_inhg: float | None = None,

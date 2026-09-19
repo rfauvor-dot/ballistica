@@ -463,6 +463,13 @@ def test_v2_endpoints_reject_missing_or_forged_auth(api_client):
     rejected = api_client.get("/v2/rifles", headers={"Authorization": f"Bearer {forged}"})
     assert rejected.status_code == 401
 
+    # Session Mode's end-of-session endpoint reads and writes per-user
+    # conversation state, so it gets the same fail-closed check.
+    assert api_client.post("/v2/session/end").status_code in (401, 422)
+    assert api_client.post(
+        "/v2/session/end", headers={"Authorization": f"Bearer {forged}"},
+    ).status_code == 401
+
 
 # --------------------------------------- voice conversation state persistence
 # Not an isolation test -- a correctness test for the DB-persisted

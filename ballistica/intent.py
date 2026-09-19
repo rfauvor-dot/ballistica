@@ -450,6 +450,76 @@ _TOOLS = [
 ]
 
 
+# Session Mode observation tool (2026-09-19, Session Mode component 2).
+# Offered ONLY while Session Mode is on (extract_intent's session_context
+# argument) -- outside it the tool list and system prompt are exactly what
+# they were before, so ordinary wake-word behavior can't shift. The model
+# only reports what was said; cli.py's deterministic code decides whether a
+# named rifle/load actually matches anything saved, whether a number is a
+# plausible velocity, and what gets logged.
+_SESSION_OBSERVATION_TOOL = {
+    "name": "log_session_observation",
+    "description": "Session Mode only. The shooter is narrating a range session hands-free -- "
+                    "saying which rifle/load they're now shooting and/or reading off chronograph "
+                    "velocities -- without asking for a computation or a setting change. Use this "
+                    "for that narration. rifle_query/load_query: ONLY when they say they're moving "
+                    "to, switching to, or now shooting a rifle/load different from the currently "
+                    "active one (their own words, or the exact saved name if it clearly matches) "
+                    "-- a passing mention of one is not a switch. velocities_fps: ONLY numbers "
+                    "they actually stated as chronograph/velocity readings (a bare 3-4 digit "
+                    "number in a chrono context is feet per second; a distance in yards is NEVER "
+                    "a velocity -- that's get_drop_at_range). Never guess, round, or infer a "
+                    "number. discard_last_reading / replace_last_reading_fps: a correction to the "
+                    "most recent reading ONLY ('scratch that', 'no that was 1152'). If they are "
+                    "correcting any OTHER reading ('the first one was...', 'the second shot was...', "
+                    "'earlier I said...'), do NOT use these -- there is no way to edit an earlier "
+                    "reading, and applying it to the last one would silently change the wrong "
+                    "number. Instead reply in conversation that you can only correct the most "
+                    "recent reading right now and ask them to say it that way. Do NOT use this "
+                    "tool for explicit commands (switch to X, drop at 400, wind, conditions, "
+                    "start calibration) -- those have their own tools.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "rifle_query": {"type": "string", "description": "Rifle they're now shooting, only if different from the active one."},
+            "load_query": {"type": "string", "description": "Load they're now shooting, only if different from the active one."},
+            "velocities_fps": {
+                "type": "array", "items": {"type": "number"},
+                "description": "Chronograph readings stated, in order, feet per second.",
+            },
+            "discard_last_reading": {"type": "boolean", "description": "Throw out the most recently logged reading."},
+            "replace_last_reading_fps": {"type": "number", "description": "Corrected value for the most recently logged reading."},
+        },
+    },
+}
+
+
+def _session_prompt_suffix(session_context: dict) -> str:
+    rifles = session_context.get("rifles") or {}
+    saved = "; ".join(
+        f"{rifle} (loads: {', '.join(loads) if loads else 'none'})" for rifle, loads in rifles.items()
+    ) or "nothing saved yet"
+    active_rifle = session_context.get("active_rifle") or "none"
+    active_load = session_context.get("active_load") or "none"
+    last = session_context.get("last_reading")
+    # Without this, a bare "scratch that" / "no that was 1152" has nothing
+    # to refer to and the model (correctly) asks what was meant.
+    last_note = (
+        f" The most recently logged reading this session is {last['fps']:.0f} fps "
+        f"({last['load']} on the {last['rifle']}), reading number {last['count']} overall -- "
+        "that's what 'scratch that' or 'no that was X' refers to."
+        if last else " No readings are logged yet this session."
+    )
+    return (
+        " SESSION MODE IS ON: the shooter is talking through a whole range session hands-free, "
+        "so many utterances are narration rather than commands. Saved rifles and their loads: "
+        f"{saved}. Currently active: rifle {active_rifle}, load {active_load}.{last_note} Narration about "
+        "which rifle/load they're shooting or chronograph readings goes to "
+        "log_session_observation; explicit commands still use their own tools; anything else "
+        "is ordinary conversation. Never invent a reading or a rifle/load name."
+    )
+
+
 def _first_tool_use(response):
     """The first tool_use content block in a Messages API response, or
     raises IndexError if none is present -- shouldn't happen with
@@ -461,7 +531,9 @@ def _first_tool_use(response):
     raise IndexError("no tool_use block in response")
 
 
-def extract_intent(text: str, history: list[dict] | None = None) -> tuple[str, dict] | None:
+def extract_intent(
+    text: str, history: list[dict] | None = None, session_context: dict | None = None,
+) -> tuple[str, dict] | None:
     """Returns (tool_name, arguments) for the best-matching command, or
     ("converse", {"reply": <text>}) if the model responded in its own
     conversational voice instead of calling a tool -- tool_choice is
@@ -474,16 +546,26 @@ def extract_intent(text: str, history: list[dict] | None = None) -> tuple[str, d
     history: recent conversational exchanges (BallisticaCLI._chat_history)
     to include as prior turns -- lets a follow-up like "is that safe to
     bump up" resolve what "that" refers to. Omit/empty for a fresh
-    conversation; ordinary ballistics commands don't populate this."""
+    conversation; ordinary ballistics commands don't populate this.
+
+    session_context: only passed while Session Mode is on -- adds the
+    log_session_observation tool and a system-prompt suffix listing the
+    saved rifles/loads. None (the default) leaves the request exactly as
+    it was before Session Mode existed."""
     try:
         client = get_anthropic_client()
         messages = list(history or []) + [{"role": "user", "content": text}]
+        system = _SYSTEM_PROMPT
+        tools = _TOOLS
+        if session_context is not None:
+            system = _SYSTEM_PROMPT + _session_prompt_suffix(session_context)
+            tools = _TOOLS + [_SESSION_OBSERVATION_TOOL]
         response = client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
-            system=_SYSTEM_PROMPT,
+            system=system,
             messages=messages,
-            tools=_TOOLS,
+            tools=tools,
             tool_choice={"type": "auto"},
         )
         for block in response.content:

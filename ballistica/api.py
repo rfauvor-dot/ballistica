@@ -49,7 +49,7 @@ from slowapi.util import get_remote_address
 
 from .aggregate_pool import contribute_load
 from .atmosphere import AtmosphereConditions, pressure_at_altitude_inhg
-from .cli import BallisticaCLI, _CalibrationSession, _SetupSession
+from .cli import BallisticaCLI, _CalibrationSession, _SessionLog, _SetupSession
 from .import_export import (
     MAX_IMPORT_FILE_BYTES, TARGET_FIELDS, ImportError_, apply_mapping,
     generate_export_csv, parse_uploaded_file, suggest_mapping,
@@ -379,6 +379,14 @@ class RangeReportOut(BaseModel):
 
 class VoiceQueryIn(BaseModel):
     text: str = Field(description="Transcribed speech, e.g. \"what's my drop at 500 yards\"")
+    session_mode: bool = Field(
+        False,
+        description="True only while the frontend is in Session Mode (continuous, no-wake-word "
+                     "listening). Turns on the session tracker for this turn: the LLM is offered the "
+                     "log_session_observation tool, so narration about which rifle/load is being shot "
+                     "and chronograph readings gets logged instead of misrouted. Session Mode itself "
+                     "is a frontend concept -- this flag is the only way the backend learns of it.",
+    )
 
 
 class VoiceQueryOut(BaseModel):
@@ -1151,6 +1159,15 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
     # from_dict() round-trip needed like the session objects above.
     cli._chat_history = state.get("chat_history") or []
+    # Session Mode tracker (2026-09-19, component 2): the readings log
+    # deliberately outlives Session Mode itself so unsaved readings stay
+    # saveable afterward; the pending save gate is the same per-request
+    # confirmation-gate shape as the others above.
+    session_log = state.get("session_log")
+    cli._session_log = _SessionLog.from_dict(session_log) if session_log else None
+    pending_save = state.get("pending_session_save")
+    cli._pending_session_save = pending_save["entries"] if pending_save else None
+    cli._pending_session_save_at = pending_save["at"] if pending_save else 0.0
     if state.get("atmosphere"):
         cli.atmosphere = AtmosphereConditions(**state["atmosphere"])
     if state.get("wind"):
@@ -1184,6 +1201,11 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
             if cli._pending_load_switch else None
         ),
         "chat_history": cli._chat_history,
+        "session_log": cli._session_log.to_dict() if cli._session_log else None,
+        "pending_session_save": (
+            {"entries": cli._pending_session_save, "at": cli._pending_session_save_at}
+            if cli._pending_session_save else None
+        ),
         "atmosphere": dataclasses.asdict(cli.atmosphere),
         "wind": dataclasses.asdict(cli.wind),
     }
@@ -1206,6 +1228,7 @@ def v2_voice_query(
     fallback), a paid per-call cost same as the other two."""
     cli = BallisticaCLI(user_store)
     _hydrate_cli(cli, user_store.get_conversation_state())
+    cli._session_mode = payload.session_mode
 
     # Wraps only handle() itself, not the hydrate/dehydrate Supabase
     # round trips around it (2026-09-18, added per Rick's own "is there
@@ -1262,12 +1285,34 @@ def v2_voice_query(
         cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
         or cli._pending_calibration_start or cli._pending_setup_kind is not None
         or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
+        or cli._pending_session_save is not None
         or (cli._last_tool_name == "converse" and "?" in reply)
     )
     return VoiceQueryOut(
         reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,
         is_readout=cli._last_reply_is_readout,
     )
+
+
+class SessionEndOut(BaseModel):
+    summary: str = Field(
+        "", description="Spoken recap of what Session Mode logged -- empty if nothing was logged.",
+    )
+
+
+@app.post("/v2/session/end", response_model=SessionEndOut)
+@limiter.limit("20/minute")
+def v2_session_end(request: Request, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    """Called by the frontend when it leaves Session Mode. Returns a spoken
+    recap of the logged readings; the log itself is kept (see
+    _hydrate_cli) so the readings stay saveable afterward via "save
+    velocities". No paid API call happens here -- purely deterministic --
+    but it's still per-user and rate-limited like its neighbors."""
+    cli = BallisticaCLI(user_store)
+    _hydrate_cli(cli, user_store.get_conversation_state())
+    summary = cli.end_session_summary()
+    user_store.set_conversation_state(**_dehydrate_cli(cli))
+    return SessionEndOut(summary=summary)
 
 
 # The remaining endpoints the live web UI actually calls (Addendum: live

@@ -1965,7 +1965,10 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     const queryRes = await fetch('/v2/voice/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ text: heardText }),
+      // session_mode is the only way the backend learns Session Mode is
+      // on -- it's what turns on the session tracker (logging rifle/load
+      // context and chronograph readings from narration) for this turn.
+      body: JSON.stringify({ text: heardText, session_mode: sessionModeEnabled }),
     });
     const queryData = await queryRes.json();
     voiceState = 'speaking';
@@ -2147,6 +2150,21 @@ async function runSessionModeLoop() {
     await loadRifles();
   } catch (e) {}
 
+  // Turns the backend tracker off and gets a spoken recap of what was
+  // logged (empty if nothing was). Best-effort: a failure here must never
+  // block leaving Session Mode -- the readings are kept server-side either
+  // way and stay saveable via "save velocities".
+  let sessionSummary = '';
+  try {
+    const token = await getValidAccessToken();
+    if (token) {
+      const endRes = await fetch('/v2/session/end', {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      });
+      if (endRes.ok) sessionSummary = ((await endRes.json()).summary || '').trim();
+    }
+  } catch (e) {}
+
   stopMuteListening();
   releaseMicStream();
   sessionModeEnabled = false;
@@ -2160,6 +2178,10 @@ async function runSessionModeLoop() {
   if (voiceEnabled) {
     voiceState = 'idle';
     setVoiceState('Voice: on');
+    if (sessionSummary) {
+      showReadout(sessionSummary);
+      await speak(sessionSummary, CONVERSATIONAL_TTS_SPEED);
+    }
     await speak(SESSION_MODE_OFF_PHRASES[Math.floor(Math.random() * SESSION_MODE_OFF_PHRASES.length)], CONVERSATIONAL_TTS_SPEED);
     // Session Mode ending (by button or by spoken phrase) drops back to
     // ordinary wake-word listening rather than voice going fully off --
