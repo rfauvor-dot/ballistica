@@ -517,6 +517,181 @@ worth keeping visible given how rare that is in this space).
 
 ---
 
+## Camera-based wind reading (windsock / vegetation / mirage)
+
+**Raised:** Rick, 2026-09-06, referenced but never actually written up --
+two other camera-feature entries above ("Camera-guided zeroing
+walkthrough," "Camera-based parallax detection") both cite this as
+"documented separately," but no separate write-up existed anywhere in
+this repo. Properly scoped now (2026-09-18) since the actual hardware
+(Vector Optics Minotaur scope + phone digiscoping rig -- see [[project_
+scopemate_focus_procedure]]) is now ordered and this stopped being
+purely theoretical.
+
+**What:** Estimate wind speed/direction visually from the camera feed,
+the way a trained spotter reads it without instruments -- old, real
+sniper/precision-shooting tradecraft, not a made-up feature. Three
+distinct visual cues, genuinely different difficulty, not one uniform
+problem:
+
+- **Windsock** (if the range has one): easiest by far. Purpose-built to
+  be read visually -- sock angle -> speed, sock direction -> wind
+  direction. Straightforward CV, a clean signal.
+- **Vegetation (trees/grass)**: moderate. Real precedent -- this is
+  essentially automating the actual Beaufort wind scale (leaves
+  rustling ~ light wind, branches moving ~ moderate, whole trees
+  swaying ~ strong), estimated from motion in video. Gives a reasonable
+  ballpark speed plus a direction from the consistent lean angle.
+- **Mirage boil**: hardest. Worth being honest about even for a human
+  expert, mirage reading is normally a QUALITATIVE skill (wind picked
+  up / let off / shifted), not a precise number -- trained spotters
+  read a relative "boil value," not an exact mph. A camera doing this
+  well is a genuinely harder computer-vision problem than the other
+  two (continuous atmospheric-distortion analysis across video frames,
+  not a single still), and turning that into a number the solver can
+  actually use is the hard part, more than detecting the boil itself.
+
+**The calibration question Rick raised, 2026-09-18 -- this is the
+actual key to making any of this accurate, not a footnote:** would a
+real wind-measuring device (a handheld anemometer -- Kestrel-style
+meters are already the standard tool precision shooters carry for
+exactly this) help Ballistica get better at judging what the camera is
+reading? Yes, and it's more central than the CV algorithm itself.
+Without real ground-truth wind data, any visual estimator is just a
+generic heuristic (the Beaufort-scale mapping above is a reasonable
+starting point, but it's generic, not tuned to Rick's actual range,
+lighting, camera angle, or distance). Reading a real Kestrel value out
+loud to Ballistica (already-supported manual wind input, no new voice
+command needed) at the same moment the camera captures the
+windsock/vegetation/mirage state builds genuine PAIRED training data --
+real wind speed alongside what the camera actually saw at that exact
+moment. Across enough sessions and conditions, that's what turns a
+generic guess into something actually calibrated. Practical
+implication for sequencing: paired data collection can start the
+moment the camera rig is up and running, well before any actual visual-
+estimation model exists to calibrate -- collecting real Kestrel-reading
++ camera-footage pairs is itself useful early work, not something that
+has to wait for the CV side to be built first.
+
+**Related, same underlying gap:** [[reference_backlog]]'s "Wind clock
+direction needs a firing-direction reference" entry applies here too --
+a windsock/vegetation lean angle observed by the camera is relative to
+the CAMERA's own orientation, not automatically a meaningful "three
+o'clock" without knowing which way the shooter is actually facing down
+range. Same open question, not yet resolved either place.
+
+**Recommended sequencing:** windsock/vegetation first (tractable, real
+signal, no atmospheric modeling needed) once the camera rig is
+operational; start Kestrel-paired data collection in parallel from day
+one; mirage boil reading as a later, harder stretch goal -- likely
+scoped initially as a qualitative nudge ("wind's picked up," "wind's
+shifted") rather than attempting a precise number, given even human
+experts read it that way.
+
+**Not scoped as an actual build yet** -- hardware (camera rig) not
+physically in hand at time of writing; this entry exists so the next
+session has real material instead of a dangling cross-reference to dig
+for.
+
+**Owning lenses:** Build (CV approach + calibration pipeline, once
+hardware's in hand), Marketing (visual wind reading is a genuine,
+rare differentiator if it works -- same "verifiably unclaimed" framing
+as the parallax detection item above).
+
+---
+
+## Camera-based rangefinding from a known target size
+
+**Raised:** Rick, 2026-09-18. No prior trace of this one anywhere in
+the repo (unlike the wind-reading item above, which at least had two
+dangling cross-references) -- either discussed somewhere never
+captured in writing at all, or from a conversation outside this
+repo's history. Scoped fresh from the idea itself, not reconstructed
+from an existing record.
+
+**Phase:** 1 -- stand-mounted high-power scope (the Minotaur rig), same
+camera already being built for group/impact detection and the wind-
+reading item above. Not rifle-mounted.
+
+**What:** Automate the classic mil-relation/angular-size ranging
+formula shooters already do by hand with a reticle (`range = (known
+target size x constant) / apparent angular size`) -- the camera
+measures the target's angular size in the frame instead of a person
+counting mil-dot subtensions by eye.
+
+**What it needs:**
+- A known target size -- straightforward if targets are standardized
+  to known printed dimensions, or the size is entered once per target.
+- The scope's calibrated angular field of view at each magnification
+  setting -- from the manufacturer's specs, or calibrated once
+  empirically (photograph a known size at a known distance, work out
+  the pixels-to-angle ratio per power setting).
+- Reliable target-edge detection in the image -- genuinely easy for a
+  high-contrast paper target on a plain berm; no atmospheric modeling,
+  no ML training data required in principle, unlike the wind-reading
+  item above. One of the more tractable camera features on this whole
+  list.
+
+**Not scoped as an actual build yet** -- hardware not physically in
+hand at time of writing.
+
+**Owning lenses:** Build (once hardware's in hand), Marketing
+(a genuinely useful cross-check against or replacement for a separate
+laser rangefinder).
+
+---
+
+## Camera-based incline angle from a scope-mounted level
+
+**Raised:** Rick, 2026-09-18, recalled from an earlier conversation
+with Claude that never made it into this repo -- same "no trace found"
+situation as the rangefinding item above.
+
+**Phase:** 2 -- rifle-mounted, explicitly sequenced BEHIND the current
+phase-1 work (proving out what the stand-mounted high-power scope
+camera can do: wind reading, rangefinding, group/impact detection).
+Rick's own framing, 2026-09-18: "the whole idea right now is to see if
+we can get Ballistica to do what we can do with a camera on a high
+powered scope. And then we'll deal with the other stuff when it's on
+the rifle itself." Not to be started before phase 1 is proven out.
+
+**What:** A physical level (bubble/anti-cant indicator) mounted on the
+rifle's own scope, read by a rifle-mounted camera together with the
+reticle in the same frame. The mil displacement between "true level"
+and where the rifle is actually being held/aimed gives the incline
+angle directly -- mils are already an angular unit, so this is a
+self-contained angular reading with no dependency on target size or
+distance the way the rangefinding item above needs. Arguably the
+simplest of the three camera features scoped this session.
+
+**How this relates to what Ballistica already has:** there's already
+real incline-angle ballistic correction math (`angle.py`, the "solve
+incline angle" voice command / `solve_incline_angle` tool) -- but it's
+currently fed indirectly, by back-solving the angle from an observed
+click difference AFTER a miss. This feature would be a direct,
+proactive alternative: read the actual angle before the shot instead
+of inferring it afterward, feeding the exact same existing solver, no
+new ballistic math needed -- only a new way to supply the angle input.
+
+**Hardware note:** this needs a camera ON THE RIFLE (reading the
+level-to-reticle relationship at the moment of aim), a different
+physical context from the stand-mounted target-facing rig being built
+for phase 1. Gives the already-purchased TriggerCam 2.1 -- currently
+sitting in reserve for "some future rifle-mounted feature," see
+[[project_scopemate_focus_procedure]] -- a real, fitting job once
+phase 2 starts.
+
+**Not scoped as an actual build yet**, and explicitly not next in line
+-- phase 1 (stand-mounted scope camera) comes first per Rick's own
+sequencing.
+
+**Owning lenses:** Build (once phase 1 is proven out and phase 2
+actually starts), Marketing (pairs naturally with the existing
+incline-angle solver as a "we already compute this, now we can read it
+for you too" story).
+
+---
+
 ## Load/rifle decoupling refinement: velocity data stays barrel-specific
 
 **Raised:** Rick, 2026-09-07. Refines (does not replace) the earlier
