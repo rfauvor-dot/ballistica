@@ -1,10 +1,16 @@
-"""Canonical text for the four in-app audio walkthrough sections -- the
+"""Canonical text for the five in-app audio walkthrough sections -- the
 single source of truth for TTS generation (scripts/generate_walkthrough_
-audio.py), used verbatim, paragraph for paragraph, from the finalized
-script Rick provided (Ballistica_Audio_Walkthrough_Script.docx,
-2026-08-28). Narration paragraphs only -- the script's own "Runtime
-target: N to M minutes" line under each heading is a production note for
-Rick, not narration, and is deliberately excluded from what gets spoken.
+audio.py). The original four are used verbatim, paragraph for paragraph,
+from the finalized script Rick provided (Ballistica_Audio_Walkthrough_
+Script.docx, 2026-08-28). Narration paragraphs only -- the script's own
+"Runtime target: N to M minutes" line under each heading is a production
+note for Rick, not narration, and is deliberately excluded from what
+gets spoken.
+
+"Zeroing Your Rifle" (2026-09-18) was added the same way, from steps
+Rick dictated directly (the two-shot dial-to-the-group method) rather
+than from the original docx -- adapted into the same narration voice,
+technical content unchanged.
 
 Playback itself is static, pre-generated MP3 (ballistica/web/audio/,
 served via the /audio mount in api.py) -- not live TTS per request. This
@@ -127,12 +133,48 @@ WALKTHROUGH_SECTIONS: tuple[WalkthroughSection, ...] = (
             "verify against a published manufacturer manual before loading or firing anything, and "
             "always work up a load gradually while watching for pressure signs. That's your "
             "responsibility, not something the app can do for you.",
-            "Once a load is calibrated, you're ready to actually use it for real solutions, which "
-            "brings us to long-range shooting and spotting.",
+            "Once a load is calibrated, you're ready to actually zero your rifle with it, which is "
+            "covered next.",
         ),
     ),
     WalkthroughSection(
-        key="walkthrough-4-long-range-and-spotting",
+        key="walkthrough-4-zeroing-your-rifle",
+        title="Zeroing Your Rifle",
+        paragraphs=(
+            "This section covers zeroing your rifle, the physical process of getting your point "
+            "of aim and your point of impact to actually match at a given distance. That's "
+            "different from Ballistica's own zero distance field, which just records the distance "
+            "you zeroed at once you've already done it. Get the physical zero right first, then "
+            "tell me about it.",
+            "Zeroing works best from a solid rest, sandbags, a bipod, a lead sled, whatever keeps "
+            "the rifle still between shots. This method depends on the rifle not moving while you "
+            "make adjustments, so the steadier your rest, the cleaner this goes.",
+            "Start by centering your crosshairs perfectly on the bullseye. Then carefully fire two "
+            "rounds. Keep a steady position and follow through on each shot, the same way every "
+            "time. Once those two rounds are downrange, leave the rifle exactly where it is, "
+            "don't move it, don't re-aim, don't touch it.",
+            "Look through your scope and find the exact center of those two bullet holes. Now, "
+            "without moving the rifle at all, adjust your elevation and windage turrets to walk "
+            "the crosshairs directly onto that center point. The rifle stays completely still "
+            "through this part, only the turrets move.",
+            "Once your crosshairs are sitting right on the bullet holes, go ahead and move the "
+            "rifle again, this time bringing the crosshairs back to the bullseye. At that point, "
+            "your optic is matched to where the rifle is actually hitting.",
+            "Fire two more rounds to confirm. If everything lined up, they should land dead "
+            "center on the bullseye. If they're off even a little, that's fine, just repeat the "
+            "process, small adjustments are normal.",
+            "Once you're confirmed zeroed, tell me the actual distance you zeroed at, something "
+            "like the zero is actually one hundred yards, and I'll update that load's saved zero "
+            "distance, so every solution from here on is calculated from the real thing, not a "
+            "guess.",
+            "As always, treat every round on the line like it matters, confirm a safe backstop, "
+            "and keep the rifle clear whenever you're not actually firing. Once you're zeroed, "
+            "you're ready to put real distance on it, which is exactly what long range shooting "
+            "and spotting covers next.",
+        ),
+    ),
+    WalkthroughSection(
+        key="walkthrough-5-long-range-and-spotting",
         title="Long Range Shooting and Spotting",
         paragraphs=(
             "This section covers how to actually use Ballistica live, at distance, to get a firing "

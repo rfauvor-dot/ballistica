@@ -153,7 +153,7 @@ _WEB_DIR = Path(__file__).resolve().parent / "web"
 _WEB_INDEX = _WEB_DIR / "index.html"
 
 app.mount("/icons", StaticFiles(directory=_WEB_DIR / "icons"), name="icons")
-# The four generated walkthrough narration MP3s -- see
+# The five generated walkthrough narration MP3s -- see
 # ballistica/web/audio/README.md. Static, unauthenticated (same as
 # /icons): fixed, non-personalized narration content, nothing per-user
 # about the files themselves -- the per-user state is only ever "has

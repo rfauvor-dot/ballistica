@@ -2453,12 +2453,13 @@ document.getElementById('deleteAccountBtn').addEventListener('click', async () =
 // never changes per user. Metadata mirrors ballistica/walkthrough.py;
 // kept as a small hardcoded list here rather than fetched, unlike the
 // waiver's text -- there's no hashing/versioning concern for this, just
-// four fixed (key, title) pairs.
+// five fixed (key, title) pairs.
 const WALKTHROUGH_SECTIONS = [
   { key: 'walkthrough-1-getting-started', title: 'Getting Started' },
   { key: 'walkthrough-2-rifle-setup', title: 'Rifle and Equipment Setup' },
   { key: 'walkthrough-3-load-and-velocity', title: 'Checking a Load and Velocity' },
-  { key: 'walkthrough-4-long-range-and-spotting', title: 'Long Range Shooting and Spotting' },
+  { key: 'walkthrough-4-zeroing-your-rifle', title: 'Zeroing Your Rifle' },
+  { key: 'walkthrough-5-long-range-and-spotting', title: 'Long Range Shooting and Spotting' },
 ];
 
 function renderWalkthroughMenu() {
