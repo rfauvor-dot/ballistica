@@ -1,11 +1,24 @@
 # Ballistica — Scope Camera Feed: Design & Status
 
-**Status: CONFIRMED, in build phase.** Hardware not yet purchased —
-software pipeline development doesn't require it (see below). Full
-feasibility research (protocol comparison, mount options, cost,
-alternatives, CV-feasibility assessment) is preserved as a published
-artifact; this doc is the living record of the decision and build
-status going forward.
+**SUPERSEDED / DEAD, confirmed by Rick 2026-09-19.** This GoPro +
+EagleVision rifle-mounted real-time-reticle-feed plan was abandoned in
+favor of the phone + digiscoping-adapter + stand-mounted Minotaur scope
+plan (see [[project_scopemate_focus_procedure]] in memory, and
+BACKLOG.md's camera-feature entries) as of the 2026-09-18 pivot. The
+code this doc describes (`ballistica/scope_stream.py`,
+`scripts/test_scope_stream.py`) has been deleted -- retrievable from git
+history (commit `3ba2954`) if this direction is ever revisited, but not
+currently part of the codebase. Kept below only as a historical record
+of the research and decision, not as a live plan.
+
+---
+
+**Status (historical, no longer current): CONFIRMED, in build phase.**
+Hardware not yet purchased — software pipeline development doesn't
+require it (see below). Full feasibility research (protocol comparison,
+mount options, cost, alternatives, CV-feasibility assessment) is
+preserved as a published artifact; this doc is the living record of the
+decision and build status going forward.
 
 ## The decision, final
 
