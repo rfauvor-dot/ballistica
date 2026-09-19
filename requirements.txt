@@ -11,4 +11,5 @@ python-multipart
 PyJWT[crypto]
 slowapi
 opencv-python
+numpy
 openpyxl

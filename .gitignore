@@ -4,3 +4,4 @@ __pycache__/
 data/profiles.json
 bin/
 .env
+scripts/demo_output/

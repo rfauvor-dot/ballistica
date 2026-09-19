@@ -473,6 +473,79 @@ laser rangefinder).
 
 ---
 
+## AI-assisted spotting-scope image cleanup (denoise/deblur/multi-frame stacking)
+
+**Raised:** Rick, 2026-09-19. Distinct from the group/impact-detection
+camera work above -- this is specifically about a **spotting-scope +
+phone/tablet rig used to verify shots downrange** (Rick's own framing:
+"this isn't going to be something that the software would be running
+off your rifle scope that you're looking through"). The competitive
+angle he's after: a shooter shouldn't have to spend $1,500-3,000+ on
+premium spotting-scope glass just to get target clarity if software can
+close most of that gap on cheaper glass + a phone.
+
+**Phase:** 1 -- stand-mounted, target-facing, same family as the
+rangefinding/wind-reading items above, but this piece is pure image
+processing with no dependency on Ballistica's ballistics data model, so
+unlike those two it does **not** need to wait on the Minotaur/phone rig
+to arrive to start.
+
+**Prototype built and verified 2026-09-19**, ahead of hardware, same
+pattern as `scope_stream.py`'s pre-hardware pipeline work:
+- **[ballistica/image_enhance.py](ballistica/image_enhance.py)** --
+  two deliberately classical/deterministic techniques, NOT a generative
+  upscaler (Real-ESRGAN/Topaz-style tools): `sharpen_denoise()`
+  (non-local-means denoise + unsharp mask) for a single photo, and
+  `stack_frames()` (ECC alignment + averaging across a burst of the
+  same static scene -- the "lucky imaging" technique from
+  astrophotography). Generative upscaling was deliberately ruled out
+  for anything Ballistica would measure off of -- it hallucinates
+  plausible-looking detail rather than recovering real detail, which is
+  fine for a keepsake photo and dangerous for judging a bullet hole.
+- **[scripts/demo_image_enhance.py](scripts/demo_image_enhance.py)** --
+  a controlled proof-of-concept: synthesizes a known-clean target image,
+  degrades it the way a cheap digiscoping setup would (blur, jitter,
+  sensor noise) to make a known-ground-truth test possible (a real
+  digiscoped photo never has ground truth to check against), then
+  measures PSNR recovered toward the real image, not just an
+  unverifiable "looks better" claim.
+
+**Real result, not a clean win across the board -- reported honestly:**
+- Single-frame sharpen/denoise gave a clear, measurable improvement:
+  +1.98 dB PSNR toward the true image, visually confirmed (crisper ring
+  and hole edges, less graininess) by actually looking at the output
+  images, not just trusting the number.
+- Multi-frame stacking, which was the expected bigger lever going in
+  (free burst capture off a static target), did **not** clearly
+  outperform single-frame cleanup in this test (+1.88 dB, statistically
+  a wash against the single-frame result) -- because stacking cancels
+  *random* sensor noise across frames, but the dominant degradation
+  modeled here was *fixed* optical blur (the same softness on every
+  frame), which stacking doesn't touch. Whether stacking earns its
+  complexity for real depends on which degradation actually dominates
+  on the real rig -- noise or blur -- which this synthetic test can't
+  know and only a real photo through real glass can answer.
+- Caught and fixed a real bug in the process: the first stacking run
+  produced a visible black-line artifact along one edge of the output
+  (frame-alignment warp not covering the full canvas); fixed by
+  matching the border-replicate handling already used in the
+  degradation simulation, confirmed gone by re-inspecting the image
+  afterward.
+
+**Not yet done:** validation against an actual digiscoped photo (this
+whole result is from a synthetic stand-in with known ground truth,
+which is what makes the PSNR measurement possible in the first place --
+real-world confirmation has to wait for the actual rig or at minimum a
+real test photo through real glass). Sample output images are in
+`scripts/demo_output/` (gitignored-worthy scratch output, not committed).
+
+**Owning lenses:** Build (the module above, and the real-photo
+validation once there's real glass to test against), Marketing (the
+"skip the $2,000 spotting scope" framing is a genuine, testable
+cost-democratization story, not just a nice-to-have polish feature).
+
+---
+
 ## Camera-based incline angle from a scope-mounted level
 
 **Raised:** Rick, 2026-09-18, recalled from an earlier conversation
