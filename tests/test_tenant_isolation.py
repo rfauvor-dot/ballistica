@@ -536,3 +536,45 @@ def test_user_b_voice_command_not_swallowed_by_user_a_open_session(user_a, user_
             "/v2/voice/query", headers={"Authorization": f"Bearer {token_a}"},
             json={"text": "cancel"},
         )
+
+
+def test_profile_voice_id_and_display_name_update_independently(user_a, api_client):
+    """Regression guard for the exact bug the optional-fields change in
+    ProfileUpdateIn was built to prevent (2026-09-18, selectable voice
+    persona -- BACKLOG.md): display_name and voice_id are independent
+    preferences on the same profile row. The original endpoint always
+    required display_name on every PATCH; bolting voice_id on the same
+    way would have meant updating one field silently overwrote the
+    other with whatever the client happened to send (or didn't)."""
+    _, token_a = user_a
+    headers = {"Authorization": f"Bearer {token_a}"}
+    try:
+        r = api_client.patch("/v2/profile", headers=headers, json={"display_name": "Voice Test Name"})
+        assert r.status_code == 200
+        assert r.json()["display_name"] == "Voice Test Name"
+
+        # Every account has a real voice_id from the moment the row
+        # exists -- db/012_voice_id.sql defaults it, never null/unset
+        # the way display_name can be.
+        r = api_client.get("/v2/profile", headers=headers)
+        assert r.json()["voice_id"] == "shimmer"
+
+        # Updating voice_id alone must not touch the display name just set.
+        r = api_client.patch("/v2/profile", headers=headers, json={"voice_id": "onyx"})
+        assert r.status_code == 200
+        assert r.json()["voice_id"] == "onyx"
+        assert r.json()["display_name"] == "Voice Test Name"
+
+        # And updating display_name alone must not revert voice_id.
+        r = api_client.patch("/v2/profile", headers=headers, json={"display_name": "Voice Test Name Two"})
+        assert r.status_code == 200
+        assert r.json()["display_name"] == "Voice Test Name Two"
+        assert r.json()["voice_id"] == "onyx"
+
+        # An invalid voice_id is rejected with a clean 422 (Pydantic's
+        # own pattern validation), not a raw Postgres constraint-
+        # violation error surfacing to the client.
+        r = api_client.patch("/v2/profile", headers=headers, json={"voice_id": "not-a-real-voice"})
+        assert r.status_code == 422
+    finally:
+        api_client.patch("/v2/profile", headers=headers, json={"display_name": "reset", "voice_id": "shimmer"})

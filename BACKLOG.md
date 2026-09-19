@@ -7,65 +7,37 @@ scoped, don't let it just accumulate here indefinitely.
 
 ---
 
-## Selectable voice persona (male/female)
+## App icon to match the male/female visual direction
 
-**Raised:** Rick, 2026-08-23.
+**Raised:** Rick, 2026-08-23 (alongside the now-built selectable voice
+persona item -- see MULTI_TENANCY_DESIGN.md §30 -- which this was
+originally a sub-item of).
 
-**What:** Let a user pick a male or female voice persona (onboarding, changeable
-later in settings) instead of the current single hardcoded female voice
-("shimmer"). Resolves a Marketing question about whether the current voice
-risks mismatching some users in either direction, without guessing at one
-persona for everyone. App name/branding unaffected — "Ballistica" stays;
-this is voice/persona only.
+**What:** Update the app icon/favicon to match the man-and-woman
+range-partner visual direction now that both personas have a real,
+functional role (Mrs. Ballistica as the default/female voice, Mr.
+Ballistica as the male voice option, confirmed 2026-09-18).
 
-**Scoping done 2026-08-23 (Build lens, verified against real code, not
-assumed):**
-- Backend is already most of the way there: `POST /voice/speak` in
-  `api.py` already accepts an arbitrary `voice` string per request — it's
-  only ever called with the hardcoded default ("shimmer") today. Adding a
-  second voice is a parameter choice, not new plumbing.
-- OpenAI's `tts-1` (already in use) offers 9 stock voices; two are
-  characterized as male — Echo (warmer/younger) and Onyx
-  (deeper/authoritative). Same model/endpoint as today, so no latency or
-  reliability difference to worry about.
-- Grepped every scripted spoken phrase (greetings, acks, signoffs, help
-  text) for gendered self-reference — none found. This is genuinely
-  voice-only; no personality-script variant is needed for a male persona.
-- Fits the multi-tenancy design cleanly: a `voice_id` column on the
-  planned `users` table (default `shimmer`, so existing usage doesn't
-  silently change), not a rework of that design.
+**Constraint flagged 2026-08-23, still true:** a realistic photo
+generally doesn't read well as a small app icon -- favicons and
+home-screen icons render at 16-48px, where photographic detail turns
+to mush and the shape has to be recognizable at a glance. The photo
+works well for onboarding/landing-page use exactly as originally
+framed; the icon itself likely wants a simpler, high-contrast
+derivative (a mark, a silhouette, a cropped/stylized detail) rather
+than the full photo shrunk down.
 
-**Status:** Backlog, parallel/low-priority alongside the ballistic-data-
-seed item, both behind multi-tenancy. Not urgent, not blocking.
+**Status:** Backlog. Not urgent, not blocking -- noted so the actual
+icon work starts from the right brief rather than producing something
+that looks fine at full size and unreadable at icon size.
 
-**Male voice decided:** Onyx (deep/authoritative), picked 2026-08-23 by
-Rick against real samples generated through the live production TTS
-endpoint — both Echo and Onyx, each speaking both a live-fire terse line
-and a warm setup-greeting line. Rick judged on the live-fire sample
-specifically, matching the app's own mode-aware tone priority. Nothing
-implemented yet — this is still backlog, sequenced behind multi-tenancy.
-
-**Owning lenses when scoped:** Build (the `voice_id` column + onboarding/
-settings UI once the user model exists), Marketing (the "choose your range
-partner" onboarding framing already has visual direction set).
-
-**App icon, added 2026-08-23:** Rick also wants the app icon updated to
-match the male/female visual direction. One practical constraint flagged
-before treating this as settled: a realistic photo (the man-and-woman
-range-partner shot) generally doesn't read well as a small app icon —
-favicons and home-screen icons render at 16-48px, where photographic
-detail turns to mush and the shape has to be recognizable at a glance.
-The photo works well for onboarding/landing-page use exactly as
-originally framed; the icon itself likely wants a simpler, high-contrast
-derivative (a mark, a silhouette, a cropped/stylized detail) rather than
-the full photo shrunk down. Still backlog, still behind multi-tenancy —
-noted so the actual icon work starts from the right brief rather than
-producing something that looks fine at full size and unreadable at icon
-size.
+**Owning lenses when scoped:** Build (the actual asset work),
+Marketing (visual direction).
 
 (The spreadsheet/CSV import item raised 2026-08-23 has been built --
-see MULTI_TENANCY_DESIGN.md §24 and ballistica/import_export.py. Moved
-out of backlog per this file's own convention.)
+see MULTI_TENANCY_DESIGN.md §24 and ballistica/import_export.py.
+Selectable voice persona, raised the same day, has also been built --
+see §30. Both moved out of backlog per this file's own convention.)
 
 ---
 

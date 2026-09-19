@@ -434,10 +434,23 @@ class WaiverAcceptIn(BaseModel):
 
 
 class ProfileUpdateIn(BaseModel):
-    # Mirrors db/008_display_name.sql's own check constraint -- validated
-    # here too so a bad value gets a clean 422 instead of a raw Postgres
-    # constraint-violation error surfacing to the client.
-    display_name: str = Field(min_length=1, max_length=40)
+    # Both optional (2026-09-18, changed from display_name being
+    # required): voice_id is a separate, independent preference from
+    # display_name, and the original always-required field meant any
+    # future PATCH that only wanted to change ONE of them would have
+    # had to resend the other's current value just to avoid clobbering
+    # it. v2_update_profile below now only includes whichever fields
+    # were actually provided in the outgoing upsert.
+    #
+    # display_name: mirrors db/008_display_name.sql's own check
+    # constraint -- validated here too so a bad value gets a clean 422
+    # instead of a raw Postgres constraint-violation error surfacing to
+    # the client.
+    display_name: str | None = Field(None, min_length=1, max_length=40)
+    # voice_id: mirrors db/012_voice_id.sql's own check constraint, same
+    # reasoning -- see BACKLOG.md "Selectable voice persona (male/
+    # female)" for why these two specific values.
+    voice_id: str | None = Field(None, pattern=r"^(shimmer|onyx)$")
 
 
 # ------------------------------------------------------------------ helpers
@@ -822,13 +835,17 @@ def v2_mark_walkthrough_first_played(auth: tuple[str, str] = Depends(_verify_bea
 
 @app.get("/v2/profile")
 def v2_get_profile(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
-    """The display name a user has chosen for themselves, if any --
-    used to address them by name in the voice greeting instead of a
-    hardcoded name from the single-tenant era (real issue for any real
-    account that isn't Rick's -- MULTI_TENANCY_DESIGN.md §23). Same
-    ensure-the-row-exists upsert pattern as /v2/walkthrough-status
-    above; unset (null) is a normal, expected state, not an error --
-    the frontend falls back to name-less greeting phrasing."""
+    """The display name and voice persona a user has chosen for
+    themselves. display_name (if any) is used to address them by name
+    in the voice greeting instead of a hardcoded name from the
+    single-tenant era (real issue for any real account that isn't
+    Rick's -- MULTI_TENANCY_DESIGN.md §23); unset (null) is a normal,
+    expected state, not an error -- the frontend falls back to
+    name-less greeting phrasing. voice_id (db/012_voice_id.sql) is
+    never null -- it defaults to 'shimmer' at the database level, so
+    every account has a real value here even before ever touching this
+    endpoint. Same ensure-the-row-exists upsert pattern as
+    /v2/walkthrough-status above."""
     user_id, token = auth
     headers = {
         "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
@@ -840,25 +857,35 @@ def v2_get_profile(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
     )
     resp.raise_for_status()
     rows = resp.json()
-    return {"display_name": rows[0].get("display_name") if rows else None}
+    row = rows[0] if rows else {}
+    return {"display_name": row.get("display_name"), "voice_id": row.get("voice_id") or "shimmer"}
 
 
 @app.patch("/v2/profile")
 def v2_update_profile(payload: ProfileUpdateIn, auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """Updates whichever of display_name/voice_id were actually
+    provided -- partial update, not a full overwrite, so changing one
+    never silently clears the other (see ProfileUpdateIn's own
+    docstring for why both became optional)."""
     user_id, token = auth
     headers = {
         "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+    update: dict = {"user_id": user_id}
+    if payload.display_name is not None:
+        update["display_name"] = payload.display_name
+    if payload.voice_id is not None:
+        update["voice_id"] = payload.voice_id
     resp = httpx.post(
         f"{_SUPABASE_URL}/rest/v1/profiles",
         headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
-        json={"user_id": user_id, "display_name": payload.display_name},
-        params={"on_conflict": "user_id"}, timeout=15,
+        json=update, params={"on_conflict": "user_id"}, timeout=15,
     )
     resp.raise_for_status()
     rows = resp.json()
-    return {"display_name": rows[0].get("display_name") if rows else None}
+    row = rows[0] if rows else {}
+    return {"display_name": row.get("display_name"), "voice_id": row.get("voice_id") or "shimmer"}
 
 
 def _reject_if_too_large(request: Request) -> None:

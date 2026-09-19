@@ -115,11 +115,11 @@
 
   hr.sep { border: none; border-top: 2px solid var(--line); margin: 18px 0; }
 
-  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError, #displayNameError, #importExportError, #importError {
+  #calcError, #rifleError, #loadError, #authError, #waiverError, #deleteAccountError, #changePasswordError, #displayNameError, #voiceIdError, #importExportError, #importError {
     display: none; margin-top: 10px; padding: 10px 12px; border-radius: 8px;
     background: var(--error-bg); color: var(--error-text); font-weight: 600; font-size: 15px;
   }
-  #rifleOk, #loadOk, #authOk, #changePasswordOk, #displayNameOk {
+  #rifleOk, #loadOk, #authOk, #changePasswordOk, #displayNameOk, #voiceIdOk {
     display: none; margin-top: 10px; padding: 8px 12px; border-radius: 8px;
     background: var(--ok-bg); color: #2a6b2a; font-weight: 600; font-size: 14px;
   }
@@ -259,6 +259,17 @@
         <button id="saveDisplayNameBtn">Save name</button>
         <div id="displayNameOk"></div>
         <div id="displayNameError"></div>
+
+        <div class="field w-full" style="margin-top:10px; margin-bottom:8px;">
+          <label for="voiceIdSelect">Voice</label>
+          <select id="voiceIdSelect">
+            <option value="shimmer">Female (Shimmer)</option>
+            <option value="onyx">Male (Onyx)</option>
+          </select>
+        </div>
+        <button id="saveVoiceIdBtn">Save voice</button>
+        <div id="voiceIdOk"></div>
+        <div id="voiceIdError"></div>
 
         <button id="signOutBtn" style="margin-top:10px;">Sign out</button>
         <button id="changePasswordBtn" style="margin-top:8px;">Change password</button>
@@ -1566,6 +1577,14 @@ async function speak(text, speed) {
   try {
     const body = { text };
     if (speed !== undefined) body.speed = speed;
+    // Selectable voice persona (BACKLOG.md) -- userVoiceId is always a
+    // real value ('shimmer' by default, set from the account's actual
+    // saved preference once loadProfile() completes), never omitted
+    // here the way `speed` conditionally is, since there's no
+    // meaningful "let the endpoint's own default decide" case once a
+    // user has an account -- their own stored choice IS the default
+    // from their perspective.
+    body.voice = userVoiceId;
     const res = await fetch('/voice/speak', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -2222,13 +2241,29 @@ signOutBtn.addEventListener('click', () => {
 // nothing requires it at signup -- and the greeting falls back to
 // name-less phrasing when it's null, so this is purely additive.
 let userDisplayName = null;
+// Selectable voice persona (BACKLOG.md, raised 2026-08-23, built
+// 2026-09-18 now that multi-tenancy -- the thing it was sequenced
+// behind -- is done). Always a real value, never null: db/012_voice_
+// id.sql defaults every account to 'shimmer' at the database level, so
+// this is never in the "unset, fall back to something" state
+// userDisplayName can be -- initialized to the same default here only
+// so speak() has something sane to send before the first /profile
+// fetch completes (e.g. voice enabled and used within that brief
+// window), not because null is ever actually expected back from the
+// server.
+let userVoiceId = 'shimmer';
 
-async function loadDisplayName() {
+// Was loadDisplayName() -- renamed since it now loads the whole
+// profile (display name + voice persona) in one round trip rather
+// than just the name, same GET /v2/profile call either way.
+async function loadProfile() {
   try {
     const data = await api('/profile');
     userDisplayName = data.display_name || null;
     document.getElementById('displayNameInput').value = userDisplayName || '';
-  } catch (e) { /* offline or a transient failure -- greeting just falls back to name-less */ }
+    userVoiceId = data.voice_id || 'shimmer';
+    document.getElementById('voiceIdSelect').value = userVoiceId;
+  } catch (e) { /* offline or a transient failure -- greeting/voice just fall back to defaults */ }
 }
 
 document.getElementById('saveDisplayNameBtn').addEventListener('click', async () => {
@@ -2245,6 +2280,27 @@ document.getElementById('saveDisplayNameBtn').addEventListener('click', async ()
       body: JSON.stringify({ display_name: name }),
     });
     userDisplayName = data.display_name;
+    flash(okEl, 'Saved.', 2000);
+  } catch (e) {
+    flash(errorEl, e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('saveVoiceIdBtn').addEventListener('click', async () => {
+  const okEl = document.getElementById('voiceIdOk');
+  const errorEl = document.getElementById('voiceIdError');
+  hide(okEl); hide(errorEl);
+  const voiceId = document.getElementById('voiceIdSelect').value;
+  const btn = document.getElementById('saveVoiceIdBtn');
+  btn.disabled = true;
+  try {
+    const data = await api('/profile', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice_id: voiceId }),
+    });
+    userVoiceId = data.voice_id;
     flash(okEl, 'Saved.', 2000);
   } catch (e) {
     flash(errorEl, e.message);
@@ -2519,11 +2575,11 @@ async function init() {
   const token = await getValidAccessToken();
   if (token) {
     await maybeAutoPlayFirstWalkthrough(token);
-    // Voice (and so the greeting itself) already can't run offline at
-    // all (enableVoiceBtn is disabled in that mode) -- fetching the
-    // name only when there's a real token keeps this consistent with
-    // that, no separate offline cache needed for it.
-    await loadDisplayName();
+    // Voice (and so the greeting itself, and the persona choice) already
+    // can't run offline at all (enableVoiceBtn is disabled in that mode)
+    // -- fetching the profile only when there's a real token keeps this
+    // consistent with that, no separate offline cache needed for it.
+    await loadProfile();
     await checkWaiverStatus(token);
   }
   await loadRifles();

@@ -2276,3 +2276,91 @@ not by reciting what was designed to work -- which is exactly what
 surfaced a real bug neither the design doc nor the test suite would
 have caught, since nothing in this app has JS-level test coverage for
 the auth screens at all.
+
+---
+
+## 30. Selectable voice persona (Mr. and Mrs. Ballistica, 2026-09-18)
+
+Built from BACKLOG.md's "Selectable voice persona (male/female)"
+entry, raised and scoped by Rick 2026-08-23, explicitly sequenced
+behind multi-tenancy -- now done, so nothing left blocking it. Direct
+trigger: Rick's own question, "is that even still an option?", after a
+separate conversation about the app's man-and-woman branding image and
+whether Mr. Ballistica (the man in that image) has any actual
+functional role in the app versus just appearing in a photo. Landed on
+splitting roles along a line that already existed rather than an
+arbitrary pairing: Mrs. Ballistica (shimmer, the existing default)
+stays the voice of every live reply and all five walkthrough sections;
+Mr. Ballistica (onyx) becomes the selectable alternative for the live
+voice assistant specifically.
+
+**What was already decided before this build even started (2026-08-23,
+verified again, not re-litigated):** male voice is Onyx, deep/
+authoritative -- Rick picked it by ear against real samples of Onyx
+and Echo, generated through the live production TTS endpoint, each
+speaking both a live-fire terse line and a warm setup-greeting line,
+judged specifically on the live-fire sample since that's the app's own
+mode-aware tone priority. Every scripted spoken phrase was already
+checked back then for gendered self-reference -- none found -- so this
+is genuinely voice-only, no personality-script variant needed.
+
+**Real, unexpected finding while building this:** a bare `voice_id`
+column already existed on `profiles` in production -- confirmed live,
+writes to it already succeeded -- despite no tracked migration file
+for it anywhere in this repo. Best guess is it was added directly
+during the original 2026-08-23 scoping pass and never got a migration
+file logged for it, a real (if minor) gap in this project's own
+"every schema change gets a tracked migration" discipline. Also
+confirmed live that the column had **no constraint** restricting its
+values at all -- an arbitrary string wrote successfully with no error.
+`db/012_voice_id.sql` was written defensively because of this: it
+doesn't assume the column is missing (a plain `add column` would have
+errored against the real state), it backfills any nulls, guarantees
+the default/not-null, and adds the missing check constraint,
+regardless of whichever partial state the column was actually already
+in. **Still pending Rick's action in the Supabase SQL Editor** for the
+constraint specifically -- the feature works correctly without it
+(the API's own Pydantic validation already rejects a bad value for any
+request that goes through this app's endpoint), but nothing currently
+stops a bad value written directly at the database level outside this
+app.
+
+**Built:**
+- `db/012_voice_id.sql` -- see above.
+- `api.py`: `ProfileUpdateIn.display_name` changed from required to
+  optional, `voice_id` added as a second optional field (pattern-
+  validated to exactly `shimmer`/`onyx`) -- both PATCH `/v2/profile`
+  and GET now handle the two as independent preferences on the same
+  row rather than the original always-overwrite-display_name shape,
+  which would have clobbered one field silently updating the other had
+  voice_id been bolted on the same way.
+- `index.html`: `loadDisplayName()` renamed `loadProfile()` (now loads
+  both fields in the same round trip it already made), new `userVoiceId`
+  global (always a real value, unlike `userDisplayName` which can be
+  genuinely unset), a Voice select in the account menu next to the
+  existing name field, and `speak()` now sends the account's actual
+  stored `voice` on every call instead of always omitting it and
+  falling through to the endpoint's hardcoded shimmer default.
+- Deliberately NOT touched: the five walkthrough MP3s stay
+  shimmer-only, static, pre-generated, narrator-neutral across every
+  user, exactly as originally designed (walkthrough.py's own
+  docstring) -- voice selection applies to the live assistant, not
+  the walkthrough content, which was never in scope for this backlog
+  item.
+
+**Verified:** new live test against the real Supabase project
+(`tests/test_tenant_isolation.py::test_profile_voice_id_and_display_
+name_update_independently`) -- confirms updating voice_id alone
+doesn't touch a previously-set display_name and vice versa (the exact
+bug the optional-fields change exists to prevent), confirms every
+account has a real voice_id value from the moment its row exists
+(never the "unset" state display_name can be in), and confirms an
+invalid voice_id gets a clean 422 from this app's own validation.
+
+**Owning lens:** Rick asked a direct question about a specific
+backlog item's status; Build answered by re-verifying the actual
+current state of everything the original scoping claimed (the backend
+plumbing, the male-voice pick) rather than trusting an eight-day-old
+note, and in the process caught a real gap between what the backlog
+said was still needed and what was actually already sitting in
+production undocumented.

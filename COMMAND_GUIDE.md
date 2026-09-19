@@ -268,6 +268,12 @@ for the range. As of this cutover, it requires signing in first.
   Ballistica's up..."); leave it blank and the greeting just skips the
   name ("Hey there, Ballistica's up..."). Nothing else in the app uses
   it today.
+- **Account → Voice (added 2026-09-18):** pick Female (Shimmer, the
+  default) or Male (Onyx). Applies to every live spoken reply — takes
+  effect on the next thing Ballistica says after you save it, no
+  reload needed. Only covers the live voice assistant; the five
+  audio walkthrough sections stay in the same fixed narrator voice for
+  everyone regardless of this setting.
 - **Account → Import / Export (added 2026-08-30):**
   - **Export my data (CSV):** downloads every rifle and load on the
     account as a CSV, any time — one row per load, a rifle with no
@@ -363,10 +369,6 @@ Verified absent from the code, not just undocumented:
   Chronograph "calibration" only records shot **velocities** in memory
   during that one session, and only the resulting average gets saved —
   individual shot readings aren't persisted anywhere.
-- **No voice persona selection.** A male/female voice choice was
-  designed and scoped (male voice picked: OpenAI's "Onyx") but never
-  implemented — the app always speaks in the single current voice.
-  Tracked in `BACKLOG.md`.
 - **No way to switch the active load from the web app** — only by
   voice, or by re-saving a load through the form.
 - **No in-app disclaimer/liability language** anywhere in the product —
