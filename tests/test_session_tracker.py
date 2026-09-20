@@ -398,3 +398,40 @@ def test_earlier_reference_refusal_does_not_block_new_readings_in_the_same_breat
     reply = cli.handle("the first one was 1152 and the next is 2790")
     assert "only correct the most recent reading" in reply and "2790, shot 2" in reply
     assert [r["fps"] for r in cli._session_log.readings] == [2780.0, 2790.0]
+
+
+def test_intent_request_marks_the_static_prompt_cacheable_and_keeps_the_dynamic_suffix_outside_it(monkeypatch):
+    """Prompt caching only pays if the cached prefix is byte-identical
+    call to call. The session suffix (rifle list, last reading) changes
+    every turn, so it must sit in its own block AFTER the cache
+    breakpoint -- folding it into the cached text would silently turn the
+    cache off (cost deep dive, 2026-09-19)."""
+    import ballistica.intent as intent
+
+    sent = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            sent.append(kwargs)
+            return type("R", (), {"content": [type("B", (), {"type": "text", "text": "ok"})()]})()
+
+    monkeypatch.setattr(intent, "get_anthropic_client", lambda: type("C", (), {"messages": _Messages()})())
+
+    intent.extract_intent("hello")
+    plain = sent[-1]
+    assert plain["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert len(plain["system"]) == 1 and plain["system"][0]["text"] == intent._SYSTEM_PROMPT
+
+    ctx = {"rifles": {"AR-15": ["75gr ELD"]}, "active_rifle": "AR-15", "active_load": "75gr ELD", "last_reading": None}
+    intent.extract_intent("hello", session_context=ctx)
+    session_a = sent[-1]
+    ctx["last_reading"] = {"fps": 2780.0, "rifle": "AR-15", "load": "75gr ELD", "count": 1}
+    intent.extract_intent("hello", session_context=ctx)
+    session_b = sent[-1]
+
+    for req in (session_a, session_b):
+        assert req["system"][0] == plain["system"][0]          # identical cached block every turn
+        assert "cache_control" not in req["system"][1]         # dynamic block is never cached
+        assert "SESSION MODE IS ON" in req["system"][1]["text"]
+        assert req["tools"][-1]["name"] == "log_session_observation"
+    assert session_a["system"][1]["text"] != session_b["system"][1]["text"]  # it really does vary per turn

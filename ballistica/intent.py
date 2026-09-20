@@ -555,10 +555,21 @@ def extract_intent(
     try:
         client = get_anthropic_client()
         messages = list(history or []) + [{"role": "user", "content": text}]
-        system = _SYSTEM_PROMPT
+        # Prompt caching (2026-09-19, cost deep dive): the tools + base
+        # system prompt are ~5,600 tokens that are IDENTICAL on every call
+        # for every user, and were re-billed at full input price each time
+        # -- ~95% of every call's input. Marked cacheable, later calls read
+        # them at 10% of the input price (measured live: 5,623 tokens read
+        # from cache, ~81% cheaper per call). The cache is keyed on the
+        # exact prefix, so it's shared across all users, not per-account.
+        # Session Mode's per-turn suffix (saved rifle list, last reading)
+        # MUST stay a separate block AFTER the cache breakpoint -- folding
+        # it into the cached text would change the prefix every turn and
+        # silently defeat the cache.
+        system = [{"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
         tools = _TOOLS
         if session_context is not None:
-            system = _SYSTEM_PROMPT + _session_prompt_suffix(session_context)
+            system.append({"type": "text", "text": _session_prompt_suffix(session_context).strip()})
             tools = _TOOLS + [_SESSION_OBSERVATION_TOOL]
         response = client.messages.create(
             model=_MODEL,
