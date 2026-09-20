@@ -1628,8 +1628,14 @@ async function speak(text, speed) {
     // user has an account -- their own stored choice IS the default
     // from their perspective.
     body.voice = userVoiceId;
+    // /voice/speak requires a login (2026-09-19 -- it's a paid OpenAI
+    // call, and used to have no auth gate at all). Signed out there's
+    // nothing to speak to anyway.
+    const token = await getValidAccessToken();
+    if (!token) return;
     const res = await fetch('/voice/speak', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
     });
     if (!res.ok) return;
@@ -1919,7 +1925,19 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
   try {
     const form = new FormData();
     form.append('audio', blob, 'command.webm');
-    const transcribeRes = await fetch('/voice/transcribe', { method: 'POST', body: form });
+    // Login required (2026-09-19, same reason as /voice/speak). Fetched
+    // here, before transcription, rather than only for the query call
+    // below -- there's no point paying for a transcription that can't be
+    // used because the session already expired.
+    const transcribeToken = await getValidAccessToken();
+    if (!transcribeToken) {
+      showAuthPanel();
+      setVoiceState('Voice: signed out');
+      return { continueConversation: false, hadSpeech: true, heardText: '' };
+    }
+    const transcribeRes = await fetch('/voice/transcribe', {
+      method: 'POST', headers: { Authorization: `Bearer ${transcribeToken}` }, body: form,
+    });
     const transcribeData = await transcribeRes.json();
     if (!transcribeRes.ok) throw new Error(transcribeData.detail || 'transcription failed');
     const heardText = (transcribeData.text || '').trim();

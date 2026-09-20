@@ -1360,9 +1360,16 @@ def test_voice_speak_rejects_empty_text():
     import ballistica.api as api_module
     from fastapi.testclient import TestClient
 
-    client = TestClient(api_module.app)
-    r = client.post("/voice/speak", json={"text": "   "})
-    assert r.status_code == 400
+    # /voice/speak requires a verified login as of 2026-09-19 (see
+    # tests/test_paid_endpoint_bounds.py); bypass just that check here so
+    # this stays a no-network unit test of the empty-text rejection.
+    api_module.app.dependency_overrides[api_module._verify_bearer] = lambda: ("user-1", "token-1")
+    try:
+        client = TestClient(api_module.app)
+        r = client.post("/voice/speak", json={"text": "   "})
+        assert r.status_code == 400
+    finally:
+        api_module.app.dependency_overrides.pop(api_module._verify_bearer, None)
 
 
 def test_calibration_flow_outlier_flag_discard_and_save(tmp_path):

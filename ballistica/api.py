@@ -577,19 +577,62 @@ def _expand_unit_abbreviations_for_speech(text: str) -> str:
     return text
 
 
+def _verify_bearer(authorization: str = Header(...)) -> tuple[str, str]:
+    """FastAPI dependency: verifies the bearer token and returns
+    (user_id, access_token). The common seam every auth-gated endpoint
+    ultimately depends on -- _get_user_store below wraps this for
+    endpoints that need the full per-user rifle/load store; endpoints
+    that only need to know who's asking (e.g. recording waiver
+    acceptance) can depend on this directly instead of paying for a
+    SupabaseProfileStore's own rifles/loads/conversation_state fetch on
+    construction just to throw it away unused."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
+    token = authorization[len("Bearer "):]
+    try:
+        user_id = verify_token(token)
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+    return user_id, token
+
+
+# Hard ceilings on what one call to a paid third-party API can cost
+# (2026-09-19, found in the cost deep dive): /voice/speak and
+# /voice/transcribe used to be unauthenticated with no input bound, and
+# their per-IP rate limit turned out to be bypassable by rotating a forged
+# X-Forwarded-For header (confirmed live against production: 26 requests,
+# zero 429s) -- so nothing capped spend per call OR per caller. Both now
+# require a verified login (which also makes the rate limit per verified
+# user, not per spoofable IP) and bound each call:
+#   - TTS: real replies are a sentence or two (a long table readout is
+#     ~1000 chars); anything past this is clipped, not rejected, so a
+#     legitimately long reply still speaks its first part instead of going
+#     silent. At tts-1's $15/M chars this caps one call at ~2.3 cents
+#     (vs. up to ~6 cents at OpenAI's own 4096-char limit).
+#   - STT: the web app hard-stops every recording at 12 seconds
+#     (MAX_RECORD_MS in index.html), ~200 KB at typical MediaRecorder
+#     bitrates. 400 KB leaves headroom for higher-bitrate browsers while
+#     bounding a crafted low-bitrate upload (~8 kbps -> ~6.7 min) to
+#     ~4 cents, versus gpt-4o-transcribe's 25-minute (~15 cent) maximum.
+_TTS_MAX_CHARS = 1500
+_TRANSCRIBE_MAX_BYTES = 400_000
+
+
 @app.post("/voice/speak")
 @limiter.limit("20/minute")
-def voice_speak(request: Request, payload: VoiceSpeakIn):
+def voice_speak(
+    request: Request, payload: VoiceSpeakIn, auth: tuple[str, str] = Depends(_verify_bearer),
+):
     """Text in, MP3 bytes out via OpenAI TTS. The other half of the
     voice loop from /voice/query -- feed that endpoint's reply straight
-    into this one to get spoken audio back. Tighter rate limit than the
-    blanket default: this proxies a paid, per-call OpenAI API and has no
-    auth gate at all (stateless, no per-user data -- see the module
-    docstring), so IP-based limiting is the only cost-abuse control it has."""
+    into this one to get spoken audio back. Proxies a paid, per-call
+    OpenAI API, so it requires a verified login (2026-09-19; it had none,
+    and its IP-only rate limit was bypassable -- see _TTS_MAX_CHARS's
+    comment), which also makes the tighter-than-default limit per user."""
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
-    text = _expand_unit_abbreviations_for_speech(text)
+    text = _expand_unit_abbreviations_for_speech(text)[:_TTS_MAX_CHARS]
     try:
         client = get_openai_client()
         result = client.audio.speech.create(
@@ -646,16 +689,23 @@ def _looks_like_transcription_echo(text: str) -> bool:
 
 @app.post("/voice/transcribe")
 @limiter.limit("20/minute")
-async def voice_transcribe(request: Request, audio: UploadFile = File(...)):
+async def voice_transcribe(
+    request: Request, audio: UploadFile = File(...), auth: tuple[str, str] = Depends(_verify_bearer),
+):
     """Recorded audio in (whatever format the browser's MediaRecorder
     produced -- webm/ogg/mp4 are all fine, OpenAI's transcription
     endpoint handles the common ones), transcribed text out. First
     third of the full voice loop: this -> /voice/query -> /voice/speak.
-    Same tighter limit and same reasoning as /voice/speak above -- a
-    paid per-call API, no auth gate."""
-    audio_bytes = await audio.read()
+    Same auth requirement, tighter limit, and cost reasoning as
+    /voice/speak above -- a paid per-call API, so a verified login is
+    required and a single upload is capped at _TRANSCRIBE_MAX_BYTES."""
+    # Reads one byte past the cap so an oversized upload is detected
+    # without ever buffering the whole thing.
+    audio_bytes = await audio.read(_TRANSCRIBE_MAX_BYTES + 1)
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="audio file was empty")
+    if len(audio_bytes) > _TRANSCRIBE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"audio too large (max {_TRANSCRIBE_MAX_BYTES // 1000} KB)")
     try:
         client = get_openai_client()
         # OpenAI's SDK identifies the audio format from the filename's
@@ -689,25 +739,6 @@ async def voice_transcribe(request: Request, audio: UploadFile = File(...)):
 # so removing them was a real reduction in exposed surface, not a lost
 # capability. A REST-shaped (non-voice) /v2 version of any of the three is
 # a small, separate follow-up if Rick ever wants one, not done here.
-
-def _verify_bearer(authorization: str = Header(...)) -> tuple[str, str]:
-    """FastAPI dependency: verifies the bearer token and returns
-    (user_id, access_token). The common seam every auth-gated endpoint
-    ultimately depends on -- _get_user_store below wraps this for
-    endpoints that need the full per-user rifle/load store; endpoints
-    that only need to know who's asking (e.g. recording waiver
-    acceptance) can depend on this directly instead of paying for a
-    SupabaseProfileStore's own rifles/loads/conversation_state fetch on
-    construction just to throw it away unused."""
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
-    token = authorization[len("Bearer "):]
-    try:
-        user_id = verify_token(token)
-    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
-    return user_id, token
-
 
 def _get_user_store(auth: tuple[str, str] = Depends(_verify_bearer)) -> SupabaseProfileStore:
     """FastAPI dependency: returns a per-request store scoped to the

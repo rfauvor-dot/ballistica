@@ -75,7 +75,7 @@ Endpoints:
 - `GET /v2/status` -- current active rifle/load
 - `POST /v2/calc/drop-at-range` -- taking optional `rifle`/`load` (default: active) and optional `atmosphere`/`wind` (default: standard atmosphere, no wind)
 - `POST /v2/voice/query` -- transcribed text in, spoken-back text out; the full command set (table, mpbr-zero, angle-solving, setup/calibration, etc.) is available here via natural language even though those don't have their own dedicated `/v2/calc/*` REST routes
-- `POST /voice/speak`, `POST /voice/transcribe` -- stateless OpenAI TTS/STT proxies, no auth required (no per-user data involved)
+- `POST /voice/speak`, `POST /voice/transcribe` -- stateless OpenAI TTS/STT proxies, verified login required (paid OpenAI proxies; input-bounded per call)
 
 ## Accuracy: how this was validated, and what's still approximate
 
