@@ -27,6 +27,7 @@ import logging
 
 import anthropic
 
+from . import spend
 from .anthropic_client import get_anthropic_client
 
 # Every failure path here used to swallow the real exception and just
@@ -579,6 +580,7 @@ def extract_intent(
             tools=tools,
             tool_choice={"type": "auto"},
         )
+        spend.record_llm(getattr(response, "usage", None))
         for block in response.content:
             if block.type == "tool_use":
                 return block.name, dict(block.input)
@@ -665,6 +667,7 @@ def classify_calibration_turn(text: str) -> str | None:
             tools=_CALIBRATION_TOOLS,
             tool_choice={"type": "any"},
         )
+        spend.record_llm(getattr(response, "usage", None))
         return _first_tool_use(response).name
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):
         logger.exception("classify_calibration_turn failed for %r", text)
@@ -812,6 +815,7 @@ def extract_setup_fields(text: str, kind: str, asking_about: str | None = None) 
             tools=[tool],
             tool_choice={"type": "any"},
         )
+        spend.record_llm(getattr(response, "usage", None))
         block = _first_tool_use(response)
         return dict(block.input)
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):

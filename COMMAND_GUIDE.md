@@ -354,6 +354,15 @@ for the range. As of this cutover, it requires signing in first.
     the app understood, not a recording. It only ever contains your own
     account's turns; send the file to whoever's reviewing a session
     rather than sharing a password.
+  - **Voice usage today (top of the menu, added 2026-09-19):** shows what
+    your voice use has cost so far today against a daily limit (default
+    $3.00), e.g. "Voice usage today: $0.42 of $3.00 (resets midnight UTC)".
+    Everything that costs money (speech recognition, the assistant's
+    understanding, and its spoken replies) stops together once the day's
+    limit is used, until 00:00 UTC. A typical range day costs cents, so
+    you should never see this; if you do, the screen says so instead of
+    silently going quiet, and Session Mode ends. Typed/tapped drop
+    solutions, rifle and load editing, and offline mode keep working.
   - **Download my data first (in Danger Zone, right above Delete my
     account):** the same export, specifically surfaced as the thing to
     do before you delete everything.

@@ -49,6 +49,7 @@ from slowapi.util import get_remote_address
 
 from .aggregate_pool import contribute_load
 from .atmosphere import AtmosphereConditions, pressure_at_altitude_inhg
+from . import spend
 from .cli import BallisticaCLI, _CalibrationSession, _SessionLog, _SetupSession
 from .import_export import (
     MAX_IMPORT_FILE_BYTES, TARGET_FIELDS, ImportError_, apply_mapping,
@@ -618,6 +619,25 @@ _TTS_MAX_CHARS = 1500
 _TRANSCRIBE_MAX_BYTES = 400_000
 
 
+def _enforce_daily_budget(user_id: str) -> None:
+    """Per-user daily spend cap (see spend.py): refuses a paid call once the
+    user's day is spent. 429 with a machine-readable code so the web app can
+    tell this apart from the per-minute rate limit's own 429, and a standard
+    Retry-After header (seconds until the UTC day rolls over)."""
+    try:
+        spend.ledger.check(user_id)
+    except spend.BudgetExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "daily_budget_exceeded",
+                "message": "Daily voice usage limit reached. It resets at midnight UTC.",
+                "resets_in_seconds": exc.retry_after,
+            },
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+
+
 @app.post("/voice/speak")
 @limiter.limit("20/minute")
 def voice_speak(
@@ -633,6 +653,8 @@ def voice_speak(
     if not text:
         raise HTTPException(status_code=400, detail="text must not be empty")
     text = _expand_unit_abbreviations_for_speech(text)[:_TTS_MAX_CHARS]
+    user_id = auth[0]
+    _enforce_daily_budget(user_id)
     try:
         client = get_openai_client()
         result = client.audio.speech.create(
@@ -640,6 +662,7 @@ def voice_speak(
         )
     except openai.OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"TTS request failed: {exc}")
+    spend.ledger.add(user_id, spend.tts_cost(len(text)))
     return Response(content=result.content, media_type="audio/mpeg")
 
 
@@ -706,6 +729,8 @@ async def voice_transcribe(
         raise HTTPException(status_code=400, detail="audio file was empty")
     if len(audio_bytes) > _TRANSCRIBE_MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"audio too large (max {_TRANSCRIBE_MAX_BYTES // 1000} KB)")
+    user_id = auth[0]
+    _enforce_daily_budget(user_id)
     try:
         client = get_openai_client()
         # OpenAI's SDK identifies the audio format from the filename's
@@ -717,6 +742,7 @@ async def voice_transcribe(
         )
     except openai.OpenAIError as exc:
         raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}")
+    spend.ledger.add(user_id, spend.stt_cost(getattr(result, "usage", None), len(audio_bytes)))
     text = result.text
     if _looks_like_transcription_echo(text):
         # See _TRANSCRIBE_PROMPT_ECHO_CORE above: this is the model
@@ -739,6 +765,16 @@ async def voice_transcribe(
 # so removing them was a real reduction in exposed surface, not a lost
 # capability. A REST-shaped (non-voice) /v2 version of any of the three is
 # a small, separate follow-up if Rick ever wants one, not done here.
+
+def _budget_gate(auth: tuple[str, str] = Depends(_verify_bearer)) -> None:
+    """FastAPI dependency: refuses an over-budget user BEFORE _get_user_store
+    runs. That ordering matters -- constructing a SupabaseProfileStore loads
+    the user's rifles from the database, so checking the budget inside the
+    endpoint body (after dependencies resolve) would still cost an over-
+    budget user a database round trip per request. Declared before
+    `user_store` in the endpoint signature so FastAPI resolves it first."""
+    _enforce_daily_budget(auth[0])
+
 
 def _get_user_store(auth: tuple[str, str] = Depends(_verify_bearer)) -> SupabaseProfileStore:
     """FastAPI dependency: returns a per-request store scoped to the
@@ -1245,7 +1281,8 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
 @app.post("/v2/voice/query", response_model=VoiceQueryOut)
 @limiter.limit("20/minute")
 def v2_voice_query(
-    request: Request, payload: VoiceQueryIn, user_store: SupabaseProfileStore = Depends(_get_user_store),
+    request: Request, payload: VoiceQueryIn, _budget: None = Depends(_budget_gate),
+    user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
     """Per-user, per-request BallisticaCLI -- a fresh one every call
     (never a cached object), hydrated from this user's own persisted
@@ -1271,12 +1308,18 @@ def v2_voice_query(
     # call. Isolating just this leg is what makes "is it actually slow,
     # and where" answerable with real numbers instead of a guess.
     _turn_started = time.perf_counter()
-    try:
-        reply = cli.handle(payload.text)
-    except SystemExit:
-        reply = "Ending session."
-    except (KeyError, ValueError) as exc:
-        reply = _msg(exc)
+    # Every Claude call handle() makes (up to three per turn) reports its
+    # real token cost into `cost`; recorded even if handle() raised, since
+    # the money was spent either way.
+    with spend.track() as cost:
+        try:
+            reply = cli.handle(payload.text)
+        except SystemExit:
+            reply = "Ending session."
+        except (KeyError, ValueError) as exc:
+            reply = _msg(exc)
+        finally:
+            spend.ledger.add(user_store.user_id, cost[0])
     duration_ms = round((time.perf_counter() - _turn_started) * 1000)
 
     user_store.set_conversation_state(**_dehydrate_cli(cli))
@@ -1322,6 +1365,26 @@ def v2_voice_query(
     return VoiceQueryOut(
         reply=reply or "Didn't catch that.", awaiting_response=awaiting_response,
         is_readout=cli._last_reply_is_readout,
+    )
+
+
+class UsageTodayOut(BaseModel):
+    spent_usd: float = Field(description="Estimated paid-API cost of this user's voice use so far today (UTC).")
+    budget_usd: float
+    remaining_usd: float
+    resets_in_seconds: int
+
+
+@app.get("/v2/usage/today", response_model=UsageTodayOut)
+def v2_usage_today(auth: tuple[str, str] = Depends(_verify_bearer)):
+    """What the caller's own voice use has cost so far today against their
+    daily budget (see spend.py). Purely in-memory, no database or paid call.
+    Also the app's first source of MEASURED per-user cost."""
+    spent, budget = spend.ledger.spent_today(auth[0]), spend.daily_budget_usd()
+    return UsageTodayOut(
+        spent_usd=round(spent, 4), budget_usd=budget,
+        remaining_usd=round(max(0.0, budget - spent), 4),
+        resets_in_seconds=spend.ledger.seconds_until_reset(),
     )
 
 

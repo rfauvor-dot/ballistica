@@ -2491,3 +2491,56 @@ AFTER the breakpoint or it silently defeats the cache -- pinned by a test
 that asserts the cached block is byte-identical across turns while the
 dynamic one differs. The setup-extraction and calibration prompts (884-1,696
 tokens) are below Haiku 4.5's cacheable minimum and are left as they were.
+
+
+---
+
+## 33. Per-user daily spend budget (2026-09-19)
+
+Follow-up to §32: after login and input bounds closed the anonymous hole, a
+signed-in account (free to create) could still spend ~$66/hour across the
+three paid endpoints at their 20/minute limits. `ballistica/spend.py` meters
+what each user's paid calls actually cost and blocks them for the rest of the
+UTC day once a per-user budget is spent.
+
+**Measured, not estimated, wherever the provider reports usage.** Claude
+calls report token counts (including cache reads/writes) from all three call
+sites in `intent.py`; speech-to-text returns token usage (audio and text input
+are priced differently -- the text part is our own bias prompt); TTS is exact
+from the character count sent. Verified live: ledger == provider-reported
+usage to the last decimal. The STT audio-input rate ($6.00/M) is corroborated
+by secondary sources only (OpenAI's own page shows just the $2.50 text row),
+so it errs high -- this is a safety cap, not an invoice.
+
+**Wiring.** A ContextVar accumulator (`spend.track()`) collects the cost of
+every Claude call inside `handle()`, because those happen deep in the engine,
+far from the endpoint that knows the user; the endpoint adds the total to the
+ledger in a `finally`, so a turn that raises still records money already
+spent. `/voice/speak` and `/voice/transcribe` check in-body; `/v2/voice/query`
+checks in a `_budget_gate` dependency declared BEFORE `user_store` in its
+signature -- FastAPI resolves dependencies in declaration order, and building
+a `SupabaseProfileStore` loads the user's rifles from the database, so a check
+in the body would still cost an over-budget user a DB round trip per request
+(caught by a test failing against exactly that). The refusal is a 429 with
+`detail.code == "daily_budget_exceeded"` and a Retry-After header; the per-
+minute rate limiter also answers 429 with a different body, so the web app
+distinguishes them by the code and only the budget one blocks voice.
+
+**Web app.** On the budget refusal it stops trying (voice can't work: STT,
+model, and TTS all stop together), shows the message on screen (speech output
+is one of the things blocked), ends Session Mode instead of looping on
+refusals, and won't acknowledge a wake word only to fail. The account menu
+shows "Voice usage today: $x of $y" from `GET /v2/usage/today`.
+
+**Deliberate limits.** In-memory: resets on restart/redeploy and is per
+instance (same single-instance assumption as the rate limiter). Check-before,
+charge-after: overshoot is bounded by one call. UTC day. Non-positive or
+unparseable `DAILY_BUDGET_USD` falls back to the $3.00 default rather than
+disabling the cap. Bounds each account, not each person. Making this durable
+(a usage table) is the step if it ever drives metering or billing.
+
+**Verified:** offline tests (fake OpenAI/Claude, fake store -- no paid calls),
+including per-user isolation, day rollover with an injected clock, cost
+recorded when handling raises, and no database or Claude call for an
+over-budget user; plus the real end-to-end run described in COST_MODEL.md, and
+the page's handling of both 429 kinds in the browser.

@@ -272,6 +272,7 @@
         <div id="voiceIdOk"></div>
         <div id="voiceIdError"></div>
 
+        <div id="usageToday" style="font-size:13px; color:var(--muted); margin-top:10px; min-height:16px;"></div>
         <button id="signOutBtn" style="margin-top:10px;">Sign out</button>
         <button id="changePasswordBtn" style="margin-top:8px;">Change password</button>
         <div id="changePasswordOk"></div>
@@ -1528,6 +1529,40 @@ let sessionWakeCount = 0;
 let sessionModeEnabled = false;
 let sessionModeMuted = false;
 
+// Per-user daily spend budget (2026-09-19, see spend.py): once a user's
+// paid-API usage for the UTC day hits the cap, the server answers 429 with
+// code 'daily_budget_exceeded'. Everything paid (speech-to-text, the model,
+// text-to-speech) stops together, so voice can't work until the reset --
+// this remembers that instead of retrying every wake word, and says so on
+// screen (speech output is one of the things that's blocked).
+let voiceBudgetBlockedUntil = 0;
+
+function voiceBudgetBlocked() { return Date.now() < voiceBudgetBlockedUntil; }
+
+// Reads a 429 response's body and returns its detail only if it's the
+// daily-budget refusal -- the per-minute rate limiter also answers 429 with
+// a different body, and that one must keep flowing through the normal error
+// path.
+async function readBudgetRefusal(res) {
+  if (res.status !== 429) return null;
+  try {
+    const detail = (await res.clone().json()).detail;
+    return detail && detail.code === 'daily_budget_exceeded' ? detail : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function handleBudgetExceeded(detail) {
+  voiceBudgetBlockedUntil = Date.now() + ((detail && detail.resets_in_seconds) || 3600) * 1000;
+  const msg = (detail && detail.message) || 'Daily voice usage limit reached. It resets at midnight UTC.';
+  setVoiceState('Voice: daily limit reached');
+  voiceHeardEl.textContent = msg;
+  showReadout(msg);
+  // Session Mode would just loop on refusals -- let it wind down cleanly.
+  sessionModeEnabled = false;
+}
+
 const voiceStateEl = document.getElementById('voiceState');
 const voiceHeardEl = document.getElementById('voiceHeard');
 const voiceReadoutEl = document.getElementById('voiceReadout');
@@ -1638,7 +1673,11 @@ async function speak(text, speed) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      const refusal = await readBudgetRefusal(res);
+      if (refusal) handleBudgetExceeded(refusal);
+      return;
+    }
     await playAudioBlob(await res.blob());
   } catch (e) {
     // Voice output failing shouldn't break the loop -- the state line
@@ -1824,7 +1863,8 @@ function startWakeListening() {
   };
 
   voiceState = 'idle';
-  setVoiceState('Voice: listening for "Ballistica"...');
+  setVoiceState(voiceBudgetBlocked() ? 'Voice: daily limit reached (resets midnight UTC)'
+                                     : 'Voice: listening for "Ballistica"...');
   voiceHeardEl.textContent = '';
   wakeRecognition.start();
 }
@@ -1938,6 +1978,11 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     const transcribeRes = await fetch('/voice/transcribe', {
       method: 'POST', headers: { Authorization: `Bearer ${transcribeToken}` }, body: form,
     });
+    const transcribeRefusal = await readBudgetRefusal(transcribeRes);
+    if (transcribeRefusal) {
+      handleBudgetExceeded(transcribeRefusal);
+      return { continueConversation: false, hadSpeech: true, heardText: '' };
+    }
     const transcribeData = await transcribeRes.json();
     if (!transcribeRes.ok) throw new Error(transcribeData.detail || 'transcription failed');
     const heardText = (transcribeData.text || '').trim();
@@ -1989,6 +2034,11 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
       // context and chronograph readings from narration) for this turn.
       body: JSON.stringify({ text: heardText, session_mode: sessionModeEnabled }),
     });
+    const queryRefusal = await readBudgetRefusal(queryRes);
+    if (queryRefusal) {
+      handleBudgetExceeded(queryRefusal);
+      return { continueConversation: false, hadSpeech: true, heardText };
+    }
     const queryData = await queryRes.json();
     voiceState = 'speaking';
     setVoiceState('Speaking...', true);
@@ -2025,6 +2075,14 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
 }
 
 async function handleWakeWord() {
+  // Over the daily budget: every paid step would be refused, so don't
+  // acknowledge and record only to fail -- just say why and keep listening.
+  if (voiceBudgetBlocked()) {
+    voiceState = 'idle';
+    if (voiceEnabled) startWakeListening();
+    showReadout('Daily voice usage limit reached. It resets at midnight UTC.');
+    return;
+  }
   voiceState = 'acknowledging';
   setVoiceState('Ballistica heard -- acknowledging', true);
   const ackPool = sessionWakeCount === 0 ? greetingPhrases(userDisplayName) : ackPhrases(userDisplayName);
@@ -2298,6 +2356,10 @@ sessionModeBtn.addEventListener('click', () => {
     // (mic release, rifle-list refresh, sign-off, resuming wake-word
     // listening) itself, same pattern as disabling voice mid-conversation.
     sessionModeEnabled = false;
+    return;
+  }
+  if (voiceBudgetBlocked()) {
+    showReadout('Daily voice usage limit reached. It resets at midnight UTC.');
     return;
   }
   sessionModeEnabled = true;
@@ -2648,6 +2710,27 @@ async function downloadConversationLog() {
   a.remove();
   URL.revokeObjectURL(url);
 }
+// "Voice usage today" line in the account menu (2026-09-19): what this
+// account's paid speech/model calls have cost so far today against its
+// daily budget. Best-effort and only fetched when the menu is opened --
+// a failure just leaves the line blank.
+async function refreshUsageToday() {
+  const el = document.getElementById('usageToday');
+  try {
+    const token = await getValidAccessToken();
+    if (!token) { el.textContent = ''; return; }
+    const res = await fetch('/v2/usage/today', { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) { el.textContent = ''; return; }
+    const u = await res.json();
+    el.textContent = `Voice usage today: $${u.spent_usd.toFixed(2)} of $${u.budget_usd.toFixed(2)} (resets midnight UTC)`;
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+document.getElementById('accountMenu').addEventListener('toggle', (e) => {
+  if (e.target.open) refreshUsageToday();
+});
+
 document.getElementById('downloadConversationLogBtn').addEventListener('click', async () => {
   const errorEl = document.getElementById('importExportError');
   hide(errorEl);

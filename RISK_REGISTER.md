@@ -289,11 +289,17 @@ is the only place that could show one.
 ~$0.06/call (TTS) or ~$0.15/call (STT), limited only by OpenAI's own rate
 limit.
 
+**Also built (2026-09-19): a per-user daily spend budget** (`ballistica/spend.py`,
+default $3/user/day via `DAILY_BUDGET_USD`) that meters actual dollars and
+blocks all paid calls for the rest of the UTC day -- cutting a maxed-out
+account from ~$66/hr to $3/day. It's an in-memory safety cap: it resets on
+restart/redeploy and is per instance.
+
 **Still open:** (1) hard monthly spend limits on the OpenAI and Anthropic
-accounts -- only Rick can set these; (2) a signed-in account can still spend
-~$27/hr TTS, ~$48/hr STT, ~$8.67/hr model calls at the 20/min limit, and
-accounts are free to create -- a per-user daily budget would close it;
-(3) `_ip_rate_limit_key` still trusts the first forwarded value, which now only
+accounts -- only Rick can set these, and they remain the real backstop (the
+budget bounds each account, not each person, and accounts are free to create);
+(2) if usage ever drives billing or a paid tier, the budget needs a durable
+table instead of memory; (3) `_ip_rate_limit_key` still trusts the first forwarded value, which now only
 matters for unauthenticated cheap endpoints, but should use the proxy-appended
 value once Render's header behavior is confirmed.
 

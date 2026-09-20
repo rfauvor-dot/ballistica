@@ -157,10 +157,47 @@ dashboard. Check its Usage page for any spike you can't explain.
 - The web app sends the login token on both calls. Verified in the browser
   against the real API; 8 new tests.
 
-**Ceiling after the fix, per signed-in account, at the 20/minute limit:** TTS
-$27/hr, STT $48/hr, model calls $8.67/hr. That's an account deliberately
-maxing all three, and anyone can make a free account, so this is reduced,
-not eliminated.
+**Ceiling after the login/size fix alone, per signed-in account, at the
+20/minute limit:** TTS $27/hr, STT $48/hr, model calls $8.67/hr, and anyone
+can make a free account. The per-user daily budget below closes that.
+
+## Per-user daily budget (built 2026-09-19)
+
+Every paid call is metered in **actual dollars** and charged to the user who
+made it: Claude calls from the response's own token counts (cache reads and
+writes included), speech-to-text from its reported token usage, text-to-speech
+from the exact character count. Once a user's day is spent, all three paid
+paths refuse with a 429 until 00:00 UTC. Free features (drop solutions typed
+or tapped, rifle and load management, offline mode) keep working.
+
+- **Default: $3.00 per user per day**, changeable without a code change via the
+  `DAILY_BUDGET_USD` environment variable (set it in Render). A missing,
+  unparseable, or non-positive value falls back to $3.00 instead of
+  silently turning the cap off; to lift it, set a large number.
+- **Why $3:** a typical range day costs cents. A very heavy one (an hour of
+  Session Mode, uncached) is ~$1. Three uncached Session Mode hours is ~$3.20,
+  ~$1.30 cached. So $3 is several times a real heavy day and never in a
+  legitimate user's way, while cutting the worst free-account abuse from
+  ~$66/hour to $3/day per account.
+- **The account menu shows it:** "Voice usage today: $0.42 of $3.00 (resets
+  midnight UTC)". It's also the first source of **measured** per-user cost in
+  this app (`GET /v2/usage/today`).
+- **Verified live** with real Supabase, Claude, and OpenAI: the ledger equalled
+  the provider-reported Claude usage to the last decimal (2 real calls,
+  $0.00243), TTS was exact ($0.000345 for 23 characters), a real 1.4 s
+  transcription cost $0.000318, and with the budget set tiny all three paid
+  endpoints returned 429 with a Retry-After (~22 hours) while free endpoints
+  still worked.
+
+**What it is not:** it's an in-memory safety cap, not a billing record. It
+**resets when the server restarts or redeploys** (a user can get a fresh
+budget after a deploy) and is per server instance, the same single-instance
+assumption the rate limiter already makes. It checks before a call and
+charges after, so one call can overshoot. If usage ever becomes billing or a
+paid tier, it needs to move to a database table. It also bounds each
+*account*, not each person: someone creating many accounts gets $3/day each
+(email confirmation slows that but doesn't stop it), so the provider-side
+monthly spend limits below remain the backstop.
 
 ## Levers, in order of value
 
@@ -169,9 +206,8 @@ not eliminated.
    setting). Nothing in the code can cap an account's total bill.
 2. **Prompt caching. Done today.** ~80% off the biggest line. Roughly halves
    the blended per-user cost.
-3. **A per-user daily spend budget in the app** (not built): closes the
-   remaining free-account abuse path and gives you a natural metering hook if
-   Session Mode becomes a premium tier.
+3. **A per-user daily spend budget. Done (2026-09-19)** -- see the next
+   section.
 4. Not recommended yet: `gpt-4o-mini-transcribe` at ~$0.003/min would halve the
    STT line (it's only ~10-15% of cost) but STT accuracy on numbers and
    ballistics terms is what the whole product depends on; test before
