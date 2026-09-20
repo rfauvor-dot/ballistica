@@ -250,23 +250,54 @@ something a lens can substitute for.
 
 ---
 
-## Cost Model Realism
+## Cost Model Realism -- REFRESHED (2026-09-19)
 
-**Status:** The Tier 1/2 pricing/cost-to-serve model from Addenda 18-21 was
-solid work but is now stale -- it predates the STT provider upgrade to
-gpt-4o-transcribe and hasn't been re-run against real per-minute costs and
-realistic session lengths.
+**Status:** Re-run against verified current prices and real measurements --
+see COST_MODEL.md (regenerate with `python -m scripts.cost_model`). Per-user
+variable cost is ~$0.15-$5.34/month depending on usage (blended ~$1.27 with
+prompt caching, now built); fixed cost ~$33-$53/month; all-in ~$34.52 per
+user at 1 user, $4.59 at 10, $1.80 at 100. Corrects two earlier errors: the
+Session Mode per-call token count was ~5x too low, and the STT provider is
+`gpt-4o-transcribe`, not Whisper.
 
-**Why it matters:** Any pricing decision made off that model right now would
-be working from outdated inputs. It was already flagged as provisional
-pending the STT investigation's outcome -- that investigation concluded,
-but the model was never refreshed to close the loop.
+**Still open (inputs I could not verify, all listed in COST_MODEL.md):** the
+actual Render plan/price, Supabase Free-vs-Pro, whether custom SMTP is set up
+(the built-in email service is 2/hour, non-production), and the usage
+profiles, which are estimates until a real range-day log replaces them.
 
-**Next step:** Refresh the cost-to-serve model with current STT/LLM/TTS
-pricing and real observed session lengths before it's used for any actual
-pricing decision.
+**Next step:** Rick confirms the unverified inputs; re-run the model once a
+real conversation log is available.
 
 **Owning lens:** Finance.
+
+---
+
+## Paid-API cost abuse -- PARTIALLY RESOLVED (2026-09-19)
+
+**Status:** Found while building the cost model. `/voice/speak` (paid TTS) and
+`/voice/transcribe` (paid STT) had no login requirement and no input cap, and
+their per-IP rate limit was bypassable: the key trusted the first
+`X-Forwarded-For` value, which the caller controls. Confirmed against
+production with a harmless blank-text probe: a fixed forged header was
+throttled at request 21, a rotating one got 26 requests with zero throttles.
+**Fixed:** both endpoints now require a verified login (which also makes the
+limit per verified user), TTS text is clipped at 1,500 characters, uploads are
+capped at 400 KB. No evidence of abuse was found, but Rick's OpenAI usage page
+is the only place that could show one.
+
+**Why it matters:** an unauthenticated caller could spend real money at up to
+~$0.06/call (TTS) or ~$0.15/call (STT), limited only by OpenAI's own rate
+limit.
+
+**Still open:** (1) hard monthly spend limits on the OpenAI and Anthropic
+accounts -- only Rick can set these; (2) a signed-in account can still spend
+~$27/hr TTS, ~$48/hr STT, ~$8.67/hr model calls at the 20/min limit, and
+accounts are free to create -- a per-user daily budget would close it;
+(3) `_ip_rate_limit_key` still trusts the first forwarded value, which now only
+matters for unauthenticated cheap endpoints, but should use the proxy-appended
+value once Render's header behavior is confirmed.
+
+**Owning lens:** Finance + Build.
 
 ---
 

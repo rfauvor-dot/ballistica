@@ -2450,3 +2450,44 @@ observation still gets a short spoken readback ("1150, shot 3.") --
 deliberately kept as the STT-error check for numbers rather than going
 silent by default, until there's real range data on what's worth
 interrupting for.
+
+
+---
+
+## 32. Cost deep dive: paid-endpoint exposure closed, prompt caching added (2026-09-19)
+
+Rick asked for a per-user monthly cost model. Building it against real
+measurements (COST_MODEL.md, `scripts/cost_model.py`) surfaced two things
+that changed the code, not just the document.
+
+**1. `/voice/speak` and `/voice/transcribe` were an open, uncapped spend
+path.** Both proxy paid OpenAI APIs and had no auth dependency, no input
+bound, and only a per-IP limit. That limit keys on the FIRST value of
+`X-Forwarded-For` (`_ip_rate_limit_key`), which the caller sets. Confirmed
+live with a harmless probe (blank text -> 400 before any OpenAI call): a
+fixed forged header throttled at request 21, a rotating one produced zero
+429s in 26 requests. (An earlier probe of `/v2/session/end` was
+inconclusive for a reason worth remembering: a missing required header
+fails FastAPI validation before a per-route `@limiter.limit` wrapper ever
+counts the request, so that limit never sees unauthenticated calls.)
+Fix: both now depend on `_verify_bearer` (moved above the voice routes so
+the decorator can see it), which also makes the slowapi key the verified
+user rather than a spoofable IP; TTS input is clipped at 1,500 chars
+(clipped, not rejected, so a long reply still speaks its opening instead of
+going silent); uploads capped at 400 KB against the app's own 12 s
+recording limit. The web app sends its token on both calls (verified in the
+browser against the real API). `tests/test_paid_endpoint_bounds.py` fakes
+the OpenAI client so the suite never makes a paid call. Residual risk and
+the things only Rick can do (spend limits in both provider consoles) are in
+RISK_REGISTER.md.
+
+**2. Prompt caching on the intent call.** Every call re-sent ~5,955 tokens
+of identical instructions/tools (~95% of its input). The base system prompt
+is now a cacheable block; measured through the real code path, a cache hit
+is ~81% cheaper (normal) / ~78% (Session Mode). Two design constraints: the
+cache key is the exact prefix, shared across ALL users; and Session Mode's
+per-turn suffix (saved rifles, last reading) must stay a separate block
+AFTER the breakpoint or it silently defeats the cache -- pinned by a test
+that asserts the cached block is byte-identical across turns while the
+dynamic one differs. The setup-extraction and calibration prompts (884-1,696
+tokens) are below Haiku 4.5's cacheable minimum and are left as they were.

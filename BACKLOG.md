@@ -113,6 +113,16 @@ three services already wired into Ballistica):
   tracker, confidence-gated reply policy — see pipeline-gap analysis above),
   not ongoing API spend.
 
+**Correction, 2026-09-19 (measured against the live API, see COST_MODEL.md):**
+the estimate above assumed ~1,200 input tokens per model call; the real
+figure is ~6,750 (system prompt + tool definitions re-sent on every call).
+The LLM line was underestimated 2-5x and the STT line overestimated 4-6x
+(only speech segments are sent, not open-mic minutes); the total happened to
+land near the old range. Corrected: **~$1.06 per Session Mode hour uncached,
+~$0.43 with prompt caching** (built 2026-09-19, ~80% off each model call). The
+conclusion that per-session API cost is small still holds; the composition
+did not.
+
 **Build-effort sizing — done 2026-09-05, corrects an error in the earlier
 pipeline-gap analysis above.** That analysis said continuous listening had
 "no prior art in the codebase" — wrong; `ballistica/web/index.html`'s
