@@ -216,7 +216,14 @@ monthly spend limits below remain the backstop.
    forever: ~0.4 KB/turn, harmless for a long time); pre-generate the fixed
    wake-word acknowledgement phrases instead of calling TTS each time.
 
-## What I couldn't verify (please confirm these)
+## What I couldn't verify
+
+**Deferred by Rick, 2026-09-23: the Render plan, Supabase tier, and custom
+email setup wait until the app has real users -- no action needed now.** The
+one thing to remember about that timing: custom SMTP has to be in place
+*before* the first real signups, not after, because Supabase's built-in email
+is limited to 2 per hour (verified) and signup confirmations beyond that fail.
+The list below stays as the record of what the model assumes.
 
 - **Your actual Render plan and price.** Render's pricing page wouldn't
   render for me. I assumed ~$7/mo + ~$0.25/GB disk. Your invoice is the

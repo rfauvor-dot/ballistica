@@ -739,33 +739,3 @@ would actually get written).
 
 **Owning lenses:** Build (schema + calibration-flow wiring, once
 scoped).
-
-
----
-
-## "I'm 12 inches to the right": correction from an observed miss
-
-**Raised:** found in Rick's 2026-09-23 range-test log (6:29 PM), not requested.
-After a 1000-yard solution he said "I'm 12 inches to the right" and then "Make
-a windage adjustment." The assistant chatted back ("Do you want me to
-calculate a windage correction for a specific distance?") -- there is no such
-command, so a natural range thing to say went to open-ended conversation and
-got nothing useful.
-
-**What:** turn an observed miss into a scope correction: "12 inches right at
-400 yards" -> the windage/elevation change in the active rifle's own unit and
-clicks. Pure geometry (inches / (range/100 x 1.047) = MOA; mils = inches /
-(range x 0.036)), then divided by the click value -- no ballistics needed, and
-the existing `report_for_point`/click machinery already speaks in the rifle's
-unit. The range could default to the last solution's range when not stated.
-
-**Needs a decision from Rick before building:** which direction the words mean.
-"12 inches to the right" is most likely *where the shot landed relative to the
-target*, so the dial correction is left; but it could also mean "my crosshair
-is 12 inches right of where I want to be." A wrong-way windage correction at
-the line is worse than no feature, so this should be confirmed (and probably
-read back: "Impact 12 inches right at 400 yards. Come left 0.8 mils, 8
-clicks?") rather than guessed.
-
-**Owning lenses:** Build (small, deterministic), Marketing (it's the thing a
-shooter actually does after every shot).

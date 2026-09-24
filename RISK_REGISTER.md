@@ -265,8 +265,11 @@ actual Render plan/price, Supabase Free-vs-Pro, whether custom SMTP is set up
 (the built-in email service is 2/hour, non-production), and the usage
 profiles, which are estimates until a real range-day log replaces them.
 
-**Next step:** Rick confirms the unverified inputs; re-run the model once a
-real conversation log is available.
+**Next step:** re-run the model once a real conversation log is available.
+**Rick deferred (2026-09-23) confirming the Render plan, Supabase tier, and
+custom SMTP until the app has real users** -- deliberately not open work now.
+Timing note: custom SMTP must be set up before the first real signups (the
+built-in email service is 2 per hour, non-production).
 
 **Owning lens:** Finance.
 
