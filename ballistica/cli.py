@@ -429,6 +429,86 @@ _EARLIER_READING_REF_RE = re.compile(
 _MIN_PLAUSIBLE_FPS = 400.0
 _MAX_PLAUSIBLE_FPS = 5000.0
 
+# --- Fixes from Rick's real 2026-09-23 range-style test log -------------
+# Thousands separators: speech-to-text writes "1,000 yards" and "2,750". A
+# bare regex then read "000 yards" as a zero-yard solution, and would read
+# "2,750" as a 750 fps shot. Only a 1-3 digit group followed by comma-plus-
+# exactly-three-digit groups counts, so "1150, 1162" (a list) and "1150,1162"
+# are left alone.
+_THOUSANDS_COMMA_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?!\d)")
+
+
+def _normalize_spoken_numbers(text: str) -> str:
+    return _THOUSANDS_COMMA_RE.sub(lambda m: m.group().replace(",", ""), text)
+
+
+# Plausible ranges for the numeric setup fields (min, max, unit words). A
+# speech-to-text slip must never become saved data: "one oh seven" came back
+# as "1.07" and a 1.07-grain bullet was saved. Deliberately wide -- these
+# catch a mis-transcription, not an unusual load (a 17 gr .17 HMR bullet and
+# a 750 gr .50 BMG bullet both pass).
+_SETUP_BOUNDS = {
+    "bullet_weight_gr": (10.0, 1000.0, "grains", "a bullet weight"),
+    "muzzle_velocity_fps": (300.0, 5000.0, "feet per second", "a muzzle velocity"),
+    "bc": (0.03, 1.5, "", "a ballistic coefficient"),
+    "zero_distance_yd": (5.0, 2000.0, "yards", "a zero distance"),
+    "powder_charge_gr": (0.2, 400.0, "grains", "a powder charge"),
+    "scope_height_in": (0.3, 8.0, "inches", "a scope height"),
+    "barrel_length_in": (2.0, 50.0, "inches", "a barrel length"),
+}
+
+
+def _out_of_range(fields: dict) -> list[str]:
+    """Spoken descriptions of any numeric field outside _SETUP_BOUNDS."""
+    problems = []
+    for name, value in fields.items():
+        bounds = _SETUP_BOUNDS.get(name)
+        if bounds is None or not _is_real_value(value):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        low, high, unit, label = bounds
+        if not (low <= number <= high):
+            problems.append(f"{number:g} {unit}".strip() + f" doesn't sound like {label}")
+    return problems
+
+
+# Backing out of a setup: "delete that load and let's start over", "cancel
+# it". The old anchored regex only caught an utterance that STARTED with
+# cancel/never mind/stop, so at the "Sound right?" step three natural ways of
+# saying it fell through to a field answer and hit the three-strikes stop.
+# Capped at a short utterance so a long answer that merely mentions one of
+# these words (a note about a load) is never mistaken for it.
+_SETUP_RESTART_RE = re.compile(r"\b(start over|start again|begin again|from scratch|redo (?:it|this|that))\b")
+_SETUP_ABANDON_RE = re.compile(
+    r"\b(cancel(?: it| that| this)?|scrap(?: it| that| this)?|delete (?:that|this|it)|"
+    r"throw (?:that|this|it) (?:out|away)|forget (?:that|this|it)|never ?mind|abort)\b"
+)
+_SETUP_NEW_SAME_KIND_RE = re.compile(r"^(?:let's |lets |okay |ok )?(?:do |start |make )?(?:a |another )?new (load|rifle)\b")
+_SETUP_BACKOUT_MAX_WORDS = 9
+
+# The house style is plain ASCII (the reply is spoken and shown); the model
+# still slips in em dashes and curly quotes, which show up as garbage in
+# logs and can be read oddly by text-to-speech.
+_ASCII_SPEECH_MAP = str.maketrans({
+    "\u2014": " -- ", "\u2013": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2026": "...",
+})
+
+
+def _ascii_speech(text: str) -> str:
+    return re.sub(r" {2,}", " ", text.translate(_ASCII_SPEECH_MAP))
+
+
+# A calibration reading that's really a distance ("distance 400 yards").
+_DISTANCE_MENTION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:yd|yds|yards?)\b|\b(?:distance|range)\b")
+# A saved velocity average this spread out (as a share of the average) is
+# almost certainly a bad reading in the set, not real dispersion -- real
+# strings run a few percent at most.
+_MAX_TRUSTED_SPREAD_FRACTION = 0.25
+_WARN_SPREAD_FRACTION = 0.05
+
 
 class _SessionLog:
     """Session Mode's running record of a range session: which rifle/load
@@ -788,7 +868,7 @@ class BallisticaCLI:
         return False
 
     def handle(self, text: str) -> str:
-        t = text.strip()
+        t = _normalize_spoken_numbers(text.strip())
         if not t:
             return ""
         low = t.lower()
@@ -952,12 +1032,42 @@ class BallisticaCLI:
                 return self._repeat("elevation")
             return self._repeat("solution")
 
+        # "Can you switch to a new rifle?" (real range test, 2026-09-23):
+        # "switch" plus "new rifle" used to fall into the setup regexes just
+        # below and start a brand-new-rifle interview, when the shooter meant
+        # another rifle they already have. The two readings are opposites
+        # (one adds data, one doesn't), so ask instead of guessing -- and
+        # reuse the switch disambiguation gate so the very next answer
+        # ("the AR-15") resolves against the real list.
+        m = re.search(r"\bswitch\b.*\b(?:a |another )?new (rifle|load)\b", low)
+        if m:
+            if m.group(1) == "rifle":
+                names = list(self.store.rifles.keys())
+                if not names:
+                    return "No rifles saved yet -- say 'new rifle' to set one up."
+                self._pending_rifle_switch = names
+                self._pending_rifle_switch_at = time.time()
+                return (f"Which rifle do you want to switch to -- {', '.join(names)}? "
+                        f"Or say 'set up a new rifle' to add one.")
+            try:
+                names = list(self.store.get_active_rifle().loads.keys())
+            except ValueError:
+                names = []
+            if not names:
+                return "No loads saved on this rifle yet -- say 'new load' to set one up."
+            self._pending_load_switch = names
+            self._pending_load_switch_at = time.time()
+            return (f"Which load do you want to switch to -- {', '.join(names)}? "
+                    f"Or say 'set up a new load' to add one.")
+
         # Start a guided voice interview for a brand new load/rifle --
         # deliberately distinct from "switch to <name>" above, which only
-        # ever selects among loads/rifles that already exist.
-        if re.search(r"\b(?:new|add|set ?up|create)\b.*\bload\b", low):
+        # ever selects among loads/rifles that already exist. "Load setup" /
+        # "rifle setup" (noun order, said aloud by Rick 2026-09-23) used to
+        # miss this and go through the slower, confirm-gated LLM path.
+        if re.search(r"\b(?:new|add|set ?up|create)\b.*\bload\b|\bload\s+set ?up\b", low):
             return self._start_setup("load", t)
-        if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b", low):
+        if re.search(r"\b(?:new|add|set ?up|create)\b.*\brifle\b|\brifle\s+set ?up\b", low):
             return self._start_setup("rifle", t)
 
         if not session_reading and _looks_like_calibration_command(low):
@@ -975,6 +1085,19 @@ class BallisticaCLI:
 
         m = re.search(r"switch rifle to (.+)", low)
         if m:
+            return self._switch_rifle(m.group(1).strip())
+
+        # "Now just switch rifles, the AR-15 Faxon 20 inch" (real range
+        # test, 2026-09-23): the target follows "rifles" with no "to", so the
+        # exact-phrase pattern above missed it, it fell through to the LLM,
+        # which answered from stale conversational memory instead of
+        # switching. Any phrasing of "switch (to the) rifle(s) [to] <name>"
+        # is unambiguous; with no name after it, it still falls through so
+        # the LLM can ask which one.
+        m = re.search(
+            r"\bswitch(?:\s+(?:me|us|over))*\s+(?:to\s+)?(?:the\s+)?rifles?\b[\s,]*"
+            r"(?:to\s+|over to\s+)?(?:the\s+|my\s+)?(.+)", low)
+        if m and m.group(1).strip():
             return self._switch_rifle(m.group(1).strip())
 
         m = re.search(r"switch to (.+)", low)
@@ -1130,12 +1253,22 @@ class BallisticaCLI:
                 return "Didn't understand that. Type 'help' for supported commands."
             return self._apply_session_observation(args, original_text)
         if name == "converse":
-            reply = str(args.get("reply") or "").strip()
+            reply = _ascii_speech(str(args.get("reply") or "")).strip()
             if not reply:
                 return "Didn't understand that. Type 'help' for supported commands."
             self._remember_chat_turn(original_text, reply)
             return reply
         return self._status()  # only get_status left
+
+    def _forget_chat_history(self) -> None:
+        """Clears the open-ended conversation memory. Called whenever the
+        active rifle/load or a saved value changes: that memory can hold a
+        reply that STATED the old state ("you've got the AR-15 active"), and
+        the model was confirmed to repeat it 22 minutes and several changes
+        later (real range test, 2026-09-23: "You're already on the AR-15"
+        while actually on a different rifle). Cheaper and safer than
+        trying to detect which remembered sentences went stale."""
+        self._chat_history = []
 
     def _remember_chat_turn(self, user_text: str, reply: str) -> None:
         """Appends one exchange to the rolling conversational-memory
@@ -1186,6 +1319,7 @@ class BallisticaCLI:
             return (f"I'm not finding exactly one load matching '{query}' on the "
                     f"{rifle.name} -- here's what's saved: {listed}. Which one do you want?")
         self.store.save()
+        self._forget_chat_history()
         return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
 
     def _resolve_pending_choice(self, candidates: list[str], text: str) -> str | None:
@@ -1310,6 +1444,7 @@ class BallisticaCLI:
             self._pending_rifle_switch_at = time.time()
             return f"That could be {', '.join(names)}. Which one do you mean?"
         self.store.save()
+        self._forget_chat_history()
         switched = f"Switched you over to the {rifle.name}."
         if new_load_fields:
             return f"{switched} {self._begin_setup_from_fields('load', new_load_fields)}"
@@ -1406,6 +1541,9 @@ class BallisticaCLI:
         updates = {k: v for k, v in fields.items() if k in valid and _is_real_value(v)}
         if not updates:
             return "Didn't catch a specific field to change there -- try again?"
+        problems = _out_of_range(updates)
+        if problems:
+            return f"{problems[0].capitalize()}, so I changed nothing. Say it again?"
         try:
             self.store.update_load_fields(rifle.name, load.name, **updates)
             self.store.save()
@@ -1464,6 +1602,7 @@ class BallisticaCLI:
             self._pending_delete = None
             self.store.delete_rifle(name)
             self.store.save()
+            self._forget_chat_history()
             return f"Deleted the {name}."
         self._pending_delete = None
         return "Okay, keeping it."
@@ -1601,10 +1740,10 @@ class BallisticaCLI:
     def _setup_summary(self) -> str:
         d = self._setup.draft
         if self._setup.kind == "load":
-            base = (f"Here's what I've got -- {d['name']}: {d['bullet_weight_gr']:.0f} grain, "
+            base = (f"Here's what I've got -- {d['name']}: {d['bullet_weight_gr']:g} grain, "
                     f"ballistic coefficient {d['bc']}, {d['drag_model']} drag model, "
                     f"{d['muzzle_velocity_fps']:.0f} feet per second, "
-                    f"zeroed at {d['zero_distance_yd']:.0f} yards.")
+                    f"zeroed at {d['zero_distance_yd']:g} yards.")
         else:
             base = f"Here's what I've got -- {d['name']}, scope height {d['scope_height_in']:g} inches."
         return f"{base}{self._extras_summary()} Sound right?"
@@ -1620,6 +1759,7 @@ class BallisticaCLI:
                 rifle.add_load(load, make_active=True)
                 self.store.save()
                 self._setup = None
+                self._forget_chat_history()
                 return f"Saved -- you're on the {load.name} now."
             # The one authoritative point click_value gets converted to
             # true mrad -- see _normalize_click_value()'s docstring.
@@ -1636,6 +1776,7 @@ class BallisticaCLI:
             self.store.add_rifle(rifle, make_active=True)
             self.store.save()
             self._setup = None
+            self._forget_chat_history()
             return f"Saved -- switched you to the {rifle.name}."
         except (ValueError, TypeError) as exc:
             # Deliberately don't clear self._setup here -- the draft is
@@ -1651,6 +1792,21 @@ class BallisticaCLI:
             kind = self._setup.kind
             self._setup = None
             return f"Okay, scrapped the new {kind}. Nothing saved."
+
+        # Backing out in natural words (see _SETUP_ABANDON_RE). "Start over"
+        # restarts the same kind; the rest scrap the draft. Short utterances
+        # only, except that at the "Sound right?" step "new load"/"new rifle"
+        # of the same kind can only mean start over.
+        if len(low.split()) <= _SETUP_BACKOUT_MAX_WORDS:
+            kind = self._setup.kind
+            if _SETUP_RESTART_RE.search(low) or (
+                self._setup.confirming and (m := _SETUP_NEW_SAME_KIND_RE.match(low)) and m.group(1) == kind
+            ):
+                self._setup = None
+                return f"Okay, starting the {kind} over. " + self._start_setup(kind).replace("Alright, ", "", 1)
+            if _SETUP_ABANDON_RE.search(low):
+                self._setup = None
+                return f"Okay, scrapped the new {kind}. Nothing saved."
 
         if self._setup.confirming:
             no_m = _CONFIRM_NO_RE.match(low)
@@ -1693,8 +1849,15 @@ class BallisticaCLI:
         if self._setup.kind == "rifle":
             valid = valid | {"click_value"}
         before = dict(self._setup.draft)
+        implausible: list[str] = []
         if fields:
-            self._setup.draft.update({k: v for k, v in fields.items() if k in valid and _is_real_value(v)})
+            accepted = {k: v for k, v in fields.items() if k in valid and _is_real_value(v)}
+            # A mis-transcribed number ("one oh seven" -> 1.07) is dropped
+            # here, before it can reach the draft, and asked about instead.
+            implausible = _out_of_range(accepted)
+            for name in [n for n in accepted if _out_of_range({n: accepted[n]})]:
+                del accepted[name]
+            self._setup.draft.update(accepted)
 
         # "No progress" -- not just "fields came back empty" -- is the real
         # failure signal: a correction that overwrites an existing field
@@ -1707,6 +1870,8 @@ class BallisticaCLI:
                 self._setup = None
                 return (f"Having trouble understanding you -- stopping the {kind} setup for now. "
                         f"Say 'new {kind}' when you want to try again.")
+            if implausible:
+                return f"{implausible[0].capitalize()}. Say it again?"
             return "Didn't catch any details there -- try again?"
         self._setup.failed_attempts = 0
 
@@ -1779,7 +1944,33 @@ class BallisticaCLI:
         spread = max(shots) - min(shots) if len(shots) > 1 else 0.0
         return avg, spread
 
+    def _shot_problem(self, shot_fps: float) -> str | None:
+        """Why a spoken reading can't be a real chronograph shot, or None.
+        The real 2026-09-23 test recorded "Distance 400 yards" as a 400 fps
+        shot and the shooter then saved the resulting 2,358 fps average as
+        the load's velocity. A reading is refused if it's outside the
+        plausible range at all, or wildly off the book velocity or the shots
+        already read -- never merely flagged and kept."""
+        if not (_MIN_PLAUSIBLE_FPS <= shot_fps <= _MAX_PLAUSIBLE_FPS):
+            return f"{shot_fps:g} doesn't sound like a velocity, so I didn't log it."
+        anchors = []
+        try:
+            _, _, load = self.solver()
+            anchors.append(("the book velocity", load.muzzle_velocity_fps))
+        except ValueError:
+            pass
+        if len(self._calibration.shots) >= 2:
+            anchors.append(("your other shots", sum(self._calibration.shots) / len(self._calibration.shots)))
+        for label, reference in anchors:
+            if reference and not (0.5 * reference <= shot_fps <= 2.0 * reference):
+                return (f"{shot_fps:g} is way off {label}, {reference:.0f}, so I didn't log it. "
+                        f"Say it again if that's right.")
+        return None
+
     def _record_shot(self, shot_fps: float) -> str:
+        problem = self._shot_problem(shot_fps)
+        if problem:
+            return problem
         prior = self._calibration.shots
         outlier_note = ""
         # Flag only a genuinely dramatic reading, not ordinary shot-to-shot
@@ -1801,6 +1992,11 @@ class BallisticaCLI:
     def _finalize_calibration(self) -> str:
         avg, spread = self._calibration_stats()
         n = len(self._calibration.shots)
+        # Refuse to save an average that obviously contains a bad reading.
+        if avg and spread / avg > _MAX_TRUSTED_SPREAD_FRACTION:
+            self._calibration.confirming = False
+            return (f"Not saving -- a spread of {spread:.0f} on an average of {avg:.0f} means a bad reading "
+                    f"got in. Say discard that to drop the last shot, or cancel to throw the session out.")
         load = self.store.update_load_velocity(
             self._calibration.rifle_name, self._calibration.load_name, avg,
         )
@@ -1808,6 +2004,7 @@ class BallisticaCLI:
         load.notes = f"{load.notes} {chrono_note}".strip() if load.notes else chrono_note
         self.store.save()
         self._calibration = None
+        self._forget_chat_history()
         return f"Saved -- {load.name} is now {avg:.0f} feet per second."
 
     def _handle_calibration_turn(self, text: str) -> str:
@@ -1831,6 +2028,15 @@ class BallisticaCLI:
             self._calibration.confirming = False
             # Falls through -- most likely one more shot came in after
             # "end calibration" was said a beat too early.
+
+        # A distance is not a shot (real test, 2026-09-23: "Distance 400
+        # yards" was logged as a 400 fps shot). Checked before the number
+        # match below, and not counted as a failed attempt -- it's a
+        # perfectly clear request that just isn't a velocity.
+        if _DISTANCE_MENTION_RE.search(low) and re.search(r"\d", low):
+            self._calibration.failed_attempts = 0
+            return ("That sounds like a distance, not a velocity. Read me the next shot, "
+                    "or say end calibration first.")
 
         # Unanchored (2026-09-07, was re.match(r"^...") -- anchoring to
         # the very start missed "That's all, finish shooting.", a real
@@ -1867,7 +2073,21 @@ class BallisticaCLI:
         # a number," identically to genuine noise/silence. Same fast-path-
         # then-LLM-fallback pattern extract_intent() already uses elsewhere,
         # applied to the one modal flow that didn't have it yet.
-        classification = classify_calibration_turn(text)
+        result = classify_calibration_turn(text)
+        # Accepts either a bare name (older callers/stubs) or (name, args).
+        classification, class_args = result if isinstance(result, tuple) else (result, {})
+        if classification == "record_shot":
+            # A reading said in words ("twenty-seven fifty") or split
+            # ("27-25") that no digit regex can see -- the model only
+            # transcribes it to a number; the same plausibility gate as any
+            # typed reading decides whether it's accepted.
+            try:
+                shot = float(class_args.get("velocity_fps"))
+            except (TypeError, ValueError):
+                shot = None
+            if shot is not None:
+                self._calibration.failed_attempts = 0
+                return self._record_shot(shot)
         if classification == "end_calibration":
             return self._request_end_calibration()
         if classification == "discard_last_shot":
@@ -1894,7 +2114,10 @@ class BallisticaCLI:
             return "No shots recorded yet -- read me at least one first."
         self._calibration.confirming = True
         avg, spread = self._calibration_stats()
-        return (f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}. "
+        warning = ""
+        if avg and spread / avg > _WARN_SPREAD_FRACTION:
+            warning = " That spread is wide -- if a reading was a mistake, say discard that first."
+        return (f"{len(self._calibration.shots)} shots, average {avg:.0f}, spread {spread:.0f}.{warning} "
                 f"Save as the new velocity for the {self._calibration.load_name}?")
 
     def _discard_last_shot(self) -> str:
@@ -2235,6 +2458,12 @@ class BallisticaCLI:
         return f"Wind: {self.wind.speed_mph:.0f} mph @ {self.wind.clock_deg / 30:g} o'clock"
 
     def _drop_at(self, range_yd: float) -> str:
+        # "Solution, 0 yards. Elevation, up 0.0 mils" (real range test,
+        # 2026-09-23, from a "1,000" the comma-splitter turned into 0) read
+        # back as if it were an answer. No real request is for zero yards;
+        # a solution that looks valid but isn't is the worst kind of reply.
+        if range_yd <= 0:
+            return "I didn't catch a distance -- say it again."
         solver, rifle, load = self.solver()
         point = solver.at_range(load.zero_distance_yd, range_yd)
         r = report_for_point(point, rifle.click_value_mrad)

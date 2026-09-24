@@ -622,7 +622,9 @@ _CALIBRATION_SYSTEM_PROMPT = (
     "the average/to wrap up (e.g. 'that's ten shots', 'I think that's "
     "good', 'that's enough', 'stop there', 'go ahead and save it'); they "
     "want to throw out the last shot; they want to abandon calibration "
-    "entirely without saving; or none of the above (small talk, unrelated "
+    "entirely without saving; they read a velocity that isn't plain digits "
+    "(spelled out or split, e.g. 'twenty-seven fifty', '27-25') -- convert "
+    "it to the whole number; or none of the above (small talk, unrelated "
     "question, genuinely unclear noise/mistranscription)."
 )
 
@@ -645,6 +647,19 @@ _CALIBRATION_TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "record_shot",
+        "description": "The shooter read a chronograph velocity that isn't written as plain digits: "
+                        "spelled out ('twenty-seven fifty' = 2750, 'twenty seven twenty five' = 2725, "
+                        "'eleven fifty-two' = 1152) or split ('27-25' = 2725). velocity_fps is the whole "
+                        "number in feet per second. Never use this for a distance in yards, and never "
+                        "guess digits you can't make out -- use unclear instead.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"velocity_fps": {"type": "number"}},
+            "required": ["velocity_fps"],
+        },
+    },
+    {
         "name": "unclear",
         "description": "Doesn't match any of the above and isn't a shot number either.",
         "input_schema": {"type": "object", "properties": {}},
@@ -652,11 +667,12 @@ _CALIBRATION_TOOLS = [
 ]
 
 
-def classify_calibration_turn(text: str) -> str | None:
-    """Returns one of "end_calibration"/"discard_last_shot"/
-    "cancel_calibration"/"unclear", or None on an outright API failure
-    (network/auth) -- distinct from a clean "unclear", same distinction
-    extract_intent() makes for the same reason."""
+def classify_calibration_turn(text: str) -> tuple[str, dict] | None:
+    """Returns (name, args) where name is one of "end_calibration"/
+    "discard_last_shot"/"cancel_calibration"/"record_shot"/"unclear" (args
+    is {"velocity_fps": n} for record_shot, else {}), or None on an outright
+    API failure (network/auth) -- distinct from a clean "unclear", same
+    distinction extract_intent() makes for the same reason."""
     try:
         client = get_anthropic_client()
         response = client.messages.create(
@@ -668,7 +684,8 @@ def classify_calibration_turn(text: str) -> str | None:
             tool_choice={"type": "any"},
         )
         spend.record_llm(getattr(response, "usage", None))
-        return _first_tool_use(response).name
+        block = _first_tool_use(response)
+        return block.name, dict(block.input)
     except (anthropic.AnthropicError, TypeError, IndexError, AttributeError):
         logger.exception("classify_calibration_turn failed for %r", text)
         return None

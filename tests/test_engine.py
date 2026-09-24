@@ -1595,8 +1595,10 @@ def test_converse_reply_gets_spoken_and_remembered(monkeypatch, tmp_path):
     ]
 
     # A real command (fast regex path, no LLM call at all) must not add
-    # anything to the conversational-memory buffer.
-    cli.handle("switch to 21.0gr")
+    # anything to the conversational-memory buffer. A drop solution is used
+    # here because it changes no saved state -- a switch would (correctly)
+    # clear the buffer instead; see test_switching_clears_stale_chat_memory.
+    cli.handle("drop at 400 yards")
     assert len(cli._chat_history) == 2
 
 

@@ -64,7 +64,8 @@ mid-string at the line or at the bench setting things up.
 | Say | What happens |
 |---|---|
 | "switch to 23.5gr H335" / "switch to my heavier load" | Changes the active **load** on the current rifle (fuzzy match — natural descriptions work via the LLM fallback, not just exact names) |
-| "switch rifle to AR-15 20in Faxon" | Changes the active **rifle** (checked before the plain "switch to" pattern, so "switch rifle to X" never gets misread as a load switch) |
+| "switch rifle to AR-15 20in Faxon" / "switch rifles, the AR-15" / "switch me to the rifle 6mm" | Changes the active **rifle** (checked before the plain "switch to" pattern, so "switch rifle to X" never gets misread as a load switch). Any phrasing of "switch (to the) rifle(s) [to] <name>" works (added 2026-09-23) |
+| "switch to a new rifle" / "switch to a new load" | Asks **which one you already have** (and offers "set up a new rifle" to add one) instead of starting a setup — "switch" plus "new" is ambiguous (added 2026-09-23) |
 | "change rifles" / "switch loads" (no name given) | Asks which one you mean (added 2026-09-18) — previously this got misread as a status question and just re-read back whatever was already active, which looked exactly like the switch request had been ignored |
 
 **Quirk worth knowing:** this only *selects among rifles/loads that
@@ -107,6 +108,8 @@ until it's confirmed or cancelled — including "quit"/"exit", which
 **cancel the interview** in this state rather than doing anything to the
 app itself (see the quit/exit note in §9).
 
+- **Backing out (added 2026-09-23):** at any point, "cancel", "never mind", "scrap that", "delete that", "forget it" scrap the draft; "start over" (or, at the "Sound right?" step, "new load" / "new rifle") restarts the same setup from the first question. Only short utterances count, so a long answer that merely mentions one of those words is treated as an answer.
+- **Numbers are sanity-checked (added 2026-09-23):** a value that can't be right — a 1.07-grain bullet, a 27 fps muzzle velocity, a BC of 5.47, a zero at 0 yards — isn't saved; it asks again ("1.07 grains doesn't sound like a bullet weight. Say it again?"). This catches speech-to-text slips ("one oh seven" heard as "1.07") without limiting real, unusual loads (17 gr through 750 gr all pass). The read-back speaks weights exactly (107.5 grain, not 108).
 - **Required fields** (load: name, bullet weight, BC, drag model,
   muzzle velocity, zero distance; rifle: name, scope height, optic type)
   can't be skipped — the interview keeps asking.
@@ -174,7 +177,10 @@ dialog instead of a spoken confirmation.
 | Say | What happens |
 |---|---|
 | "start calibration" / "let's chrono this load" / "true up the velocity on this one" | Starts a live session for the **active** load, states its current book velocity, and asks for shots |
-| a number (e.g. "2650") | Records one shot velocity, gives a running average; numbers must be 3–5 digits (100–99999) — a much shorter or longer number won't register as a shot reading. Only the **first** number in the utterance counts if you read more than one in one breath |
+| a number (e.g. "2650", "2,650", or spoken: "twenty-six fifty", "26-50") | Records one shot velocity and gives a running average. Digits are read directly; spoken or split numbers are understood by the assistant (added 2026-09-23). Only the **first** number in the utterance counts if you read more than one in one breath |
+| a distance ("distance 400 yards") | **Not** a shot — it's refused with "That sounds like a distance, not a velocity" and nothing is logged (before 2026-09-23 it was logged as a 400 fps shot) |
+
+**A reading is refused, not just flagged, if it can't be a real shot:** outside 400–5,000 fps, or less than half / more than double the book velocity or your shots so far. At save time, a wide spread gets a warning ("if a reading was a mistake, say discard that first"), and a spread over 25% of the average **won't save at all** — say "discard that" to drop the last shot, or "cancel." (These came from a real test where a distance was logged as a shot and the resulting 2,358 average was saved.)
 | "average" | States shot count, average, and spread so far without ending the session |
 | "discard that" / "throw out" / "toss" / "scratch that" / "bad reading" | Removes the **most recently read** shot |
 | "end calibration" / "that's it" / "we're done" / "finished" | Reads back count/average/spread and asks to confirm saving it as the load's new velocity |

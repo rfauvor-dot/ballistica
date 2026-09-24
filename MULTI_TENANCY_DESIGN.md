@@ -2544,3 +2544,85 @@ including per-user isolation, day rollover with an injected clock, cost
 recorded when handling raises, and no database or Claude call for an
 over-budget user; plus the real end-to-end run described in COST_MODEL.md, and
 the page's handling of both 429 kinds in the browser.
+
+
+---
+
+## 34. Real range-test log review: six fixes, two of them silent data corruption (2026-09-23)
+
+Rick ran a range-style test on 2026-09-23 (6:06-6:30 PM, 75 turns: a rifle
+setup, two load setups, five drop solutions, a chronograph calibration, and
+a switch) and downloaded the per-turn conversation log from the new account-
+menu button. Reading all 75 turns end to end found six real defects; every
+fix below has a regression test that replays the actual turn
+(`tests/test_range_log_fixes.py`). Note what the log did NOT contain: not one
+`log_session_observation` turn -- the Session Mode tracker (§31) still has
+not been used with a real voice.
+
+**Silent data corruption (the ones that mattered):**
+1. *A distance was saved as a chronograph shot.* Mid-calibration, "Distance
+   400 yards" matched the shot regex on "400", logged "Shot 6, 400 -- that
+   one's an outlier. Average 2358", and the shooter then confirmed "Finish"
+   and "Yes" -- saving 2,358 fps as the load's muzzle velocity. The outlier
+   flag existed but only flagged; the reading was still kept, and the
+   confirm step's "spread 2375" was the only tell. Now: a distance mention
+   is never a shot; a reading outside 400-5,000 fps or under half / over
+   double the book velocity or the shots so far is REFUSED, not flagged; a
+   spread over 5% of the average warns at the confirm step; over 25% refuses
+   to save (the session stays open so the bad shot can be discarded).
+2. *A speech-to-text slip was saved as a bullet weight.* "One oh seven" came
+   back as "1.07"; the read-back said "1 grain" (it formatted with `.0f`,
+   rounding the evidence away); it was confirmed and saved. Now: numeric
+   setup fields (and voice edits of saved loads) are bounded -- deliberately
+   wide, so a 17 gr and a 750 gr bullet both pass -- and an out-of-range value
+   is dropped and asked about; weights are read back exactly.
+
+**Wrong or fake answers:**
+3. *"1,000 yards" produced "Solution, 0 yards. Elevation, up 0.0 mils".* The
+   thousands comma split the number; `\d+ yards` matched "000". The same
+   comma would have logged "2,750" as a 750 fps shot. Now numbers with
+   thousands separators are joined before any routing (only a 1-3 digit
+   group followed by comma-plus-three-digit groups, so a spoken list like
+   "1150, 1162" is untouched), and a zero-yard request is refused rather than
+   answered.
+4. *Stale conversational memory contradicted reality.* "Switch rifles, the
+   AR-15 Faxon 20 inch" fell through to the model, which said "You're already
+   on the AR-15" -- true at 6:06, false at 6:28 after a new rifle had been
+   saved and activated. The open-ended chat memory held the 6:06 reply. Now the
+   memory is cleared whenever saved state changes (switch, save, calibration
+   save, delete). The exact-phrase switch pattern also missed the phrasing
+   entirely; any "switch (to the) rifle(s) [to] <name>" now routes directly.
+
+**Friction:**
+5. *Couldn't back out of a setup at "Sound right?".* "Delete that load and
+   let's start over" and "Delete that load. Cancel it." fell through to a
+   field answer twice and hit the three-strikes stop on the third ("New
+   load"). The cancel pattern was anchored to the start of the utterance.
+   Now natural ways of backing out work in short utterances, and "start
+   over" / "new load" at the confirm step restarts the same setup.
+   Separately, "Can you switch to a new rifle?" started a new-rifle
+   interview; "switch" plus "new" is ambiguous, so it now asks which existing
+   rifle (reusing the switch disambiguation gate).
+6. *Spoken numbers weren't understood in calibration.* "Twenty-seven fifty"
+   and "27-25" answered "Didn't catch a number there", forcing a repeat in
+   digits, three times in one string. The calibration fallback classifier
+   gained a `record_shot` tool that converts spelled-out or split readings to
+   a number -- and the reading then goes through the same plausibility gate as
+   a typed one. Verified against the real model: 13 phrases from the log x 4
+   samples each all correct, including refusing "Distance 400 yards" and the
+   pressure-signs chatter.
+
+Smaller: "Load setup" / "rifle setup" (noun order) now hit the fast path instead
+of the confirm-gated LLM route; model replies are sanitized to plain ASCII
+(em dashes were showing as garbage in the log and may be read oddly by TTS).
+
+**What went right, worth keeping:** the reloading-safety boundary held ("I
+wonder if I could bump up the powder" got "Worth checking your reloading
+manual..." with no number and no reassurance); turn latency was fine (regex
+turns 42-236 ms, model turns ~0.7-1.5 s, save/confirm turns 2-3 s from the
+database writes).
+
+**Design lesson, same as §31:** all three data-corruption bugs were a value
+that looked plausible and was accepted because the only check was "is it a
+number". The fix in each case is a refusal by deterministic code, not a
+better prompt.
