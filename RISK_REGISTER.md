@@ -230,11 +230,25 @@ lenses' actual authority to resolve.
 
 ## Reliability Under Real Range Conditions
 
-**Status:** Mixed. STT has been substantially improved (gpt-4o-transcribe +
-domain prompt) and the VAD/silence-detection bugs from earlier addenda are
-fixed, but none of it has been stress-tested against gunfire noise, wind
-noise, or multiple people talking near the mic. The Bluetooth click fix
-(Addendum 30) is deployed but not yet confirmed against real hardware.
+**Status (corrected 2026-09-24):** Largely verified in the field. This entry
+used to say none of it had been stress-tested against gunfire, wind, or
+other people talking; Rick corrected that -- he and Mark tested at a real
+range with guns going off on both sides while talking to it, and Ballistica
+"did pretty well" (his report; he is the final verifier for range
+behavior). The record agrees range testing happened: real range sessions on
+2026-09-05 (the first real-voice Session Mode run) and the 2026-09-06 range
+retest, and the noise-related bugs those turned up were found and fixed
+(near-empty-clip hallucination, mid-sentence pause truncation, mic
+lifecycle/Bluetooth renegotiation, and the transcription-echo filter for
+speech-to-text repeating its own hint list on near-silent clips -- the
+2026-09-07 log still shows that failure before the filter existed). STT is
+gpt-4o-transcribe with a domain prompt.
+
+**What is still unverified with a real voice:** only the pieces built after
+those sessions -- the Session Mode tracker (2026-09-19: rifle/load switching
+and reading logging from plain narration), the mute control, and voice-start
+of Session Mode. The Bluetooth click fix (Addendum 30) was noted as not yet
+confirmed against real hardware; not re-checked here.
 
 **Why it matters:** This is a live-fire tool used outdoors in genuinely
 noisy conditions -- the gap between "works in a quiet test" and "works at
