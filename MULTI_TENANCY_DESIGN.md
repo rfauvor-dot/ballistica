@@ -2626,3 +2626,72 @@ database writes).
 that looked plausible and was accepted because the only check was "is it a
 number". The fix in each case is a refusal by deterministic code, not a
 better prompt.
+
+
+---
+
+## 35. Target-photo measurement -- the camera side, without a scope (2026-09-24)
+
+**Why now.** The scope rig (phone + Tridaptor + PVC spacer) proved fussy, and
+the GoPro/TriggerCam path costs money Rick doesn't want to spend yet. But what
+Ballistica *does* with a picture doesn't depend on how the picture was taken.
+So the measuring half was built first, on the simplest possible input: a photo
+of a paper target after a string (up close, or zoomed from the bench).
+
+**What was built.**
+- `ballistica/target.py` -- the algorithms. A printable US Letter sheet
+  (`render_sheet`, `render_sheet_pdf`) carries four ArUco (DICT_4X4_50) corner
+  markers of a known 1.00 in size. A photo containing >=3 of them gets a
+  homography to a rectified 200 px/in sheet (exact scale, camera angle removed);
+  holes are dark blobs against a large-window median background; overlapping
+  holes are pulled apart with k-means on the blob pixels (k from area and
+  elongation) and flagged. Without markers ("free mode") the scale is estimated
+  from hole size vs the bullet diameter and labeled +/-25%. `group_stats` gives
+  center-to-center extreme spread (in/MOA/mil), mean radius, outside spread, and
+  the group center's offset from the aim point in neutral words.
+- Endpoints (`api.py`): `GET /target-sheet.pdf` (public, static),
+  `POST /v2/target/analyze` (login, 10/min, 12 MB, header-checked pixel cap of
+  40 MP *before* decoding -- a 200 MP phone photo would otherwise expand past
+  500 MB), `POST /v2/target/group` (login, recompute from the shooter's edited
+  hole list). CPU only, so no spend-budget interaction; nothing is stored.
+- Web UI: "Target photo" panel; the photo is downscaled client-side to 3200 px,
+  the result is drawn zoomed on the group, tap a hole to remove / tap paper to
+  add, live recompute, undo.
+- `requirements.txt`: `opencv-python` -> `opencv-python-headless` (a server has
+  no display; the full package needs libGL).
+
+**Decisions worth remembering.**
+1. *The ring and crosshair are printed light gray (190), not black.* The first
+   version used solid black, and a 40-group random test miscounted 22: a hole
+   through solid black is dark-on-dark and invisible, and masking the printed
+   ink to compensate cut holes near the crosshair into fragments. With light
+   gray no ink masking is needed at all and the same test went to 40/40. The
+   cost is that the ring is fainter to aim at.
+2. *Dial directions are deliberately not produced.* Offsets are reported as
+   "right/left, high/low of the aim point". Turning that into "dial up N clicks"
+   needs the turret direction convention and whether the correction is to POI
+   or POA; a wrong-way instruction at the line is worse than none.
+3. *The shooter confirms the hole list.* Detection is honest about its limits
+   (below), so the UI makes correction one tap and computes numbers from the
+   confirmed list.
+
+**Verified how.** 63 tests (`tests/test_target.py`, `tests/test_target_api.py`)
+on synthetic photos with known truth; a 40-group randomized sweep (3-8 holes,
+random tilt/rotation/blur/noise/lighting), then fresh seeds to avoid fitting
+the seed I tuned on: ~96% exact counts at >=0.2 in spacing, ~75% at ~0.13 in
+(holes overlapping by more than half), positions within ~0.01 in. The served
+PDF was rendered by an independent reader (PyMuPDF): one 8.5x11 in page, all
+four markers decode, marker edge 0.993 in. The web panel was driven in the
+browser pane against a local harness with auth overridden (real panel code,
+login screen bypassed): analyze -> zoomed overlay -> tap-remove (group
+1.25 -> 0.71 in) -> tap-add -> undo x2 back to 1.25 in, no console errors.
+
+**What is NOT verified.** No real photo has been run. Everything above is
+simulated; glare, ragged holes, light backers, printer scaling and shadows are
+the expected sources of surprises (RISK_REGISTER: "Target-photo measurement").
+Not verified on production either (deploy pending at the time of writing).
+
+**Design lesson, same as §31/§34, in a new place:** the first blob filter
+kept only round shapes, which silently discarded exactly the tight groups this
+feature exists to measure (merged holes are never round). Test the case that
+matters most, not just the easy one.

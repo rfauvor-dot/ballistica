@@ -324,6 +324,34 @@ value once Render's header behavior is confirmed.
 
 ---
 
+## Target-photo measurement: validated on synthetic photos only (2026-09-24)
+
+**What:** `ballistica/target.py` measures groups from photos. Every accuracy
+number for it (hole positions within ~0.01 in; ~96% of random groups counted
+exactly when holes are at least 0.2 in apart, ~75% when they overlap by more
+than half) comes from *simulated* photos -- the real printed sheet with holes
+drawn in, then perspective, blur, noise and lighting applied. No real target
+photo has been run through it yet. Real photos will differ (glare on paper,
+torn or ragged holes, light-colored backers, printer scaling, shadows).
+
+**Why it matters:** a group size that is quietly wrong is worse than none --
+a shooter could pick a load on it. Mitigations built in: the sheet's markers
+fix the scale; a hole-size sanity check warns when the print scale or caliber
+looks wrong; overlapping-hole splits are flagged; the shooter confirms the hole
+list (tap to add/remove) before numbers are shown; approximate (no-sheet)
+measurements are labeled +/-25%.
+
+**Open:** (1) run real photos and tune thresholds (needs Rick's photos, ideally
+a ruler in frame as ground truth); (2) the light-gray aiming ring is a design
+tradeoff -- fainter to aim at, but a hole through solid black would be
+invisible (a black ring made 22 of 40 random groups miscount); (3) the
+`/v2/target/analyze` CPU cost (~2-3 s per photo) is bounded only by the
+10/minute per-user limit and the 12 MB cap, not the spend budget.
+
+**Owning lens:** Build.
+
+---
+
 ## How this gets used
 
 - Reviewed whenever a decision touches cost, infrastructure, data model,

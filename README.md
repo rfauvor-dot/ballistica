@@ -19,6 +19,8 @@ ballistica/
   units.py          unit conversion constants and helpers
   cli.py             text REPL exercising the intended voice query patterns
   api.py             HTTP API wrapping the engine (see "API" below)
+  target.py          target-photo measurement: printable sheet, hole finding, group stats
+                     (OpenCV; see MULTI_TENANCY_DESIGN.md section 35 for what is and isn't verified)
 tests/test_engine.py  validation suite (see below)
 data/profiles.json    profile storage (created on first run, gitignored)
 ```

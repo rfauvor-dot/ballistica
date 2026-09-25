@@ -374,6 +374,19 @@ live shooting, but this is a distinct guided-teaching workflow, not an
 automatic environmental correction. Sequencing/scope against that other
 camera feature not yet decided.
 
+**Update 2026-09-24 -- the measuring half now exists, without a scope.**
+[ballistica/target.py](ballistica/target.py) + the "Target photo" panel find
+bullet holes in a phone photo of a paper target (printable sheet with four
+ArUco corner markers -> exact inches) and report where the group sits
+relative to the aim point in plain inches ("0.7 in right, 0.4 in low").
+What is deliberately NOT built: turning that into "dial N clicks up" -- a
+wrong-way instruction at the line is worse than none, so the direction
+convention (turret click direction, and whether the shooter is correcting
+POI or POA) is left for a walkthrough that asks the shooter, not
+automation. What remains for the walkthrough itself: the guided dialogue,
+tying it to the rifle's click value, and single-shot (one-hole) offsets,
+which the current code already returns.
+
 **Owning lenses:** Build (camera integration + guided-dialogue script,
 once scoped), Marketing (a real differentiator -- teaching correct
 technique, not just computing a number, is a meaningfully different

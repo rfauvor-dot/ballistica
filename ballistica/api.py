@@ -41,6 +41,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -60,6 +61,7 @@ from .profiles import Load, Rifle
 from .reporting import report_for_point
 from .supabase_auth import verify_token
 from .supabase_store import SupabaseProfileStore
+from . import target as target_photo
 from .trajectory import TrajectorySolver, WindCondition
 from .waiver import (
     WAIVER_ACKNOWLEDGMENT_TEXT, WAIVER_SECTIONS, WAIVER_TEXT_SHA256, WAIVER_TITLE, WAIVER_VERSION,
@@ -1579,3 +1581,89 @@ def v2_calc_drop_at_range(
     )
     point = solver.at_range(load.zero_distance_yd, req.range_yd)
     return RangeReportOut(**report_for_point(point, rifle.click_value_mrad).__dict__)
+
+
+# --------------------------------------------------------------------------
+# Target photos (2026-09-24). No scope needed: photograph a paper target after
+# a string, upload it, get the holes and the group back. CPU only (no paid API),
+# so the bounds are size + rate, not the daily spend budget. Photos are processed
+# in memory and never stored. See ballistica/target.py for what is and isn't
+# claimed about accuracy.
+# --------------------------------------------------------------------------
+_TARGET_MAX_UPLOAD_BYTES = 12_000_000
+_target_pdf_cache: bytes | None = None
+
+
+@app.get("/target-sheet.pdf", include_in_schema=False)
+def target_sheet_pdf():
+    """The printable Ballistica target sheet: US Letter, four corner markers.
+    Public and static (identical for everyone). Must be printed at 100%."""
+    global _target_pdf_cache
+    if _target_pdf_cache is None:
+        _target_pdf_cache = target_photo.render_sheet_pdf(300)
+    return Response(
+        content=_target_pdf_cache, media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="ballistica-target-sheet.pdf"',
+                 "Cache-Control": "public, max-age=3600"},
+    )
+
+
+def _target_group_payload(holes: list[tuple[float, float]], distance_yd: float,
+                          aim_in: tuple[float, float] | None, bullet_in: float | None) -> dict:
+    return target_photo.group_stats(holes, distance_yd, aim_in, bullet_in)
+
+
+@app.post("/v2/target/analyze")
+@limiter.limit("10/minute")
+async def v2_target_analyze(
+    request: Request, image: UploadFile = File(...),
+    distance_yd: float = Form(..., gt=0, le=3000),
+    bullet_diameter_in: float | None = Form(None, ge=0.1, le=0.6),
+    caliber: str | None = Form(None, max_length=60),
+    marker_size_in: float = Form(1.0, ge=0.5, le=1.5),
+    auth: tuple[str, str] = Depends(_verify_bearer),
+) -> dict:
+    """Find the bullet holes in a photo of a target and measure the group.
+    Uses the Ballistica sheet's corner markers when visible (exact inches) and
+    otherwise estimates the scale from the bullet size. Returns the holes so
+    the app can show them for the shooter to confirm/correct, plus a corrected
+    picture (rectified, JPEG, base64) to draw them on."""
+    import base64
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > _TARGET_MAX_UPLOAD_BYTES + 100_000:
+        raise HTTPException(status_code=413, detail="Photo too large (max 12 MB).")
+    raw = await image.read(_TARGET_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > _TARGET_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Photo too large (max 12 MB).")
+    try:
+        img = target_photo.decode_image(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    bullet = bullet_diameter_in or target_photo.caliber_inches(caliber)
+    result = await run_in_threadpool(target_photo.analyze_photo, img, distance_yd, bullet, marker_size_in)
+    holes = [dataclasses.asdict(h) for h in result.holes]
+    stats = None
+    if result.scale_ppi:      # without a scale the coordinates are pixels, not inches: no group math
+        stats = _target_group_payload([(h.x_in, h.y_in) for h in result.holes], distance_yd, result.aim_in, bullet)
+    return {
+        "mode": result.mode, "scale_ppi": result.scale_ppi, "markers_found": result.markers_found,
+        "bullet_diameter_in": bullet, "holes": holes, "aim_in": result.aim_in,
+        "warnings": result.warnings, "stats": stats,
+        "overlay_jpeg_b64": base64.b64encode(result.overlay_jpeg).decode("ascii") if result.overlay_jpeg else None,
+        "overlay_ppi": result.overlay_ppi,
+    }
+
+
+class TargetGroupIn(BaseModel):
+    holes: list[tuple[float, float]] = Field(..., max_length=200)     # inches, x right, y down
+    distance_yd: float = Field(..., gt=0, le=3000)
+    aim_in: tuple[float, float] | None = None
+    bullet_diameter_in: float | None = Field(None, ge=0.1, le=0.6)
+
+
+@app.post("/v2/target/group")
+@limiter.limit("60/minute")
+def v2_target_group(request: Request, body: TargetGroupIn, auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """Recompute the group measurements from the hole list the shooter has
+    confirmed (after tapping to add/remove holes). Pure arithmetic."""
+    return _target_group_payload(body.holes, body.distance_yd, body.aim_in, body.bullet_diameter_in)

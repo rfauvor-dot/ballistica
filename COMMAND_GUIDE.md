@@ -432,6 +432,29 @@ for the range. As of this cutover, it requires signing in first.
   you're on cached data rather than a live fetch. Voice mode, editing a
   rifle/load, and chronograph calibration all need a connection and
   won't work offline — only the manual distance/solution path does.
+- **Target photo (added 2026-09-24):** the "Target photo (measure a
+  group)" panel on the main screen measures a group from a picture — no
+  scope or camera rig needed. Photograph a paper target after a string
+  (phone camera, taken up close, or zoomed from the bench), pick the
+  photo, enter the distance and caliber, tap **Find holes**. Ballistica
+  marks every hole it found; **tap a hole to remove it, tap bare paper to
+  add one it missed** (orange circles are overlapping holes it pulled
+  apart — check those). The group size (inches, MOA, mil, outside-edge),
+  the average distance from the group's center, and where the group's
+  center sits relative to the aim point ("0.7 in right, 0.4 in low of
+  the aim point") update as you edit. **For exact inches, print the
+  Ballistica target sheet** (link in the panel, or `/target-sheet.pdf`;
+  US Letter, print at 100% / Actual size, hang with the title edge up) and
+  keep all four black corner squares in the photo — they fix the scale and
+  correct for camera angle. Without the sheet the scale is only an
+  estimate from the bullet size (±25%) and is labeled approximate. Photos
+  are processed in memory and never stored. Ballistica reports offsets
+  neutrally and does **not** tell you which way to turn a knob: which
+  direction moves the impact is for you to confirm at the line.
+  **Known limits:** holes that overlap by more than half can hide each
+  other (that's why you can tap to fix); the ring and crosshair on the
+  sheet are light gray on purpose so a hole through them still shows.
+  Accuracy is so far checked only on simulated photos, not real ones.
 
 ---
 
