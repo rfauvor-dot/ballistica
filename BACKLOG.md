@@ -692,10 +692,7 @@ new ballistic math needed -- only a new way to supply the angle input.
 **Hardware note:** this needs a camera ON THE RIFLE (reading the
 level-to-reticle relationship at the moment of aim), a different
 physical context from the stand-mounted target-facing rig being built
-for phase 1. Gives the already-purchased TriggerCam 2.1 -- currently
-sitting in reserve for "some future rifle-mounted feature," see
-[[project_scopemate_focus_procedure]] -- a real, fitting job once
-phase 2 starts.
+for phase 1. Gives a rifle-mounted scope camera a concrete future job. (Correction 2026-09-24: the TriggerCam 2.1 this used to name as already purchased was never bought -- Rick declined the ~$600 price. What he actually has is a GoPro Hero 11 Black; see [[project_scopemate_focus_procedure]]. Camera choice for phase 2 is open.)
 
 **Not scoped as an actual build yet**, and explicitly not next in line
 -- phase 1 (stand-mounted scope camera) comes first per Rick's own
