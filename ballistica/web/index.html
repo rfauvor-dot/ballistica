@@ -3158,9 +3158,15 @@ tgtEl('tgtCanvas').addEventListener('click', (ev) => {
   const cv = tgtEl('tgtCanvas'), rect = cv.getBoundingClientRect();
   const px = (ev.clientX - rect.left) * cv.width / rect.width + tgt.crop.x0, py = (ev.clientY - rect.top) * cv.height / rect.height + tgt.crop.y0;
   const k = tgt.overlayPpi;
+  // Real report, 2026-09-27: a shooter marking a very tight overlapping group -- exactly the case
+  // tap-to-add exists for -- taps close together to place several rounds inside one ragged hole, and
+  // this radius (previously padded well past the drawn circle) kept catching the PREVIOUS tap and
+  // removing it instead of adding a new nearby one. Tightened to a bit under the drawn circle's own
+  // radius, so removal still only needs a normal tap near a circle, but two adds 15-20px apart no
+  // longer collide.
   let hit = -1, best = Infinity;
   tgt.holes.forEach((h, i) => {
-    const d = Math.hypot(h.x * k - px, h.y * k - py), reach = Math.max(14, (h.d || 0.22) * k / 2 + 8);
+    const d = Math.hypot(h.x * k - px, h.y * k - py), reach = Math.max(9, (h.d || 0.22) * k / 2 * 0.55);
     if (d < reach && d < best) { best = d; hit = i; }
   });
   tgt.undo.push(JSON.stringify(tgt.holes));
