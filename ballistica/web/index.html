@@ -3125,6 +3125,7 @@ function tgtDraw() {
 async function tgtRender(stats, warnings) {
   tgtDraw();
   if (stats === undefined) stats = await tgtRecompute();
+  if (stats === TGT_STALE) return;  // a newer edit already landed; don't clobber it with an old answer
   const el = tgtEl('tgtStats'); el.textContent = '';
   const line = (label, value) => { const d = document.createElement('div'); const b = document.createElement('strong'); b.textContent = label + ' '; d.appendChild(b); d.appendChild(document.createTextNode(value)); el.appendChild(d); };
   if (!tgt.holes.length) { el.textContent = 'No holes marked.'; }
@@ -3144,14 +3145,28 @@ async function tgtRender(stats, warnings) {
   }
 }
 
+// Real report, 2026-09-27: correcting a group with many taps in a row fired off that many overlapping
+// recompute requests, and an older one's response landing AFTER a newer one overwrote the display with
+// stale numbers -- the drawn circles (always redrawn synchronously, so always current) showed the real,
+// tightly-clustered group, but the text below it showed leftover stats from a state several edits back.
+// A sequence number makes only the MOST RECENTLY ISSUED request's response ever allowed to land.
+const TGT_STALE = Symbol('stale');
+let tgtRecomputeSeq = 0;
+
 async function tgtRecompute() {
   if (!tgt.hasScale || !tgt.holes.length) return null;
+  const seq = ++tgtRecomputeSeq;
   try {
-    return await api('/target/group', {
+    const result = await api('/target/group', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ holes: tgt.holes.map((h) => [h.x, h.y]), distance_yd: tgt.distance, aim_in: tgt.aim, bullet_diameter_in: tgt.bulletIn }),
     });
-  } catch (e) { flash(tgtEl('tgtError'), e.message, 6000); return null; }
+    return seq === tgtRecomputeSeq ? result : TGT_STALE;
+  } catch (e) {
+    if (seq !== tgtRecomputeSeq) return TGT_STALE;
+    flash(tgtEl('tgtError'), e.message, 6000);
+    return null;
+  }
 }
 
 tgtEl('tgtCanvas').addEventListener('click', (ev) => {
