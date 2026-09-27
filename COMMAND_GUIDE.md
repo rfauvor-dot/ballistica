@@ -454,7 +454,11 @@ for the range. As of this cutover, it requires signing in first.
   **Known limits:** holes that overlap by more than half can hide each
   other (that's why you can tap to fix); the ring and crosshair on the
   sheet are light gray on purpose so a hole through them still shows.
-  Accuracy is so far checked only on simulated photos, not real ones.
+  **Real-world check (2026-09-27):** a real 4-target, 20-round range test
+  landed within a tenth of an inch of a hand tape measurement on 3 of 4
+  targets; the 4th had three rounds landing essentially in one hole
+  (indistinguishable to the naked eye up close, not just to the camera) --
+  a real limit of measuring from a photo at all, not a software defect.
 
 ---
 

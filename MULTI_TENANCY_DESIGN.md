@@ -2695,3 +2695,128 @@ Not verified on production either (deploy pending at the time of writing).
 kept only round shapes, which silently discarded exactly the tight groups this
 feature exists to measure (merged holes are never round). Test the case that
 matters most, not just the easy one.
+
+
+---
+
+## 36. Target-photo real-world validation: 5 bugs found and fixed in one range test (2026-09-27)
+
+**What happened.** Rick shot four 5-round groups at 36 yards on printed
+Ballistica sheets (T1, T2, T3, T4), photographed each with a phone, and
+worked through them in the app -- the first real photos the feature had ever
+seen (built 2026-09-24 on synthetic photos only, §35). Every synthetic test
+still passed the whole time; every bug below was invisible to simulation and
+only showed up on real photos or real use.
+
+**Bug 1 -- the printed ring read as extra holes.** Real outdoor lighting
+darkened part of the light-gray aiming ring enough to cross the
+darkness-detection threshold, and it got split into fake holes. Masking the
+ring/crosshair by GEOMETRY (not by how dark they looked) fixed Rick's first
+photo -- but two more of his photos broke that fix two different ways before
+it held: a wider false-lit arc (fixed by requiring a real fraction of a
+blob's area to sit outside the ignore region, not just any touch), then a
+third photo whose false arc still had enough area outside the mask to pass
+that fraction check. What actually separated every real hole from every
+false ring trigger, measured across all three photos, was absolute darkness:
+real holes read near-black (0-41 gray); the ring's false triggers, however
+much real lighting darkened them, never got below ~108. The final fix checks
+that outside-the-ignore-region pixels are genuinely hole-dark (<=90), not
+just relatively dark. Lesson: one real photo confirming a fix is one data
+point, not proof -- real lighting varies photo to photo.
+
+**Bug 2 -- tap-to-add collided with the previous tap.** Correcting a tight,
+mostly-overlapping group (exactly what tap-to-add exists for) meant tapping
+several times close together. The hit-test radius for "is this tap on an
+existing hole" was padded well past the drawn circle, so a tap meant to add
+a new, nearby point landed within that radius of the tap before it and
+deleted it instead -- the count got stuck at the same number no matter how
+many more taps were made. Tightened the hit-test radius to just under the
+drawn circle's own radius: removal still just needs a normal tap on a
+circle, but two adds 15-20px apart no longer collide. Verified live in the
+browser pane: three taps 15px apart went 5->6->7->8 instead of the observed
+5->6->5->6.
+
+**Bug 3 -- stale stats after several quick edits.** Correcting T1's group
+meant many taps in a row, each firing an async request to recompute the
+group's stats. Nothing sequenced the responses, so an older request landing
+after a newer one overwrote the display with outdated numbers -- the drawn
+circles (always redrawn synchronously, so always current) showed the real,
+tightly-clustered 5-hole group, but the text below it showed 2.31 in from
+several edits back, off by more than 3x from Rick's own tape measurement.
+Fixed with a sequence number: a response is only applied if it's still the
+most recently issued request when it resolves; a superseded one is silently
+discarded. Verified live with an artificially delayed older request (400ms)
+landing after a faster newer one (50ms) -- confirmed the display no longer
+regressed.
+
+**Bugs 4 & 5 -- unrelated, found the same day from the same real range
+session's conversation log (not the camera feature, but the voice engine):
+see §37 for the wrong-silent-rifle-switch and stuck-confirm-loop fixes.**
+Noted here only because they came from the same real-world test and the same
+lesson applies: real use finds what simulation can't.
+
+**Real-world accuracy, once the bugs above were fixed (RISK_REGISTER.md has
+the table):** T4, T1, and T2 all landed within a tenth of an inch of Rick's
+own tape measurement. T3 -- three rounds in what Rick himself called
+indistinguishable-by-eye, essentially one hole -- was off by 0.15 in, a real
+physical limit of measuring from a photo (or a tape) at all, not a software
+defect.
+
+**Design lesson, continuing §31/§34/§35's pattern:** every one of these five
+bugs was a value that looked plausible and got accepted, or a UI action that
+looked like it worked, because the only thing checking it was too weak, too
+narrow, or (bug 3) not checked at all. Real use is what finds the gap
+between "passes the tests I wrote" and "survives someone actually using it."
+
+
+---
+
+## 37. Real range-test log review: a wrong silent rifle switch and a 3-minute stuck loop (2026-09-27)
+
+**What happened.** Rick's actual voice conversation log from his 2026-09-27
+range session (the same session behind §36) showed him stuck for over three
+minutes (8:57-9:00 AM) unable to switch back to his own rifle, and traced
+back to a switch that happened silently to the WRONG rifle a few minutes
+earlier despite him explicitly declining it.
+
+**Bug 1 -- "Neither" got matched anyway.** Offered three ambiguous rifles,
+Rick said "Neither, we're still doing velocity checks on the AR-15 20-inch
+Faxon." The disambiguation matcher found that his sentence and one offered
+candidate ("5.7X28 **11 inch**") shared exactly one word -- "inch," from his
+own "20-**inch**" -- and treated that single shared word as confident enough
+to switch him to it, though nothing else in the sentence pointed there and
+he had just declined all three. Fixed two ways: "neither"/"none (of them/
+those)" now decline immediately, before any fuzzy matching runs; and a bare
+unit word or number can no longer be the SOLE basis for a fuzzy match --
+`_WEAK_EVIDENCE_WORDS` in cli.py -- a real distinguishing word is still
+required.
+
+**Bug 2 -- no way out of a stale confirm.** Now on the wrong rifle, every
+later "switch to the AR-15 20-inch Faxon" (said five different ways over
+three minutes) was forced against a stale, single-candidate list left over
+from an earlier, unrelated turn ("5.7 by 28") and never recognized as the
+fresh command it plainly was. The 2026-09-05 fix that lets a clear new
+top-level request break out of a modal setup/calibration session (see §
+on that date) only ever covered those two sessions -- never extended to the
+shorter single-turn confirm gates (rifle switch, load switch, delete,
+calibration-start, setup-start, session-save). Same state-machine gap, same
+fix, now applied uniformly to all of them.
+
+**Also fixed:** "switch to X" defaults to a LOAD switch unless the word
+"rifle" is said. Rick named a rifle without saying "rifle"; when nothing on
+the current rifle's loads matches but the name matches exactly one saved
+RIFLE instead, `_switch_load` now falls back to switching the rifle rather
+than asking him to pick from loads he never named.
+
+**Verified:** live on production against the CI fixture account (two rifles
+that collide on "inch," reproducing the exact failure shape) before telling
+Rick it was safe to log his session's orphaned 4th chrono reading (2768 fps,
+stranded mid-incident, confirmed his by elimination -- too fast for the
+5.7x28 it landed on, consistent with his other three Faxon readings). 11 new
+regression tests replaying the actual turns; full suite 356 passed at the
+time.
+
+**Design lesson:** the same pattern as §36 -- a value that looked plausible
+(one shared word) was accepted because the only check was too weak, and a
+modal-escape fix built for two sessions quietly never covered the other six
+that needed it too.

@@ -324,15 +324,28 @@ value once Render's header behavior is confirmed.
 
 ---
 
-## Target-photo measurement: validated on synthetic photos only (2026-09-24)
+## Target-photo measurement: real-world validated (2026-09-24, real photos 2026-09-27)
 
-**What:** `ballistica/target.py` measures groups from photos. Every accuracy
-number for it (hole positions within ~0.01 in; ~96% of random groups counted
-exactly when holes are at least 0.2 in apart, ~75% when they overlap by more
-than half) comes from *simulated* photos -- the real printed sheet with holes
-drawn in, then perspective, blur, noise and lighting applied. No real target
-photo has been run through it yet. Real photos will differ (glare on paper,
-torn or ragged holes, light-colored backers, printer scaling, shadows).
+**What:** `ballistica/target.py` measures groups from photos. Originally
+validated on simulated photos only (see MULTI_TENANCY_DESIGN.md §35); a real
+4-target, 20-round range test on 2026-09-27 (§36) found and fixed five real
+bugs invisible to every simulated photo, then confirmed the tool against
+Rick's own tape measurements on all four targets:
+
+| Target | Holes | App outside edge | Tape | Gap |
+|---|---|---|---|---|
+| T4 | 5 | 0.95 in | 1 in | 0.05 in |
+| T1 | 5 | 0.71 in | 0.625 in | 0.085 in |
+| T2 | 5 | 1.04 in | 1.125 in | 0.085 in |
+| T3 | 5 | 0.59 in | 0.4375 in | 0.15 in (see below) |
+
+Three of four landed within a tenth of an inch of a hand tape measurement.
+The fourth (T3) had three rounds landing in what was, by Rick's own
+description, essentially one hole -- indistinguishable to the naked eye up
+close, not just to the camera. That is a real, physical limit of measuring
+group size from a photo (or from a tape) at all, not a defect in the code;
+synthetic testing already documented it as an expected limitation (~75%
+exact count on holes overlapping by more than half).
 
 **Why it matters:** a group size that is quietly wrong is worse than none --
 a shooter could pick a load on it. Mitigations built in: the sheet's markers
@@ -341,12 +354,23 @@ looks wrong; overlapping-hole splits are flagged; the shooter confirms the hole
 list (tap to add/remove) before numbers are shown; approximate (no-sheet)
 measurements are labeled +/-25%.
 
-**Open:** (1) run real photos and tune thresholds (needs Rick's photos, ideally
-a ruler in frame as ground truth); (2) the light-gray aiming ring is a design
-tradeoff -- fainter to aim at, but a hole through solid black would be
-invisible (a black ring made 22 of 40 random groups miscount); (3) the
-`/v2/target/analyze` CPU cost (~2-3 s per photo) is bounded only by the
-10/minute per-user limit and the 12 MB cap, not the spend budget.
+**Bugs the real test found (fixed and deployed same day, see §36 for full
+detail):** the printed ring read as extra holes under real lighting (needed
+two rounds of fixing once a second and third real photo broke the first
+fix); the tap-to-add tool's hit-test radius made a second close-together tap
+delete the first instead of adding a new one, blocking exactly the
+overlapping-group correction workflow the feature exists for; and a race
+condition let an older network response overwrite a newer one's on-screen
+numbers after several quick taps.
+
+**Open:** (1) the light-gray aiming ring is a design tradeoff -- fainter to
+aim at, but a hole through solid black would be invisible (a black ring made
+22 of 40 random groups miscount); (2) the `/v2/target/analyze` CPU cost
+(~2-3 s per photo) is bounded only by the 10/minute per-user limit and the
+12 MB cap, not the spend budget; (3) more real photos at longer distances
+(300 yd+) would further validate the common case, where holes are expected
+to be well separated rather than the tight/overlapping groups this first
+test happened to produce at 36 yd.
 
 **Owning lens:** Build.
 
