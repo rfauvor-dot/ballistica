@@ -484,6 +484,14 @@ Verified absent from the code, not just undocumented:
   described above (table, minimum-spread zero, angle-solving) — they're
   just voice/CLI-only now, reached through `/v2/voice/query`'s natural-
   language routing rather than a dedicated calc endpoint.
+- **No way to confirm a scope adjustment actually happened.** When
+  Ballistica says "3 clicks right, 2 up," it has no sensor on the turret
+  and no way to know whether you dialed that in or not (Rick's own
+  observation, 2026-09-27: "don't know if they did this from their
+  Christmas tree"). It has to assume the adjustment was made and the
+  crosshairs are back on the aim point. A live scope-camera feed reading
+  the turret or reticle directly (the parked spotting-scope-rig idea)
+  is the only way to close that gap; voice guidance alone can't.
 
 ---
 
