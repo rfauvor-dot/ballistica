@@ -249,7 +249,9 @@ _ORDINAL_CHOICE_WORDS = {
     "third": 2, "3rd": 2,
     "fourth": 3, "4th": 3,
 }
-_CANCEL_WORD_RE = re.compile(r"^(cancel|never ?mind|stop|abort|forget it|quit|exit)\b")
+_CANCEL_WORD_RE = re.compile(
+    r"^(cancel|never ?mind|stop|abort|forget it|quit|exit|neither|none(?: of (?:them|those))?)\b"
+)
 
 # Real report, 2026-09-18 (Rick's own words: "wind doesn't update" and "I
 # don't know she's actually hearing that"): the bare-yards fast path below
@@ -287,6 +289,12 @@ _EMBEDDED_WIND_RE = re.compile(
 # but keeping this list separate avoids coupling to a filler set tuned
 # for a different matching strategy.
 _DISAMBIGUATION_FILLER_WORDS = {"the", "a", "an", "it", "this", "that", "one"}
+# See _resolve_pending_choice(): a unit word or bare number is too common to
+# count as real evidence of which candidate an answer meant on its own.
+_WEAK_EVIDENCE_WORDS = {
+    "in", "inch", "inches", "mm", "cm", "yd", "yds", "yard", "yards",
+    "ft", "feet", "gr", "grain", "grains", "mph", "fps", "x",
+}
 
 _CALIBRATION_WORD_RE = re.compile(r"\bcalibrat(?:e|ion)\b|\bchrono(?:graph)?\b")
 # How far into the utterance "calibrate"/"chronograph" has to appear to
@@ -903,9 +911,31 @@ class BallisticaCLI:
         # start_load_setup, switch_rifle, drop-at-range, calibration)
         # exactly as-is -- nothing about how those commands themselves
         # work changes, only when they're allowed to fire.
-        if (self._setup is not None or self._calibration is not None) and self._requests_different_top_level_task(low):
+        # Real range-test log, 2026-09-27: this escape hatch only covered
+        # _setup/_calibration -- the shorter single-turn confirmation gates
+        # below (rifle switch, load switch, delete, calibration-start,
+        # setup-start, session-save) never got it. Confirmed live: stuck on
+        # a rifle-switch confirm that had drifted to the wrong candidate
+        # list, "switch to the AR-15 20-inch Faxon" was said five different
+        # ways over three minutes and every one was forced against that
+        # stale, unrelated list instead of being heard as a fresh command --
+        # the exact same state-machine gap the 2026-09-05 fix above closed
+        # for setup/calibration, just left open here. Same fix, same reason.
+        any_pending_confirm = (
+            self._pending_delete is not None or self._pending_rifle_switch is not None
+            or self._pending_load_switch is not None or self._pending_calibration_start
+            or self._pending_setup_kind is not None or self._pending_session_save is not None
+        )
+        if (self._setup is not None or self._calibration is not None or any_pending_confirm) \
+                and self._requests_different_top_level_task(low):
             self._setup = None
             self._calibration = None
+            self._pending_delete = None
+            self._pending_rifle_switch = None
+            self._pending_load_switch = None
+            self._pending_calibration_start = False
+            self._pending_setup_kind = None
+            self._pending_session_save = None
         # A guided load/rifle setup interview is modal: once it's running,
         # every utterance is directed at it (a field value, a correction,
         # or a way out) until it's confirmed or cancelled -- including
@@ -1306,6 +1336,18 @@ class BallisticaCLI:
         except KeyError:
             rifle = self.store.get_active_rifle()
             candidates = rifle.find_load_matches(query) or []
+            # Real range-test log, 2026-09-27: "switch to X" defaults to a LOAD
+            # switch (below), but Rick named a RIFLE ("switch to the AR-15
+            # 20-inch Faxon") without saying the word "rifle" -- with no load
+            # matching that name, this used to fall straight into asking him to
+            # pick from the current rifle's own loads, none of which were what
+            # he'd named, and every later attempt hit the same wall. If nothing
+            # on the current rifle matches but the name matches a saved RIFLE
+            # instead, that's what was actually meant -- switch to it.
+            if not candidates:
+                rifle_candidates = self.store.find_rifle_matches(query) or []
+                if len(rifle_candidates) == 1:
+                    return self._switch_rifle(rifle_candidates[0].name)
             options = candidates if candidates else list(rifle.loads.values())
             if not options:
                 return f"No loads saved yet on the {rifle.name}."
@@ -1356,9 +1398,16 @@ class BallisticaCLI:
         if answer_words:
             scored = []
             for c in candidates:
-                overlap = len(answer_words & set(re.findall(r"[a-z0-9]+", c.lower())))
-                if overlap:
-                    scored.append((overlap, c))
+                shared = answer_words & set(re.findall(r"[a-z0-9]+", c.lower()))
+                # Real range-test log, 2026-09-27: "Neither ... the AR-15 20-inch
+                # Faxon" got matched to a candidate named "... 11 inch" on the
+                # strength of the one word "inch" alone -- a measurement unit or
+                # a bare number is nearly guaranteed to show up by coincidence in
+                # any sentence with a caliber or barrel length in it, so it's not
+                # real evidence of which candidate was meant. A match needs at
+                # least one shared word that isn't just a unit/number.
+                if shared - _WEAK_EVIDENCE_WORDS - {w for w in shared if w.isdigit()}:
+                    scored.append((len(shared), c))
             if len(scored) == 1:
                 return scored[0][1]
             if len(scored) > 1:

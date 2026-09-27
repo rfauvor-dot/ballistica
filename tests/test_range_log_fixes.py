@@ -374,3 +374,108 @@ def test_converse_replies_are_plain_ascii(tmp_path, monkeypatch):
     reply = cli.handle("hello there friend")
     assert reply == 'That\'s me -- I\'m here. "Go ahead"...'
     assert reply.isascii()
+
+
+# ============================================================
+# 2026-09-27 range-test log: a wrong silent rifle switch, then a 3-minute
+# stuck loop (8:49 AM - 9:00 AM). See ballistica/cli.py, the comments at
+# _CANCEL_WORD_RE, _WEAK_EVIDENCE_WORDS, and the top of handle().
+# ============================================================
+
+def test_declining_a_disambiguation_with_neither_does_not_silently_switch(tmp_path):
+    """8:49-8:50 AM: offered 3 rifles, Rick said "Neither, we're still doing
+    velocity checks on the AR-15 20-inch Faxon." The old matcher found that
+    sentence and "5.7X28 11 inch" shared exactly one word -- "inch" -- and
+    took that as confident enough to switch him to it, though nothing else
+    in the sentence pointed there and he'd explicitly declined all three."""
+    import time
+    cli, store = _make(tmp_path)
+    active_before = store.get_active_rifle().name
+    cli._pending_rifle_switch = ["5.7X28 11 inch", "Smith & Wesson M&P 5.7x28 (PISTOL)", "CMMG 5.7x28"]
+    cli._pending_rifle_switch_at = time.time()
+    reply = cli.handle("Neither, we're still doing velocity checks on the AR-15 20-inch Faxon.")
+    assert reply == "Okay, never mind."
+    assert cli._pending_rifle_switch is None
+    assert store.get_active_rifle().name == active_before  # never silently switched
+
+
+def test_a_unit_word_alone_is_not_enough_to_resolve_a_disambiguation(tmp_path):
+    """Same root cause as above, isolated: "inch" (or a bare number) shared
+    with only one candidate used to be treated as confident evidence. A real
+    distinguishing word ("Wylde") still resolves; a unit/number alone no
+    longer does -- it re-asks instead of guessing."""
+    import time
+    cli, store = _make(tmp_path)
+    store.add_rifle(Rifle(name="Generic 16 inch", scope_height_in=2.0, click_value_mrad=0.1), make_active=False)
+    store.add_rifle(Rifle(name="Wylde 16 inch", scope_height_in=2.0, click_value_mrad=0.1), make_active=False)
+    cli._pending_rifle_switch = ["Generic 16 inch", "Wylde 16 inch"]
+    cli._pending_rifle_switch_at = time.time()
+    assert cli.handle("the wylde one") == "Switched you over to the Wylde 16 inch."
+    cli._pending_rifle_switch = ["Generic 16 inch", "Wylde 16 inch"]
+    cli._pending_rifle_switch_at = time.time()
+    reply = cli.handle("the 16 inch one")
+    assert "Didn't catch which one" in reply and cli._pending_rifle_switch is not None
+
+
+def test_a_fresh_switch_command_breaks_out_of_a_stale_confirm_gate(tmp_path):
+    """8:57-9:00 AM: stuck on a load-switch confirm offering only "5.7 by
+    28" (from an earlier, unrelated turn), every later "switch to the AR-15
+    20-inch Faxon" -- said five different ways over three minutes -- was
+    forced against that one stale candidate and never heard as the fresh
+    command it was. _requests_different_top_level_task's escape hatch used
+    to only cover setup/calibration; now it covers every single-turn
+    confirm gate too."""
+    import time
+    cli, store = _make(tmp_path)
+    cli._pending_load_switch = ["5.7 by 28"]
+    cli._pending_load_switch_at = time.time()
+    reply = cli.handle("Switch to the AR-15 20-inch Faxon.")
+    assert store.get_active_rifle().name == "AR-15 20-inch Faxon"
+    assert "Faxon" in reply
+    assert cli._pending_load_switch is None
+
+
+@pytest.mark.parametrize("pending_attr,at_attr,value", [
+    ("_pending_delete", "_pending_delete_at", "some rifle"),
+    ("_pending_rifle_switch", "_pending_rifle_switch_at", ["a", "b"]),
+    ("_pending_load_switch", "_pending_load_switch_at", ["a", "b"]),
+    ("_pending_calibration_start", "_pending_calibration_start_at", True),
+    ("_pending_setup_kind", "_pending_setup_at", "rifle"),
+    ("_pending_session_save", "_pending_session_save_at", [{"velocity_fps": 2750}]),
+])
+def test_every_single_turn_confirm_gate_yields_to_a_clear_new_command(tmp_path, pending_attr, at_attr, value):
+    """Generalizes the fix above: not just load-switch -- every one of these
+    single-turn gates now clears on an unambiguous different-task request
+    instead of trapping the shooter until they happen to match its narrow
+    prompt."""
+    import time
+    cli, _ = _make(tmp_path)
+    setattr(cli, pending_attr, value)
+    setattr(cli, at_attr, time.time())
+    cli.handle("switch rifle to 6mm arc test rifle")
+    assert getattr(cli, pending_attr) in (None, False)
+
+
+def test_naming_a_rifle_after_switch_to_falls_back_from_load_to_rifle(tmp_path):
+    """"switch to X" defaults to a LOAD switch (below). Rick named a rifle,
+    not a load, without saying the word "rifle" -- when nothing on the
+    current rifle's loads matches but the name matches exactly one saved
+    RIFLE, that's what was meant."""
+    cli, store = _make(tmp_path)
+    reply = cli.handle("switch to the AR-15 20-inch Faxon")
+    assert reply == "Switched you over to the AR-15 20-inch Faxon."
+    assert store.get_active_rifle().name == "AR-15 20-inch Faxon"
+
+
+def test_the_4th_orphaned_reading_scenario_is_now_prevented_end_to_end(tmp_path, monkeypatch):
+    """Full replay of the incident's shape: ambiguous switch offered, Rick
+    declines and states his real rifle in the same breath, then keeps
+    logging shots. With the fix, the decline is heard, nothing switches
+    silently, and a plain follow-up command still works normally."""
+    cli, store = _make(tmp_path)
+    store.set_active_rifle("AR-15 20-inch Faxon")
+    store.set_active_load("Sierra MatchKing")
+    cli._pending_rifle_switch = ["5.7X28 11 inch", "Smith & Wesson M&P 5.7x28 (PISTOL)", "CMMG 5.7x28"]
+    cli.handle("Neither, we're still doing velocity checks on the AR-15 20-inch Faxon.")
+    assert store.get_active_rifle().name == "AR-15 20-inch Faxon"
+    assert store.get_active_rifle().get_active_load().name == "Sierra MatchKing"
