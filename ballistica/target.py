@@ -242,12 +242,25 @@ def _dark_blobs(gray: np.ndarray, ppi: float | None, expected_d_in: float | None
     small = cv2.resize(g, (max(8, w // down), max(8, h // down)), interpolation=cv2.INTER_AREA)
     window = _odd(min(small.shape) // 6 if ppi is None else int(0.9 * ppi / down))
     bg = cv2.resize(cv2.medianBlur(small, min(window, 101)), (w, h), interpolation=cv2.INTER_LINEAR)
-    g_use = g.copy()
-    if ign is not None:
-        g_use[ign] = bg[ign]          # areas the caller knows are not target (markers, title): never dark
-    dark = bg.astype(np.int16) - g_use.astype(np.int16)
+    # `dark`/the threshold are computed from the TRUE image everywhere, including inside `ignore` --
+    # a real hole under the ring/crosshair is just as dark there as anywhere else, and using its real
+    # darkness (not a forced-neutral value) keeps the hole's true center and size. What `ignore` controls
+    # is which CONNECTED BLOBS are trusted: a blob is kept only if some part of it is dark outside the
+    # ignore region too. That lets a hole that happens to fall on the ring/crosshair through untouched,
+    # while a false trigger from the ring/crosshair itself (real lighting can darken light-gray ink enough
+    # to cross the threshold -- found 2026-09-27 on a real photo) never has genuine dark paper next to it
+    # and gets dropped.
+    dark = bg.astype(np.int16) - g.astype(np.int16)
     thr = np.maximum(40, (0.30 * bg).astype(np.int16))
-    mask = (dark > thr).astype(np.uint8)
+    mask_all = (dark > thr).astype(np.uint8)
+    if ign is not None:
+        core = mask_all & (~ign).astype(np.uint8)
+        n0, labels0 = cv2.connectedComponents(mask_all, connectivity=8)
+        keep = np.unique(labels0[core.astype(bool)])
+        keep = keep[keep != 0]
+        mask = np.isin(labels0, keep).astype(np.uint8) if keep.size else np.zeros_like(mask_all)
+    else:
+        mask = mask_all
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     blobs = []
@@ -364,14 +377,21 @@ def _decode_rectified(img_bgr: np.ndarray, marker_in: float):
 
 
 def _sheet_ignore_mask(shape: tuple[int, int], ppi: int, s: float) -> np.ndarray:
-    """Pixels of the rectified sheet outside the shot area (title, corner
-    markers, scale bar) -- never holes. The bull ring and crosshair are light
-    gray on purpose and need no masking."""
+    """Pixels of the rectified sheet that are never a hole: outside the shot
+    area (title, corner markers, scale bar), plus the printed ring and
+    crosshair -- masked by their known GEOMETRY, not by how dark they look.
+    (Found on a real photo, 2026-09-27: the light-gray ring is dark enough on
+    its own to read as paper, but real outdoor lighting can darken it enough
+    in one spot to cross the hole-darkness threshold, and that got split into
+    two fake holes. Geometry doesn't depend on lighting.)"""
     h, w = shape
     x0, y0, x1, y1 = (v * s * ppi for v in _SHOT_AREA_IN)
     outside = np.ones((h, w), np.uint8)
     outside[int(y0):int(y1), int(x0):int(x1)] = 0
-    return outside
+    guides = np.full((h, w), 255, np.uint8)
+    _draw_sheet_features(guides, int(round(ppi * s)))
+    guide_mask = cv2.dilate((guides < 255).astype(np.uint8), np.ones((7, 7), np.uint8))  # +/- blur/rectification slop
+    return np.maximum(outside, guide_mask)
 
 
 MAX_DECODE_PIXELS = 40_000_000     # a 200 MP phone photo would expand to >500 MB; the app downsizes first
