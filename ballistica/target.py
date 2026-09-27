@@ -254,11 +254,28 @@ def _dark_blobs(gray: np.ndarray, ppi: float | None, expected_d_in: float | None
     thr = np.maximum(40, (0.30 * bg).astype(np.int16))
     mask_all = (dark > thr).astype(np.uint8)
     if ign is not None:
+        # A real photo (2026-09-27) showed "touches core at all" isn't strict enough: real outdoor
+        # lighting didn't just nudge a sliver of the ring over threshold, it darkened whole arcs of
+        # it -- still nowhere near true hole-darkness, but enough to cross the LOCAL relative
+        # threshold over a wide enough area that a first attempt requiring only a small fraction of
+        # the blob to sit outside the ignore region (10%) still wasn't strict enough on a second real
+        # photo (measured 35% there). But every false ring/crosshair trigger measured across two real
+        # photos stayed a moderate gray (118-131); every real hole measured near-black (0-41), a >80
+        # gray-level gap. That is what actually distinguishes a hole from lit ink, so check darkness
+        # directly: a blob is trusted only if enough of its OUTSIDE-the-ignore-region pixels are dark
+        # enough to plausibly be a hole (not just "dark relative to the paper right next to it").
         core = mask_all & (~ign).astype(np.uint8)
-        n0, labels0 = cv2.connectedComponents(mask_all, connectivity=8)
-        keep = np.unique(labels0[core.astype(bool)])
+        n0, labels0, stats0, _ = cv2.connectedComponentsWithStats(mask_all, connectivity=8)
+        # Cutoff picked with margin from real measurements across two photos: every false ring/crosshair
+        # trigger's darkest pixel was >=108 gray; every real hole's was <=41. 90 sits well inside that gap.
+        core_and_hole_dark = core.astype(bool) & (g <= 90)
+        keep = np.unique(labels0[core_and_hole_dark])
         keep = keep[keep != 0]
-        mask = np.isin(labels0, keep).astype(np.uint8) if keep.size else np.zeros_like(mask_all)
+        # A handful of stray dark pixels (JPEG noise, a fleck of dirt) shouldn't validate a huge blob --
+        # require a real minimum, not just "at least one."
+        counts = np.bincount(labels0[core_and_hole_dark].ravel(), minlength=n0)
+        keep = [i for i in keep if counts[i] >= 12]
+        mask = np.isin(labels0, keep).astype(np.uint8) if keep else np.zeros_like(mask_all)
     else:
         mask = mask_all
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))

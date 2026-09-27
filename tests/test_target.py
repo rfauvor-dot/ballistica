@@ -298,3 +298,26 @@ def test_random_groups_are_counted_and_placed_correctly(sheet300, seed):
     r = target.analyze_photo(photo, 36, BULLET)
     assert len(r.holes) == n, r.warnings
     assert _match(r.holes, pts, 0.05) < 0.05
+
+
+def test_a_darkened_ring_arc_that_pokes_past_the_dilated_mask_is_still_rejected(sheet300):
+    """Regression, 2026-09-27: on a real photo, real-world lighting darkened a whole arc of the ring
+    to within the hole-darkness threshold, and its blur halo poked a few pixels past the geometric
+    mask's dilation -- just enough of a "core" touch to validate (and then k-means-split) the entire
+    arc as fake holes. Simulates that: an arc of the ring is drawn moderately dark (darker than the
+    ring's own gray, well short of true hole-black) and its neighborhood blurred, same as the real
+    failure shape, near an unrelated genuine single hole elsewhere."""
+    ax, ay = target.AIM_IN
+    sheet = sheet300.copy()
+    # Darken a ~60-degree arc of the ring to a moderate gray (not hole-black) with a soft blurred edge,
+    # mimicking uneven real-world lighting across part of the ring.
+    overlay = sheet.copy()
+    cv2.ellipse(overlay, (int(ax * 300), int(ay * 300)), (int(1.0 * 300), int(1.0 * 300)),
+               0, 200, 260, 130, thickness=int(0.12 * 300) + 10)
+    sheet = cv2.addWeighted(sheet, 0.0, overlay, 1.0, 0)
+    sheet = cv2.GaussianBlur(sheet, (0, 0), 3.0)
+    truth = [(ax + 2.0, ay + 1.0)]
+    photo = _photograph(_punch(sheet, 300, truth), 300, blur=1.0, noise=3.0)
+    r = target.analyze_photo(photo, 36, BULLET)
+    assert len(r.holes) == 1, r.warnings
+    assert _match(r.holes, truth, 0.05) < 0.05
