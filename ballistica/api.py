@@ -24,7 +24,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,7 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -1667,3 +1667,83 @@ def v2_target_group(request: Request, body: TargetGroupIn, auth: tuple[str, str]
     """Recompute the group measurements from the hole list the shooter has
     confirmed (after tapping to add/remove holes). Pure arithmetic."""
     return _target_group_payload(body.holes, body.distance_yd, body.aim_in, body.bullet_diameter_in)
+
+
+# --------------------------------------------------------------------------
+# Video log (2026-09-29, Rick's own idea). The video itself stays on the
+# shooter's own phone -- never uploaded, never stored here. This is only the
+# small text record tying a video the shooter will play back locally to
+# exactly what rifle, load, and conditions were true that day, so review
+# means reviewing the right data instead of retyped-from-memory data. See
+# db/013_video_logs.sql.
+# --------------------------------------------------------------------------
+
+class VideoLogIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=120)
+    rifle_name: str = Field(..., min_length=1, max_length=120)
+    load_name: str | None = Field(None, max_length=120)
+    session_date: str = Field(..., description="YYYY-MM-DD")
+    temp_f: float | None = Field(None, ge=-60, le=140)
+    humidity_pct: float | None = Field(None, ge=0, le=100)
+    wind_mph: float | None = Field(None, ge=0, le=150)
+    wind_clock: float | None = Field(None, ge=0, le=12)
+    altitude_ft: float | None = Field(None, ge=-1500, le=30000)
+    pressure_inhg: float | None = Field(None, ge=15, le=35)
+    notes: str | None = Field(None, max_length=2000)
+
+    @field_validator("session_date")
+    @classmethod
+    def _valid_date(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError:
+            raise ValueError("session_date must be YYYY-MM-DD")
+        return v
+
+
+def _video_log_table_missing(exc: httpx.HTTPStatusError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="video_logs table not found -- run db/013_video_logs.sql in the Supabase SQL Editor first.",
+    )
+
+
+@app.post("/v2/video-log")
+@limiter.limit("30/minute")
+def v2_video_log_create(
+    request: Request, body: VideoLogIn, user_store: SupabaseProfileStore = Depends(_get_user_store),
+) -> dict:
+    """Save a video-log entry. The video file itself is never sent here --
+    only this small text record. rifle_name/load_name are a snapshot, not a
+    live reference: renaming or deleting that rifle/load later doesn't
+    change what this entry says was used that day."""
+    try:
+        row = user_store.create_video_log(body.model_dump(exclude_none=True))
+    except httpx.HTTPStatusError as exc:
+        raise _video_log_table_missing(exc) from exc
+    return row
+
+
+@app.get("/v2/video-log")
+@limiter.limit("30/minute")
+def v2_video_log_list(
+    request: Request, limit: int = Query(200, ge=1, le=1000),
+    user_store: SupabaseProfileStore = Depends(_get_user_store),
+) -> dict:
+    """This user's own video-log entries, most recent session first."""
+    try:
+        return {"entries": user_store.list_video_logs(limit)}
+    except httpx.HTTPStatusError as exc:
+        raise _video_log_table_missing(exc) from exc
+
+
+@app.delete("/v2/video-log/{entry_id}")
+@limiter.limit("30/minute")
+def v2_video_log_delete(
+    request: Request, entry_id: int, user_store: SupabaseProfileStore = Depends(_get_user_store),
+) -> dict:
+    try:
+        user_store.delete_video_log(entry_id)
+    except httpx.HTTPStatusError as exc:
+        raise _video_log_table_missing(exc) from exc
+    return {"deleted": True}

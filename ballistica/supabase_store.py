@@ -230,3 +230,36 @@ class SupabaseProfileStore(ProfileStore):
                 "order": "created_at.desc", "limit": str(limit),
             },
         ).json()
+
+    def create_video_log(self, entry: dict) -> dict:
+        """Rick's own idea (2026-09-29, see db/013_video_logs.sql): the
+        video itself stays on the shooter's phone -- this saves only the
+        small TEXT record (rifle, load, conditions, a label) tying a
+        video the shooter will replay locally to what was actually true
+        that day, so review means reviewing the right data. Returns the
+        inserted row (with its new id) so the caller can display it
+        immediately without a second round trip."""
+        payload = {**entry, "user_id": self.user_id}
+        resp = self._rest(
+            "POST", "video_logs", json=payload,
+            headers={"Prefer": "return=representation"},
+        )
+        rows = resp.json()
+        return rows[0] if rows else payload
+
+    def list_video_logs(self, limit: int = 200) -> list[dict]:
+        """Most recent first -- for picking the entry that matches
+        whichever video file the shooter is about to play back."""
+        return self._rest(
+            "GET", "video_logs",
+            params={
+                "user_id": f"eq.{self.user_id}", "select": "*",
+                "order": "session_date.desc,created_at.desc", "limit": str(limit),
+            },
+        ).json()
+
+    def delete_video_log(self, entry_id: int) -> None:
+        self._rest(
+            "DELETE", "video_logs",
+            params={"user_id": f"eq.{self.user_id}", "id": f"eq.{entry_id}"},
+        )
