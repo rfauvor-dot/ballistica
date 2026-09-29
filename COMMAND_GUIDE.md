@@ -459,6 +459,17 @@ for the range. As of this cutover, it requires signing in first.
   targets; the 4th had three rounds landing essentially in one hole
   (indistinguishable to the naked eye up close, not just to the camera) --
   a real limit of measuring from a photo at all, not a software defect.
+- **Video log (added 2026-09-29):** the "Video log" panel tags a range
+  video you filmed on your own phone (your form, your draw, whatever you
+  recorded) to exactly what rifle, load, and conditions you were using
+  that day -- picked from your saved rifle/load list and the same
+  conditions fields the drop calculator uses, not retyped from memory.
+  **The video itself is never uploaded or stored by Ballistica** -- it
+  stays on your phone. Save an entry (a label, rifle, load, date,
+  conditions), then later tap **Review** on it and pick the matching video
+  file from your device; it plays right there, with that day's info shown
+  alongside it, so you're reviewing the right footage against the right
+  data. Needs `db/013_video_logs.sql` run once in Supabase.
 
 ---
 

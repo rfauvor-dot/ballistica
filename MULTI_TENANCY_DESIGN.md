@@ -2820,3 +2820,57 @@ time.
 (one shared word) was accepted because the only check was too weak, and a
 modal-escape fix built for two sessions quietly never covered the other six
 that needed it too.
+
+
+---
+
+## 38. Video log: film review, without Ballistica ever touching the video (2026-09-29)
+
+**What:** Rick's own idea, prompted by watching other sports use game film to
+improve: he wants to review his own range video (form, technique) the way a
+football team reviews game footage. The design constraint he set himself,
+unprompted, solved the hard part before it became a problem: **the video
+stays on the shooter's phone.** Ballistica saves only a small text record --
+rifle, load, session date, conditions, a label -- tying a video the shooter
+will replay locally to exactly what was true that day, so review means
+reviewing the right data instead of something retyped from memory (or
+mismatched to the wrong session entirely).
+
+**Why this matters architecturally:** every other camera feature in this app
+(target-photo) deliberately stores nothing, specifically to avoid a storage-
+cost and privacy decision. Video-for-later-playback could have broken that
+pattern -- video is exactly the kind of thing that would force a real
+storage-bucket and cost decision, the kind MULTI_TENANCY_DESIGN.md has
+otherwise kept deferred until real users. Rick's "phone, not the server"
+framing avoided that entirely: this is the first camera feature to save
+*something* persistently, but that something is a handful of text fields,
+costing about the same as a rifle or load row -- not a new infrastructure
+decision.
+
+**Built:** `db/013_video_logs.sql` (a new per-user table, RLS-scoped
+identically to every other one -- see the migration's own comment for why
+rifle_name/load_name are a plain-text snapshot, not a foreign key: a
+rifle/load can be renamed or deleted later without corrupting what the log
+says was actually used that day). `POST`/`GET /v2/video-log`,
+`DELETE /v2/video-log/{id}` (api.py) -- `VideoLogIn` has no file field of any
+kind, confirmed by a dedicated test rather than left as a docstring claim.
+The web panel's rifle/load pickers are populated from the shooter's own
+saved list (not typed), and conditions reuse the exact same fields and
+"Use my location" flow the drop calculator already has, so tagging a video
+asks for nothing the app doesn't already track. The video file itself is
+picked from the device and played via `URL.createObjectURL` -- entirely
+client-side, never touches the network.
+
+**Verified:** 14 new API tests; the full panel driven live in the browser
+pane against a harness with two real (fake) rifles -- rifle-change
+repopulates the load dropdown, empty-label validation blocks a save, a saved
+entry round-trips through the list correctly, Review shows the matching
+summary, a locally-picked file plays via a blob URL, and Delete removes only
+that entry. Full suite: 371 passed. Needs Rick to run the migration before
+use; the endpoints return a clear 503 with that instruction, not a raw 500,
+until he does.
+
+**Design lesson:** the constraint that made this easy to build safely came
+from the person who asked for the feature, not from the engineering side --
+worth listening for that kind of self-imposed scope limit rather than
+assuming every camera/media idea needs the same storage conversation.
