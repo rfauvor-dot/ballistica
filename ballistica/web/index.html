@@ -530,6 +530,50 @@
     </div>
   </details>
 
+  <details id="rangeCamDetails">
+    <summary>Range camera (prototype)</summary>
+    <div class="panel-body">
+      <p style="font-size:14px; color:var(--muted); margin:0 0 10px;">Live view from your phone's camera, with a recorder and time-stamped notes -- built to test how good a picture a web page can get through your spotting scope. The video stays on your phone and is never uploaded. When you stop recording, the video and a text file of your stamped notes are saved to your phone's downloads. Keep clips under a few minutes: the recording is held in memory until you stop.</p>
+
+      <div class="row">
+        <div class="field w-md"><label for="rcRes">Quality</label>
+          <select id="rcRes"><option value="2160">4K (best)</option><option value="1080">1080p</option></select></div>
+        <div class="field w-lg"><label for="rcCamSel">Camera</label>
+          <select id="rcCamSel"><option value="">Back camera (default)</option></select></div>
+      </div>
+      <label style="display:block; margin:8px 0; font-size:14px;"><input id="rcAudio" type="checkbox" checked style="min-height:auto; width:auto; margin-right:6px;"> Record sound (your voice)</label>
+      <div class="rifle-actions">
+        <button id="rcStartBtn" type="button" class="primary">Start camera</button>
+        <button id="rcStopCamBtn" type="button" disabled>Stop camera</button>
+      </div>
+      <div id="rcError"></div>
+
+      <video id="rcVideo" autoplay playsinline muted style="width:100%; margin-top:10px; border-radius:8px; background:#000; display:none;"></video>
+      <div id="rcInfo" style="font-size:13px; color:var(--muted); margin-top:6px; min-height:16px;"></div>
+      <div id="rcZoomWrap" style="display:none; margin-top:8px;">
+        <label for="rcZoom" style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase;">Camera zoom</label>
+        <input id="rcZoom" type="range" style="width:100%; min-height:auto;">
+      </div>
+
+      <button id="rcRecBtn" type="button" class="primary big" disabled>Start recording</button>
+      <div id="rcTimer" style="font-size:20px; font-weight:700; text-align:center; margin:6px 0;">00:00</div>
+
+      <h2 style="margin-top:12px;">Stamp what's set</h2>
+      <div class="row">
+        <div class="field w-sm"><label>Dist (yd)</label><input id="rcDist" type="number" inputmode="decimal"></div>
+        <div class="field w-sm"><label>Scope (x)</label><input id="rcScope" type="number" inputmode="decimal"></div>
+        <div class="field w-sm"><label>Phone (x)</label><input id="rcPhone" type="number" inputmode="decimal" step="0.1"></div>
+        <div class="field w-lg"><label>Wind</label><input id="rcWind" type="text" maxlength="40" placeholder="8 mph from 3"></div>
+      </div>
+      <div class="field w-full" style="margin-top:6px;">
+        <label for="rcNote">Note</label>
+        <input id="rcNote" type="text" maxlength="200" placeholder="boiling, running left, dust, hit...">
+      </div>
+      <button id="rcStampBtn" type="button" style="margin-top:8px;">Stamp this moment</button>
+      <div id="rcStamps" style="font-size:14px; margin-top:8px;"></div>
+    </div>
+  </details>
+
   </div> <!-- #appContent -->
 
   <div id="importPanel" style="display:none; max-width:640px; margin:24px auto;">
@@ -3405,6 +3449,154 @@ document.getElementById('vlogFile').addEventListener('change', () => {
   const url = URL.createObjectURL(file);
   videoEl.src = url;
   videoEl.style.display = 'block';
+});
+
+// ---- Range camera prototype (2026-10-05) ------------------------------
+// Live camera view + recorder + time-stamped notes, all in the browser. Nothing here touches the
+// network: the video never leaves the phone. Built to find out how good a picture a web page can
+// get through a spotting scope, compared with the phone's own camera app.
+const rc = { stream: null, rec: null, chunks: [], startedAt: 0, timer: null, stamps: [], mime: '' };
+const rcEl = (id) => document.getElementById(id);
+
+function rcFmt(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function rcInfo() {
+  const track = rc.stream && rc.stream.getVideoTracks()[0];
+  if (!track) { rcEl('rcInfo').textContent = ''; return; }
+  const s = track.getSettings();
+  rcEl('rcInfo').textContent = `${track.label || 'camera'} -- ${s.width}x${s.height} @ ${Math.round(s.frameRate || 0)} fps` +
+    (s.zoom ? `, zoom ${Number(s.zoom).toFixed(1)}x` : '');
+}
+
+function rcSetupZoom() {
+  const track = rc.stream.getVideoTracks()[0];
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const wrap = rcEl('rcZoomWrap'), slider = rcEl('rcZoom');
+  if (caps.zoom) {
+    slider.min = caps.zoom.min; slider.max = caps.zoom.max; slider.step = caps.zoom.step || 0.1;
+    slider.value = track.getSettings().zoom || caps.zoom.min;
+    wrap.style.display = 'block';
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
+rcEl('rcZoom').addEventListener('input', async () => {
+  const track = rc.stream && rc.stream.getVideoTracks()[0];
+  if (!track) return;
+  try { await track.applyConstraints({ advanced: [{ zoom: Number(rcEl('rcZoom').value) }] }); rcInfo(); } catch (e) { /* ignore */ }
+});
+
+async function rcFillCameras() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    const sel = rcEl('rcCamSel'), current = sel.value;
+    sel.innerHTML = '<option value="">Back camera (default)</option>' +
+      devs.map((d, i) => `<option value="${escapeHtml(d.deviceId)}">${escapeHtml(d.label || ('Camera ' + (i + 1)))}</option>`).join('');
+    sel.value = current;
+  } catch (e) { /* the default option is enough */ }
+}
+
+async function rcStopCamera() {
+  if (rc.rec && rc.rec.state === 'recording') rc.rec.stop();
+  if (rc.stream) rc.stream.getTracks().forEach((t) => t.stop());
+  rc.stream = null;
+  const v = rcEl('rcVideo'); v.srcObject = null; v.style.display = 'none';
+  rcEl('rcStartBtn').disabled = false; rcEl('rcStopCamBtn').disabled = true; rcEl('rcRecBtn').disabled = true;
+  rcEl('rcZoomWrap').style.display = 'none'; rcEl('rcInfo').textContent = '';
+}
+
+rcEl('rcStartBtn').addEventListener('click', async () => {
+  const err = rcEl('rcError'); hide(err);
+  try {
+    await rcStopCamera();
+    const dims = rcEl('rcRes').value === '2160' ? { width: { ideal: 3840 }, height: { ideal: 2160 } } : { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    const deviceId = rcEl('rcCamSel').value;
+    const video = Object.assign({}, dims, deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } });
+    rc.stream = await navigator.mediaDevices.getUserMedia({ video, audio: rcEl('rcAudio').checked });
+    const v = rcEl('rcVideo'); v.srcObject = rc.stream; v.style.display = 'block';
+    try { await v.play(); } catch (e) { /* autoplay is already requested */ }
+    rcInfo(); rcSetupZoom(); await rcFillCameras();
+    rcEl('rcStartBtn').disabled = true; rcEl('rcStopCamBtn').disabled = false; rcEl('rcRecBtn').disabled = false;
+  } catch (e) {
+    flash(err, 'Could not start the camera -- ' + (e.message || e.name || 'permission denied?'));
+  }
+});
+
+rcEl('rcStopCamBtn').addEventListener('click', rcStopCamera);
+
+// Closing the panel switches the camera off -- never leave a camera running unseen.
+rcEl('rangeCamDetails').addEventListener('toggle', (e) => { if (!e.target.open) rcStopCamera(); });
+
+function rcPickMime() {
+  const options = ['video/mp4;codecs=avc1', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  if (!window.MediaRecorder) return '';
+  return options.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+}
+
+function rcDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+function rcStampLine(s) {
+  const bits = [];
+  if (s.distance) bits.push(`${s.distance} yd`);
+  if (s.scope) bits.push(`scope ${s.scope}x`);
+  if (s.phone) bits.push(`phone ${s.phone}x`);
+  if (s.wind) bits.push(`wind ${s.wind}`);
+  if (s.note) bits.push(s.note);
+  return `${rcFmt(s.t)}  ${bits.join(' | ')}`;
+}
+
+function rcSave() {
+  clearInterval(rc.timer);
+  const ext = rc.mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+  const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+  const base = `ballistica-range-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const blob = new Blob(rc.chunks, { type: rc.mime || 'video/webm' });
+  rcDownload(blob, `${base}.${ext}`);
+  if (rc.stamps.length) rcDownload(new Blob([rc.stamps.map(rcStampLine).join('\n') + '\n'], { type: 'text/plain' }), `${base}-notes.txt`);
+  rc.chunks = [];
+  rcEl('rcRecBtn').textContent = 'Start recording';
+  rcEl('rcRecBtn').classList.add('primary');
+}
+
+rcEl('rcRecBtn').addEventListener('click', () => {
+  const err = rcEl('rcError'); hide(err);
+  if (rc.rec && rc.rec.state === 'recording') { rc.rec.stop(); return; }
+  if (!rc.stream) { flash(err, 'Start the camera first.'); return; }
+  if (!window.MediaRecorder) { flash(err, "This browser can't record video."); return; }
+  rc.chunks = []; rc.stamps = []; rcEl('rcStamps').textContent = '';
+  rc.mime = rcPickMime();
+  try {
+    rc.rec = new MediaRecorder(rc.stream, rc.mime ? { mimeType: rc.mime, videoBitsPerSecond: 20000000 } : undefined);
+  } catch (e) { flash(err, 'Could not start recording -- ' + e.message); return; }
+  rc.rec.ondataavailable = (e) => { if (e.data && e.data.size) rc.chunks.push(e.data); };
+  rc.rec.onstop = rcSave;
+  rc.rec.start(1000);
+  rc.startedAt = performance.now();
+  rc.timer = setInterval(() => { rcEl('rcTimer').textContent = rcFmt((performance.now() - rc.startedAt) / 1000); }, 250);
+  rcEl('rcRecBtn').textContent = 'Stop and save';
+  rcEl('rcRecBtn').classList.remove('primary');
+});
+
+rcEl('rcStampBtn').addEventListener('click', () => {
+  const err = rcEl('rcError'); hide(err);
+  if (!(rc.rec && rc.rec.state === 'recording')) { flash(err, 'Start recording first -- stamps are tied to the recording clock.', 4000); return; }
+  const s = {
+    t: (performance.now() - rc.startedAt) / 1000,
+    distance: rcEl('rcDist').value, scope: rcEl('rcScope').value, phone: rcEl('rcPhone').value,
+    wind: rcEl('rcWind').value.trim(), note: rcEl('rcNote').value.trim(),
+  };
+  rc.stamps.push(s);
+  rcEl('rcNote').value = '';
+  rcEl('rcStamps').innerHTML = rc.stamps.map((x) => `<div>${escapeHtml(rcStampLine(x))}</div>`).join('');
 });
 </script>
 </body>

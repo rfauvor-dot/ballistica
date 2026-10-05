@@ -470,6 +470,17 @@ for the range. As of this cutover, it requires signing in first.
   file from your device; it plays right there, with that day's info shown
   alongside it, so you're reviewing the right footage against the right
   data. Needs `db/013_video_logs.sql` run once in Supabase.
+- **Range camera (prototype, added 2026-10-05):** the "Range camera"
+  panel opens your phone's camera live in the page, records video (with
+  your voice if you leave "Record sound" on), and lets you **stamp** what's
+  set -- distance, scope power, phone zoom, wind, a note -- at the exact
+  moment in the recording. Stopping saves the video and a text file of the
+  stamped notes to your phone's downloads. Nothing is uploaded. It's a
+  prototype to find out how good a picture a web page can get through a
+  spotting scope compared with the phone's own camera app; a web page
+  usually can't reach the phone's telephoto lenses, and quality may be lower.
+  Closing the panel switches the camera off. Keep clips to a few minutes --
+  the recording sits in memory until you stop.
 
 ---
 
