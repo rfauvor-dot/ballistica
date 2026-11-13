@@ -2874,3 +2874,49 @@ until he does.
 from the person who asked for the feature, not from the engineering side --
 worth listening for that kind of self-imposed scope limit rather than
 assuming every camera/media idea needs the same storage conversation.
+
+## 39. First real range video analyzed by hand: sight-in session, 22 minutes, three sheets (2026-11-13)
+
+**What:** Rick filmed a 100 yd sight-in of a newly mounted scope (20-inch
+Faxton barrel, 69 gr Sierra MatchKing BTHP) on his phone at 2x: three
+ArUco-marked sheets side by side, numbered 1-3 left to right, 22 minutes in
+one file. Nothing in the app was changed. I did the analysis offline with
+ffmpeg + OpenCV to find out whether video can become a timestamped shot table
+(the idea in BACKLOG.md, "Video-to-shot-table").
+
+**Results (position +/-0.1 in, time +/-2 s; assumes sheets printed at 100%
+and aimed at the crosshair):**
+
+| Stretch | Video time | Shots | Spread | Center |
+|---|---|---|---|---|
+| Sheet 1, first shots | 0:24-5:20 | 7 | 5.96 in (5.7 MOA) | 0.5 in left, 0.15 in high |
+| Sheet 2, first shots | 6:18-7:14 | 5 | 1.77 in (1.7 MOA) | 0.13 in right, 1.14 in high |
+| Sheet 1, last shots | 21:30-22:16 | 5 | 1.26 in (1.2 MOA) | 0.05 in left, 0.08 in low |
+
+The early scatter was real and matched what Rick felt ("no rhyme or reason",
+scope seemed to move). Later groups were tight and centered. Rick's own
+explanation -- windy day, bench too high until he added carpet, possibly a
+loose scope mount (he is re-torquing to spec) -- fits the trend, but the video
+cannot isolate the cause. Sheet 2's high group is pre-zero, not a final zero.
+
+**Not measurable from this video:** sheet 2's final dense cluster (~10+ holes,
+mostly shot off camera ~16:20-20:40, half out of frame at the end); sheet 3
+(never fully in frame, no holes visible). The camera tripod sat on the same
+table as the rifle, so it jolted at every shot.
+
+**What it told us about `target.py` on video:** `analyze_photo` returned 0
+holes on soft video, masks the printed ring, and needs 3+ markers decoded.
+All sheets share the same marker IDs, so two sheets in one frame corrupted the
+homography (4.9 in fit error). It worked only after loosening ArUco detector
+parameters and separating sheets by marker-vote clustering; 2-marker sheets
+needed a similarity fit; edge holes needed a wider mask. These are the
+concrete gaps the BACKLOG entry lists.
+
+**Conclusion:** the data is usable and the approach works, but it took
+bespoke code. Making it a feature means per-sheet marker IDs, a video-tuned
+detector, and capture guidance (ground tripod, locked focus/exposure, one
+sheet per frame). Status unchanged: backlog, not scoped.
+
+Raw outputs (not in repo): `Downloads\Ballistica_Range_20261113\` --
+`groups_over_session.png`, `all_shots_by_sheet.csv`, `shot_table.csv`,
+`target_shots_annotated.jpg`.
