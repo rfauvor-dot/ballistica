@@ -749,3 +749,57 @@ would actually get written).
 
 **Owning lenses:** Build (schema + calibration-flow wiring, once
 scoped).
+
+---
+
+## Video-to-shot-table (timestamped shots from range video) + per-sheet numbering
+
+**Raised:** Rick, 2026-11-13, after a real range video of target sheet 2
+(100 yd, phone at 2x, three numbered sheets hung side by side).
+
+**What:** take a range video of a Ballistica target sheet and produce a
+shot table automatically -- each new hole's firing order, video timestamp,
+and position in inches from the aim point, plus group size, plus a
+numbered/annotated image. Done once by hand on 2026-11-13 (5 shots found at
+0:21 / 0:32 / 0:40 / 1:06 / 1:16, group 1.14 in over shots 1-4, 1.77 in with
+the flyer); the throwaway scripts were scratch work, not in the repo.
+Method that worked: sample frames at ~2/sec, find the sheet's corner markers
+in each frame and flatten it to 200 px/in with the existing homography, find
+dark blobs against a blurred background, then confirm a shot only when a dot
+persists in several consecutive good frames. Frames where the sheet isn't
+found (camera jolts) are skipped, and a shot lands in the first good frame
+after the jolt, so timestamps are good to ~0.5 s.
+
+**Per-sheet numbering (the enabling piece):** every sheet uses the same four
+ArUco IDs (0-3), so two sheets in one frame corrupt the marker fit (4.9 in
+error, 0 holes found) and software cannot tell sheet 1 from sheet 2. Rick
+numbers his sheets 1, 2, 3 by hand at the top, but the digit was not legible
+on video. Proposed: a large dark sheet number in the title area, and ideally
+distinct marker IDs per sheet number, so one frame can hold several sheets,
+each is measured separately, and results are labeled by sheet automatically.
+Changing marker IDs touches target.py's `_MARKER_ORIGINS` and the printable
+sheet, and must stay readable for sheets already printed.
+
+**Known gaps in the current photo analyzer on video (target.py):** it found 0
+holes on soft video frames -- it expects sharp still-photo hole edges, masks
+the printed ring (three of the five holes sat on it), and the default marker
+detector decoded only 2 of 4 markers at ~55 px per marker until detector
+parameters were loosened (3 of 4 decoded, 0.046 in fit error, above the
+0.03 in warning threshold). A video path needs its own thresholds and marker
+settings, not the still-photo defaults.
+
+**Capture guidance that goes with it:** camera on a ground tripod separate
+from the bench (Rick's tripod on the table jolted the camera at every shot,
+plus ~33 other disturbances), locked focus/exposure, highest resolution, one
+sheet filling the frame with all four corner squares visible.
+
+**Not scoped yet.** Sequencing: wait for a cleaner video from the ground
+tripod before tuning thresholds, so the tuning isn't fit to jittery footage.
+Related: the target photo panel (see the zeroing walkthrough entry), and
+"Session Mode" shot logging, which could supply the shot order to match
+against detected holes.
+
+**Owning lenses:** Build (video frame pipeline, marker/sheet changes),
+Marketing (a shot-by-shot replay of a group is a strong demo), Chief of
+Staff (decide whether this is app functionality or a coaching/review tool
+first).
