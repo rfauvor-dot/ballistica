@@ -523,6 +523,15 @@ _DISTANCE_MENTION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:yd|yds|yards?)\b|\b(?:d
 # almost certainly a bad reading in the set, not real dispersion -- real
 # strings run a few percent at most.
 _MAX_TRUSTED_SPREAD_FRACTION = 0.25
+# Sanity bounds on spoken wind and conditions -- same ranges api.py's
+# WindIn/AtmosphereIn enforce for the web form.
+_MAX_WIND_MPH = 150.0
+_CONDITION_BOUNDS = {
+    "temp_f": (-80.0, 150.0, "a temperature"),
+    "pressure_inhg": (5.0, 35.0, "a pressure in inches of mercury"),
+    "altitude_ft": (-2000.0, 30000.0, "an altitude"),
+    "humidity_pct": (0.0, 100.0, "a humidity"),
+}
 # Muzzle Mach above which a load counts as a supersonic one for the
 # "past supersonic range" caution in _drop_at().
 _SUPERSONIC_LOAD_MACH = 1.1
@@ -1011,7 +1020,9 @@ class BallisticaCLI:
         # "converse" result (2026-09-05) rather than a separate personality
         # call -- it's allowed to just talk, not only classify a command.
         if low in ("hi", "hello", "hey"):
-            return random.choice(["Hey, Rick.", "Hey there.", "What's up?"])
+            # No name: this used to include "Hey, Rick." from the single-user
+            # days, which every other account heard a third of the time.
+            return random.choice(["Hey.", "Hey there.", "What's up?"])
         if re.search(r"\b(thanks|thank you|good job|nice work|well done)\b", low):
             return random.choice(["Anytime.", "You got it.", "That's what I'm here for."])
         if low == "status":
@@ -1513,7 +1524,21 @@ class BallisticaCLI:
             return f"{switched} {self._begin_setup_from_fields('load', new_load_fields)}"
         return switched
 
+    @staticmethod
+    def _wind_problem(speed_mph: float, clock_hours: float) -> str | None:
+        """Why a spoken wind can't be right, or None. A mis-heard or
+        model-invented value ("wind 1000", "15 o'clock") must not quietly
+        become the wind every later solution uses."""
+        if not (0 <= speed_mph <= _MAX_WIND_MPH):
+            return f"{speed_mph:g} miles an hour doesn't sound like a wind speed, so I left the wind alone."
+        if not (0 <= clock_hours <= 12):
+            return f"{clock_hours:g} o'clock isn't a clock direction, so I left the wind alone."
+        return None
+
     def _set_wind(self, speed_mph: float, clock_hours: float) -> str:
+        problem = self._wind_problem(speed_mph, clock_hours)
+        if problem:
+            return problem
         self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
         return f"Got it -- wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock."
 
@@ -1546,6 +1571,9 @@ class BallisticaCLI:
         if embedded is None:
             return self._drop_at(range_yd)
         speed_mph, clock_hours = embedded
+        problem = self._wind_problem(speed_mph, clock_hours)
+        if problem:
+            return f"{problem} {self._drop_at(range_yd)}"
         self.wind = WindCondition(speed_mph=speed_mph, clock_deg=clock_hours * 30.0)
         return f"Wind's {speed_mph:.0f} mph out of {clock_hours:g} o'clock. {self._drop_at(range_yd)}"
 
@@ -2519,6 +2547,18 @@ class BallisticaCLI:
         every field restated -- "it's about 90 out" should work without
         also having to repeat pressure/altitude/humidity that haven't
         changed."""
+        given = {"temp_f": temp_f, "pressure_inhg": pressure_inhg,
+                 "altitude_ft": altitude_ft, "humidity_pct": humidity_pct}
+        for name, value in given.items():
+            if value is None:
+                continue
+            low, high, spoken = _CONDITION_BOUNDS[name]
+            try:
+                ok = low <= float(value) <= high
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                return f"{value} doesn't sound like {spoken}, so I left the conditions alone. Say it again?"
         self.atmosphere = AtmosphereConditions(
             temp_f=temp_f if temp_f is not None else self.atmosphere.temp_f,
             pressure_inhg=pressure_inhg if pressure_inhg is not None else self.atmosphere.pressure_inhg,

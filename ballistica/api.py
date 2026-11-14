@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 import re
 import secrets
@@ -40,7 +41,8 @@ import jwt
 import openai
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
@@ -79,6 +81,8 @@ _SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 # isolation boundary. This is the one deliberate, narrow exception,
 # not a precedent for using it more broadly.
 _SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Ballistica API", version="0.1.0")
 app.add_middleware(
@@ -152,6 +156,38 @@ limiter = Limiter(key_func=_rate_limit_key, default_limits=["100/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+
+
+@app.exception_handler(httpx.HTTPError)
+def _database_error(request: Request, exc: httpx.HTTPError) -> JSONResponse:
+    """Every Supabase call in this app goes through httpx. One that fails
+    and isn't handled where it was made used to surface as a bare 500
+    ("Internal Server Error", no JSON) -- now it's a clean, logged error the
+    web app can show. A response Supabase itself rejected is 502; not being
+    able to reach it at all is 503."""
+    logger.exception("database call failed on %s %s", request.method, request.url.path)
+    if isinstance(exc, httpx.HTTPStatusError):
+        return JSONResponse(status_code=502, content={
+            "detail": "The database rejected that request, so nothing was changed. Try again.",
+        })
+    return JSONResponse(status_code=503, content={
+        "detail": "Couldn't reach the database just now. Try again in a moment.",
+    })
+
+
+@app.exception_handler(RequestValidationError)
+def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Same 422 as FastAPI's default, but `detail` is one readable sentence
+    instead of a list of objects -- the web app shows `detail` as text, and
+    a list rendered as "[object Object]"."""
+    parts = []
+    for err in exc.errors():
+        where = [str(x) for x in err.get("loc", ()) if x not in ("body", "query", "path")]
+        field = where[-1].replace("_", " ") if where else "request"
+        parts.append(f"{field}: {err.get('msg', 'invalid value')}")
+    return JSONResponse(status_code=422, content={"detail": "; ".join(parts) or "Invalid request."})
+
 
 _WEB_DIR = Path(__file__).resolve().parent / "web"
 _WEB_INDEX = _WEB_DIR / "index.html"
@@ -246,16 +282,20 @@ def offline_engine_script():
 
 # ---------------------------------------------------------------- schemas
 
+# Bounds on everything numeric the API accepts (2026-11-14). Deliberately
+# wide: they exist to reject a typo, a NaN/infinity, or a hostile value
+# before it is saved or handed to the solver -- not to second-guess an
+# unusual but real rifle or load.
 class AtmosphereIn(BaseModel):
-    temp_f: float = 59.0
+    temp_f: float = Field(59.0, ge=-80, le=150)
     pressure_inhg: float | None = Field(
-        None, description="Station pressure if known. Omit/null to estimate from "
+        None, ge=5, le=35, description="Station pressure if known. Omit/null to estimate from "
                            "altitude_ft instead -- entering altitude alone does "
                            "nothing unless pressure is also either provided or left "
                            "unset for this estimate.",
     )
-    humidity_pct: float = 0.0
-    altitude_ft: float = 0.0
+    humidity_pct: float = Field(0.0, ge=0, le=100)
+    altitude_ft: float = Field(0.0, ge=-2000, le=30000)
 
     def to_conditions(self) -> AtmosphereConditions:
         pressure = self.pressure_inhg
@@ -271,9 +311,9 @@ class AtmosphereIn(BaseModel):
 
 
 class WindIn(BaseModel):
-    speed_mph: float = 0.0
+    speed_mph: float = Field(0.0, ge=0, le=150)
     clock_deg: float = Field(
-        0.0, description="0 = 12 o'clock headwind, 90 = 3 o'clock (pushes bullet left), "
+        0.0, ge=0, le=360, description="0 = 12 o'clock headwind, 90 = 3 o'clock (pushes bullet left), "
                           "180 = tailwind, 270 = 9 o'clock.",
     )
 
@@ -282,10 +322,26 @@ class WindIn(BaseModel):
 
 
 class LoadIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    bullet_weight_gr: float = Field(ge=0, le=2000)
+    bc: float = Field(gt=0, le=2)
+    drag_model: str = Field(description="'G1' or 'G7'", max_length=8)
+    muzzle_velocity_fps: float = Field(gt=0, le=6000)
+    zero_distance_yd: float = Field(gt=0, le=3000)
+    bullet_type: str = Field("", max_length=200)
+    powder: str = Field("", max_length=200)
+    powder_charge_gr: float | None = Field(None, ge=0, le=1000)
+    notes: str = Field("", max_length=4000)
+
+
+class LoadOut(BaseModel):
+    """Same fields as LoadIn, deliberately WITHOUT its bounds: this is what
+    gets read back, and a load saved before the bounds existed must still
+    be readable (and so fixable) rather than failing response validation."""
     name: str
     bullet_weight_gr: float
     bc: float
-    drag_model: str = Field(description="'G1' or 'G7'")
+    drag_model: str
     muzzle_velocity_fps: float
     zero_distance_yd: float
     bullet_type: str = ""
@@ -294,36 +350,33 @@ class LoadIn(BaseModel):
     notes: str = ""
 
 
-class LoadOut(LoadIn):
-    pass
-
-
 class RifleIn(BaseModel):
-    name: str
-    scope_height_in: float
-    caliber: str = ""
-    barrel_length_in: float | None = None
-    twist_rate: str = ""
-    click_value_mrad: float = 0.1
+    name: str = Field(min_length=1, max_length=120)
+    scope_height_in: float = Field(ge=0, le=12)
+    caliber: str = Field("", max_length=120)
+    barrel_length_in: float | None = Field(None, ge=0, le=80)
+    twist_rate: str = Field("", max_length=40)
+    click_value_mrad: float = Field(0.1, gt=0, le=10)
     reticle_unit: str = Field("MRAD", description="'MRAD' or 'MOA' -- which unit the optic's turrets use")
     optic_type: str = Field("", description="'scope' (magnified), 'red_dot' (fixed 1x reflex/holographic), "
                                              "or '' if unknown -- determines which of the fields below "
                                              "actually apply (a red dot has no magnification or focal plane)")
-    scope_make: str = ""
-    scope_model: str = ""
-    magnification: str = ""
-    objective_lens_mm: float | None = None
-    focal_plane: str = Field("", description="'FFP', 'SFP', or '' if unknown/not applicable -- magnified "
+    scope_make: str = Field("", max_length=120)
+    scope_model: str = Field("", max_length=120)
+    magnification: str = Field("", max_length=40)
+    objective_lens_mm: float | None = Field(None, ge=0, le=200)
+    focal_plane: str = Field("", max_length=8, description="'FFP', 'SFP', or '' if unknown/not applicable -- magnified "
                                               "scopes only, not used by today's turret-dial calculations, "
                                               "but will matter once a reticle-holdover or rangefinder "
                                               "feature exists")
-    reticle_type: str = ""
-    dot_size_moa: float | None = Field(None, description="Red dot only -- the dot's apparent size in MOA")
+    reticle_type: str = Field("", max_length=120)
+    dot_size_moa: float | None = Field(None, ge=0, le=200,
+                                       description="Red dot only -- the dot's apparent size in MOA")
     has_suppressor: bool = False
-    suppressor_type: str = Field("", description="Open text -- a real brand if there is one, or a "
+    suppressor_type: str = Field("", max_length=200, description="Open text -- a real brand if there is one, or a "
                                                    "generic/custom description if not. Tied to the "
                                                    "rifle, not any one load.")
-    loads: list[LoadIn] = []
+    loads: list[LoadIn] = Field(default_factory=list, max_length=100)
 
 
 class RifleUpdate(BaseModel):
@@ -332,23 +385,23 @@ class RifleUpdate(BaseModel):
     {rifle_name} in the URL, renames the rifle in place -- see
     profiles.py's update_rifle_fields() for why this has to be a real
     rename (re-keying the in-memory dict) and not a plain field set."""
-    name: str | None = None
-    scope_height_in: float
-    caliber: str = ""
-    barrel_length_in: float | None = None
-    twist_rate: str = ""
-    click_value_mrad: float = 0.1
-    reticle_unit: str = "MRAD"
-    optic_type: str = ""
-    scope_make: str = ""
-    scope_model: str = ""
-    magnification: str = ""
-    objective_lens_mm: float | None = None
-    focal_plane: str = ""
-    reticle_type: str = ""
-    dot_size_moa: float | None = None
+    name: str | None = Field(None, max_length=120)
+    scope_height_in: float = Field(ge=0, le=12)
+    caliber: str = Field("", max_length=120)
+    barrel_length_in: float | None = Field(None, ge=0, le=80)
+    twist_rate: str = Field("", max_length=40)
+    click_value_mrad: float = Field(0.1, gt=0, le=10)
+    reticle_unit: str = Field("MRAD", max_length=8)
+    optic_type: str = Field("", max_length=16)
+    scope_make: str = Field("", max_length=120)
+    scope_model: str = Field("", max_length=120)
+    magnification: str = Field("", max_length=40)
+    objective_lens_mm: float | None = Field(None, ge=0, le=200)
+    focal_plane: str = Field("", max_length=8)
+    reticle_type: str = Field("", max_length=120)
+    dot_size_moa: float | None = Field(None, ge=0, le=200)
     has_suppressor: bool = False
-    suppressor_type: str = ""
+    suppressor_type: str = Field("", max_length=200)
 
 
 class RifleSummary(BaseModel):
@@ -380,14 +433,14 @@ class RifleDetail(BaseModel):
 
 
 class CalcRequest(BaseModel):
-    rifle: str | None = Field(None, description="Fuzzy match; omit to use the active rifle")
-    load: str | None = Field(None, description="Fuzzy match; omit to use the rifle's active load")
+    rifle: str | None = Field(None, max_length=120, description="Fuzzy match; omit to use the active rifle")
+    load: str | None = Field(None, max_length=120, description="Fuzzy match; omit to use the rifle's active load")
     atmosphere: AtmosphereIn = AtmosphereIn()
     wind: WindIn = WindIn()
 
 
 class DropAtRangeRequest(CalcRequest):
-    range_yd: float
+    range_yd: float = Field(gt=0, le=10000)
 
 
 class RangeReportOut(BaseModel):
@@ -405,8 +458,15 @@ class RangeReportOut(BaseModel):
     time_s: float
 
 
+_VOICE_TEXT_MAX_CHARS = 2000
+
+
 class VoiceQueryIn(BaseModel):
-    text: str = Field(description="Transcribed speech, e.g. \"what's my drop at 500 yards\"")
+    # A 12-second recording transcribes to a few hundred characters at most.
+    # Unbounded, one request could send an arbitrarily large (and billed)
+    # prompt to the intent model.
+    text: str = Field(max_length=_VOICE_TEXT_MAX_CHARS,
+                      description="Transcribed speech, e.g. \"what's my drop at 500 yards\"")
     session_mode: bool = Field(
         False,
         description="True only while the frontend is in Session Mode (continuous, no-wake-word "
@@ -439,7 +499,9 @@ class VoiceQueryOut(BaseModel):
 
 
 class VoiceSpeakIn(BaseModel):
-    text: str
+    # What gets SPOKEN is clipped to _TTS_MAX_CHARS further down; this only
+    # bounds the request body itself.
+    text: str = Field(max_length=20000)
     voice: str = Field(
         "shimmer", description="OpenAI TTS voice name. Rick's pick, chosen by ear against real "
                                 "samples of all 9 stock voices on the actual reply phrasing -- "
@@ -462,9 +524,9 @@ class VoiceSpeakIn(BaseModel):
 
 
 class WaiverAcceptIn(BaseModel):
-    waiver_version: str
-    waiver_sha256: str
-    accepted_at: str = Field(description="ISO 8601 timestamp captured client-side the moment the "
+    waiver_version: str = Field(max_length=64)
+    waiver_sha256: str = Field(max_length=128)
+    accepted_at: str = Field(max_length=64, description="ISO 8601 timestamp captured client-side the moment the "
                                           "checkbox was checked and submitted -- not the time this "
                                           "request happens to arrive.")
 
@@ -1254,6 +1316,11 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
     # from_dict() round-trip needed like the session objects above.
     cli._chat_history = state.get("chat_history") or []
+    # The last drop-at-range solution, so "repeat windage/elevation/
+    # solution" works. Never part of this round trip before 2026-11-14, so
+    # over the API every repeat answered "No solution given yet" -- each
+    # request builds a brand new CLI that had never given one.
+    cli._last_solution = state.get("last_solution") or None
     # Session Mode tracker (2026-09-19, component 2): the readings log
     # deliberately outlives Session Mode itself so unsaved readings stay
     # saveable afterward; the pending save gate is the same per-request
@@ -1297,6 +1364,7 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
             if cli._pending_load_switch else None
         ),
         "chat_history": cli._chat_history,
+        "last_solution": cli._last_solution,
         "session_log": cli._session_log.to_dict() if cli._session_log else None,
         "pending_session_save": (
             {"entries": cli._pending_session_save, "at": cli._pending_session_save_at}
@@ -1347,11 +1415,24 @@ def v2_voice_query(
             reply = "Ending session."
         except (KeyError, ValueError) as exc:
             reply = _msg(exc)
+        except httpx.HTTPError:
+            # A save inside handle() couldn't reach (or was rejected by)
+            # the database. Say so out loud rather than failing the whole
+            # turn with a 500 the voice loop can only report as an error;
+            # every handler saves BEFORE it clears its own pending state,
+            # so the shooter can simply say it again.
+            logger.exception("database call failed during a voice turn")
+            reply = "I couldn't reach the database just now, so that didn't save. Say it again in a moment."
         finally:
             spend.ledger.add(user_store.user_id, cost[0])
     duration_ms = round((time.perf_counter() - _turn_started) * 1000)
 
-    user_store.set_conversation_state(**_dehydrate_cli(cli))
+    try:
+        user_store.set_conversation_state(**_dehydrate_cli(cli))
+    except httpx.HTTPError:
+        # Still answer the shooter; the cost is that this turn's
+        # conversation state (a pending question, new wind) isn't remembered.
+        logger.exception("could not persist conversation state after a voice turn")
     # Temporary per-turn debug log (2026-09-06, current build phase --
     # see db/010_conversation_debug_log.sql and supabase_store.py's
     # log_conversation_turn()). Best-effort: a logging failure (e.g. the
@@ -1455,8 +1536,10 @@ def v2_update_rifle(
         raise HTTPException(status_code=409, detail=f"Rifle '{payload.name}' already exists")
     try:
         rifle = user_store.update_rifle_fields(rifle_name, **payload.model_dump())
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:      # no such rifle
         raise HTTPException(status_code=404, detail=_msg(exc))
+    except ValueError as exc:    # the rifle exists; the new values are invalid
+        raise HTTPException(status_code=400, detail=_msg(exc))
     user_store.save()
     return _rifle_to_detail(rifle)
 
@@ -1503,8 +1586,10 @@ def v2_update_load(
         raise HTTPException(status_code=409, detail=f"A load named '{payload.name}' already exists on this rifle")
     try:
         load = user_store.update_load_fields(rifle_name, load_name, **payload.model_dump())
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:      # no such rifle or load
         raise HTTPException(status_code=404, detail=_msg(exc))
+    except ValueError as exc:    # it exists; the new values are invalid
+        raise HTTPException(status_code=400, detail=_msg(exc))
     user_store.save()
     contribute_load(rifle, load, user_store.access_token)
     return _load_to_out(load)

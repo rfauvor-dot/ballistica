@@ -295,6 +295,18 @@ def apply_mapping(
             continue
 
         zero_distance_yd = _to_float(_extract(row, mapping, "zero_distance_yd")) or 100.0
+        # Same limits as the web form (api.py's LoadIn): a row can't bring in
+        # a value the form itself would refuse, or one the solver can't use.
+        out_of_range = next((label for label, value, low, high in (
+            ("Zero distance", zero_distance_yd, 0.0, 3000.0),
+            ("Muzzle velocity", muzzle_velocity_fps, 0.0, 6000.0),
+            ("Ballistic coefficient", bc, 0.0, 2.0),
+        ) if not (low < value <= high)), None)
+        if out_of_range:
+            results.append(RowResult(
+                i, rifle_name, load_name, "failed", f"{out_of_range} is out of range.",
+            ))
+            continue
         bullet_weight_gr = bullet_weight_gr_raw or 0.0
 
         rifle = touched.get(rifle_name) or existing_rifles.get(rifle_name)
