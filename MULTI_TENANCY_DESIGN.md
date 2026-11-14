@@ -2878,7 +2878,7 @@ assuming every camera/media idea needs the same storage conversation.
 ## 39. First real range video analyzed by hand: sight-in session, 22 minutes, three sheets (2026-11-13)
 
 **What:** Rick filmed a 100 yd sight-in of a newly mounted scope (20-inch
-Faxton barrel, 69 gr Sierra MatchKing BTHP) on his phone at 2x: three
+Faxton barrel, 69 gr Sierra MatchKing BTHP) through his Athlon spotting scope with a phone mount (phone camera at 2x): three
 ArUco-marked sheets side by side, numbered 1-3 left to right, 22 minutes in
 one file. Nothing in the app was changed. I did the analysis offline with
 ffmpeg + OpenCV to find out whether video can become a timestamped shot table
@@ -2920,3 +2920,38 @@ sheet per frame). Status unchanged: backlog, not scoped.
 Raw outputs (not in repo): `Downloads\Ballistica_Range_20261113\` --
 `groups_over_session.png`, `all_shots_by_sheet.csv`, `shot_table.csv`,
 `target_shots_annotated.jpg`.
+
+## 40. Live shot detection works on replay: 17 of 17, zero false calls (2026-11-13)
+
+**What:** Rick's priority (stay on the gun, no photos by hand): a camera on a
+tripod, Ballistica calls each shot as it lands and pulls the still frames
+itself. Tested by replaying the 22-minute range video through a strictly
+causal detector (`tools/live_shot_replay.py`, scored by `tools/live_shot_eval.py`),
+each frame judged only against earlier frames. The footage was shot through
+Rick's Athlon spotting scope with a phone mount (this corrects design log #39,
+which said phone zoom).
+
+**Result vs the hand-measured table (sheets 1 and 2, 17 shots):** 17 of 17
+found; 16 called within about 1-1.5 s of the hole appearing, positions within
+0.12 in; one called 11 s late (a hole within 0.2-0.3 in of an older one is
+treated as that older hole until it separates); 0 false calls. Each call
+saves the camera frame and the flattened sheet with the new hole ringed.
+
+**The bug that mattered:** the first version made 50 false calls, all repeats of
+holes already called. Cause: sheet identity. Each sheet was tracked by where it
+sat in the image, so when the camera swung away and back, the sheet got a new
+identity with no memory and every old hole looked new. Fix: recognize a sheet
+by the holes already on it; use image position only for sheets with too few
+holes to tell apart. This is why per-sheet marker IDs matter: blank sheets are
+indistinguishable except by position.
+
+**Honest limits:** one video; the scoring table is my own offline
+measurement, not independent; sheet 2's later shots were off camera and
+sheet 3 never in frame; frames from a jolting table-mounted setup, not the
+planned ground tripod; not yet run on the phone. Cost on a desktop CPU is
+about 0.25-0.4 s per 1080x1920 frame at 2 fps; the S25 is untested.
+
+**Next:** the S25 plan is in BACKLOG.md ("Video-to-shot-table", now live shot
+detection). First step is a local-wifi loop (phone streams to Rick's PC, calls
+spoken to earbuds), then decide server vs on-phone. Thresholds wait for a
+ground-tripod clip.

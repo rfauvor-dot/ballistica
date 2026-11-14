@@ -7,6 +7,18 @@ scoped, don't let it just accumulate here indefinitely.
 
 ---
 
+## TOP PRIORITY (set by Rick, 2026-11-13): live shot detection
+
+The main goal for Ballistica is that Rick **stays on the gun**. Live video from a
+tripod camera, calling each shot as it lands, is the priority; photos between
+strings are only a backup. Ballistica pulls the still frames from the video
+itself after each shot, so Rick never takes a photo. The same camera feed is also
+the path to distance and wind reading. Details, test results and the on-phone
+plan are in the entry "Video-to-shot-table" below (now: **live** shot
+detection). Sequencing: this goes ahead of every other camera item in this file.
+
+---
+
 ## App icon to match the male/female visual direction
 
 **Raised:** Rick, 2026-08-23 (alongside the now-built selectable voice
@@ -755,7 +767,7 @@ scoped).
 ## Video-to-shot-table (timestamped shots from range video) + per-sheet numbering
 
 **Raised:** Rick, 2026-11-13, after a real range video of target sheet 2
-(100 yd, phone at 2x, three numbered sheets hung side by side).
+(100 yd, filmed through his Athlon spotting scope with a phone mount, three numbered sheets hung side by side).
 
 **What:** take a range video of a Ballistica target sheet and produce a
 shot table automatically -- each new hole's firing order, video timestamp,
@@ -793,8 +805,46 @@ from the bench (Rick's tripod on the table jolted the camera at every shot,
 plus ~33 other disturbances), locked focus/exposure, highest resolution, one
 sheet filling the frame with all four corner squares visible.
 
-**Not scoped yet.** Sequencing: wait for a cleaner video from the ground
-tripod before tuning thresholds, so the tuning isn't fit to jittery footage.
+**Live detection test, 2026-11-13 (prototype `tools/live_shot_replay.py`,
+scorer `tools/live_shot_eval.py`):** the 22-minute video replayed frame by
+frame so each frame is judged only against what came before it, as a live feed
+would be. Against the hand-measured table (17 shots on sheets 1 and 2): all 17
+found, 16 on time (called ~1-1.5 s after the hole appears, positions within
+0.12 in), 1 called 11 s late (a hole 0.2-0.3 in from an old one is absorbed
+until it separates), 0 false calls. The first version of the detector made 50
+false calls, all repeats of known holes: whenever the camera moved away and
+back it forgot the sheet. Fixed by recognizing a sheet from the holes already
+on it. Limits: one video, the scoring table is my own offline measurement (not
+independent), sheet 2's later shots happened off camera and sheet 3 never
+came into frame, and it has not been tried on the ground-tripod setup.
+Footage was shot through Rick's Athlon spotting scope with a phone mount.
+Stills (camera frame + flattened sheet with the new hole ringed) are saved
+automatically per shot; no photos by hand.
+
+**Running it live on the S25 (not built, not measured on the phone):** on a
+4-core desktop CPU in Python the per-frame cost at 1080x1920 was roughly
+0.25-0.4 s (marker finding 180-285 ms, flatten + hole find 75-137 ms), so 2
+frames/sec uses about half to most of one core. The S25 is probably in the
+same range or faster, but that is a guess until measured. Three places to run
+it: (A) stream frames to the Ballistica server (about 3-4 Mbit/s uplink at
+1080p/2 fps, needs steady signal at the range, Render CPU cost, plan decision
+still deferred); (B) in the phone's browser with OpenCV compiled to WebAssembly
+(the default OpenCV.js build lacks the marker module, so a custom build);
+(C) a native Android app (best camera control, biggest build). Recommended
+first step: run the server on Rick's PC on local wifi, phone page streams
+frames to it, calls spoken to Bluetooth earbuds, to prove the whole loop before
+choosing A/B/C. Also worth using: the phone mic hears each shot, so the sound
+can mark when to look for a new hole (cuts false calls and gives exact timing).
+Open risks: phone heat and battery over a 20+ minute session, and how much
+focus/exposure control a browser page gets on Android.
+
+**Capture setup Rick will use next (2026-11-13):** one sheet in frame,
+scope/camera on a ground tripod beside him (not the table), big black felt-pen
+sheet numbers. Pen numbers are for human review; software identity should
+come from per-sheet marker IDs (still to do) or a voice "sheet 2 is up".
+Do not tune thresholds until a ground-tripod clip exists.
+
+**Status: top priority, prototype works on replay; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.
