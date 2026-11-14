@@ -349,6 +349,15 @@
 
     atRange(zeroDistanceYd, rangeYd) {
       const pts = this.trajectory(zeroDistanceYd, rangeYd + 10.0);
+      // Same as trajectory.py: refuse a range the bullet is never tracked
+      // to instead of answering with the last tracked point.
+      const last = pts[pts.length - 1];
+      if (last.rangeFt < rangeYd * FT_PER_YARD) {
+        throw new Error(
+          rangeYd + " yards is past where this load can be solved -- " +
+          "it only carries to about " + last.rangeYd.toFixed(0) + " yards."
+        );
+      }
       return interpPointAtRange(pts, rangeYd * FT_PER_YARD);
     }
   }

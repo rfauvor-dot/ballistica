@@ -242,16 +242,27 @@ class TrajectorySolver:
 
     def drop_table(self, zero_distance_yd: float, max_range_yd: float,
                     step_yd: float = 100.0) -> list[TrajectoryPoint]:
+        """Rows past where the bullet can be tracked are left out rather
+        than filled in with the last tracked point (see at_range)."""
         pts = self.trajectory(zero_distance_yd, max_range_yd + step_yd)
         out = []
         r = 0.0
-        while r <= max_range_yd + 1e-6:
+        while r <= max_range_yd + 1e-6 and r * FT_PER_YARD <= pts[-1].range_ft:
             out.append(_interp_point_at_range(pts, r * FT_PER_YARD))
             r += step_yd
         return out
 
     def at_range(self, zero_distance_yd: float, range_yd: float) -> TrajectoryPoint:
+        """Raises ValueError for a range the bullet is never tracked to (it
+        stopped, or the 15 second flight cap ran out). This used to hand
+        back the last tracked point instead, so a request for 5000 yards
+        was answered with a real-looking solution for about 3500."""
         pts = self.trajectory(zero_distance_yd, range_yd + 10.0)
+        if pts[-1].range_ft < range_yd * FT_PER_YARD:
+            raise ValueError(
+                f"{range_yd:g} yards is past where this load can be solved -- "
+                f"it only carries to about {pts[-1].range_yd:.0f} yards."
+            )
         return _interp_point_at_range(pts, range_yd * FT_PER_YARD)
 
 

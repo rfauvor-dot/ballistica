@@ -230,7 +230,15 @@ _CONFIRM_YES_WORD_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|save( it)?|s
 # implicit-no branch, silently keeping the rifle with no indication
 # anything had gone wrong. "Save" is deliberately NOT in this list --
 # saying "save" to confirm a delete would be actively misleading.
-_CONFIRM_DELETE_YES_RE = re.compile(r"^(yes|yeah|yep|yup|confirm(ed)?|delete( it)?|do it|go ahead)\b")
+_CONFIRM_DELETE_YES_RE = re.compile(
+    r"^(yes|yeah|yep|yup|confirm(ed)?|delete( it)?|do it|go ahead|correct|right|"
+    r"that.?s (correct|right)|that is (correct|right))\b"
+)
+# Anything in a delete confirmation that pulls the other way cancels it,
+# even after a leading yes-word ("right, hold on", "yes -- no wait").
+_DELETE_HESITATION_RE = re.compile(
+    r"\b(no|nope|not|don.?t|do not|wait|hold on|hang on|stop|cancel|never ?mind|keep|wrong)\b"
+)
 _NEGATED_CONFIRM_RE = re.compile(r"\b(not|isn.t|wasn.t|ain.t)\b[\w\s]{0,15}\b(correct|right)\b")
 
 # Answering a "which one do you mean?" disambiguation prompt (switch_rifle/
@@ -515,6 +523,9 @@ _DISTANCE_MENTION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:yd|yds|yards?)\b|\b(?:d
 # almost certainly a bad reading in the set, not real dispersion -- real
 # strings run a few percent at most.
 _MAX_TRUSTED_SPREAD_FRACTION = 0.25
+# Muzzle Mach above which a load counts as a supersonic one for the
+# "past supersonic range" caution in _drop_at().
+_SUPERSONIC_LOAD_MACH = 1.1
 _WARN_SPREAD_FRACTION = 0.05
 
 
@@ -688,6 +699,9 @@ class BallisticaCLI:
         self._setup: _SetupSession | None = None
         self._calibration: _CalibrationSession | None = None
         self._pending_delete: str | None = None
+        # Set alongside _pending_delete when the thing awaiting a yes is
+        # one LOAD on that rifle rather than the whole rifle.
+        self._pending_delete_load: str | None = None
         self._pending_delete_at: float = 0.0
         # Disambiguation gates for switch_rifle/switch_load (2026-09-18,
         # real range-log bug -- see _ORDINAL_CHOICE_WORDS above): "That
@@ -1623,6 +1637,11 @@ class BallisticaCLI:
         An empty/filler-only query (bare "delete it", "get rid of this
         rifle") falls back to the active rifle, same as before this
         query-aware version existed."""
+        # "Delete that load" names a LOAD. It used to land here as a
+        # filler-only rifle query, fall back to the active rifle, and offer
+        # to delete the whole rifle and every load on it.
+        if re.search(r"\bloads?\b", query.lower()) and not re.search(r"\b(rifle|pistol|gun|handgun)\b", query.lower()):
+            return self._request_delete_load_by_query(query)
         matches = self.store.find_rifle_matches(query)
         if matches is None:
             try:
@@ -1639,22 +1658,58 @@ class BallisticaCLI:
         else:
             rifle = matches[0]
         self._pending_delete = rifle.name
+        self._pending_delete_load = None
         self._pending_delete_at = time.time()
         return f"Delete the {rifle.name}, and all its loads? This can't be undone."
 
+    def _request_delete_load_by_query(self, query: str) -> str:
+        """Voice delete of ONE load on the active rifle, same read-back-
+        then-confirm shape as the rifle delete. A query with nothing
+        identifying in it ("that load", "this load") means the active
+        load."""
+        try:
+            rifle = self.store.get_active_rifle()
+        except ValueError as exc:
+            return str(exc)
+        matches = rifle.find_load_matches(query)
+        if matches is None:
+            try:
+                load = rifle.get_active_load()
+            except ValueError as exc:
+                return str(exc)
+        elif not matches:
+            return (f"I couldn't find a load matching '{query}' on the {rifle.name}. "
+                    f"You may need to check the name in Settings.")
+        elif len(matches) > 1:
+            return f"That could be {', '.join(m.name for m in matches)}. Say delete and the full load name."
+        else:
+            load = matches[0]
+        self._pending_delete = rifle.name
+        self._pending_delete_load = load.name
+        self._pending_delete_at = time.time()
+        return f"Delete the {load.name} load from the {rifle.name}? This can't be undone."
+
     def _handle_delete_confirm(self, text: str) -> str:
+        """A delete can't be undone, so the yes has to be a clear one: it
+        must LEAD the reply, and nothing in the reply may pull the other
+        way. This used to accept "right" or "correct" anywhere in the
+        sentence, so "all right, hold on" deleted a rifle and its loads."""
         low = text.lower().strip()
-        name = self._pending_delete
-        if _CONFIRM_DELETE_YES_RE.match(low) or (
-            re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
-        ):
-            self._pending_delete = None
-            self.store.delete_rifle(name)
-            self.store.save()
-            self._forget_chat_history()
-            return f"Deleted the {name}."
+        rifle_name, load_name = self._pending_delete, self._pending_delete_load
         self._pending_delete = None
-        return "Okay, keeping it."
+        self._pending_delete_load = None
+        if not _CONFIRM_DELETE_YES_RE.match(low) or _DELETE_HESITATION_RE.search(low):
+            return "Okay, keeping it."
+        try:
+            if load_name is not None:
+                self.store.delete_load(rifle_name, load_name)
+            else:
+                self.store.delete_rifle(rifle_name)
+        except KeyError:
+            return "I couldn't find that anymore, so nothing was deleted."
+        self.store.save()
+        self._forget_chat_history()
+        return f"Deleted the {load_name} load." if load_name is not None else f"Deleted the {rifle_name}."
 
     # Guided load/rifle setup -- a stateful, multi-turn interview. See
     # _SetupSession above: nothing gets written to the store until the
@@ -2541,9 +2596,17 @@ class BallisticaCLI:
         # gives TTS a natural pause between elevation and windage instead
         # of both numbers running together.
         self._last_reply_is_readout = True
+        # A load that leaves the muzzle supersonic but has gone subsonic by
+        # the target is past where a G1/G7 point-mass prediction holds up
+        # well. Said once, after the numbers. Loads that are subsonic from
+        # the muzzle (pistol, 300 Blackout subs) never trigger it.
+        caution = ""
+        muzzle_mach = load.muzzle_velocity_fps / solver.atmosphere.speed_of_sound_fps()
+        if muzzle_mach > _SUPERSONIC_LOAD_MACH and point.mach < 1.0:
+            caution = " Past supersonic range, so treat that as approximate."
         return (f"Solution, {r.range_yd:.0f} yards. "
                 f"Elevation, {elev_dir} {abs(elev_val):.1f} {unit_word}. "
-                f"Windage, {wind_dir} {abs(wind_val):.1f} {unit_word}.")
+                f"Windage, {wind_dir} {abs(wind_val):.1f} {unit_word}.{caution}")
 
     def _repeat(self, part: str) -> str:
         s = self._last_solution

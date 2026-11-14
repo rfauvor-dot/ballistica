@@ -1116,7 +1116,7 @@ function applyRifleDetailToUI(detail) {
   currentRifleDetail = detail;
   creatingNewRifle = false; // loading any real rifle means we're editing it, not creating a new one
   loadSelect.innerHTML = detail.loads.map(l =>
-    `<option value="${l.name}" ${l.name === detail.active_load_name ? 'selected' : ''}>${l.name}</option>`
+    `<option value="${escapeHtml(l.name)}" ${l.name === detail.active_load_name ? 'selected' : ''}>${escapeHtml(l.name)}</option>`
   ).join('');
   fillRifleForm(detail);
   if (detail.loads.length) {
@@ -1148,8 +1148,8 @@ function renderRiflePicker() {
     const active = currentRifleDetail && r.name === currentRifleDetail.name;
     // load_count shown here directly answers "did that load I just saved
     // really attach to this rifle" without opening the rifle at all.
-    return `<button type="button" class="rifle-list-row${active ? ' active' : ''}" data-name="${r.name.replace(/"/g, '&quot;')}">` +
-      `<span>${r.name}</span><span>${r.load_count} load${r.load_count === 1 ? '' : 's'}${active ? '  ✓' : ''}</span></button>`;
+    return `<button type="button" class="rifle-list-row${active ? ' active' : ''}" data-name="${escapeHtml(r.name)}">` +
+      `<span>${escapeHtml(r.name)}</span><span>${Number(r.load_count)} load${r.load_count === 1 ? '' : 's'}${active ? '  ✓' : ''}</span></button>`;
   }).join('');
   list.querySelectorAll('.rifle-list-row').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -2555,8 +2555,13 @@ const waiverEl = {
   error: document.getElementById('waiverError'),
 };
 
+// Safe for both element text and quoted attribute values. Quotes were not
+// escaped before, so a value used inside value="..." (an imported file's
+// column header, a rifle name) could close the attribute and add its own.
 function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 async function showWaiverPanel() {

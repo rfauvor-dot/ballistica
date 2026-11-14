@@ -23,6 +23,7 @@ import dataclasses
 import json
 import os
 import re
+import secrets
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -192,9 +193,33 @@ def web_ui():
     # acceptance flow -- it must never be served stale, so every
     # response explicitly forbids caching rather than relying on
     # whatever a given browser's default heuristics decide to do.
+    # Content-Security-Policy (2026-11-14): a backstop behind the page's own
+    # HTML escaping. Scripts run only if they come from this origin or
+    # carry this response's one-time nonce, so markup injected through a
+    # rifle name or an imported file can't execute (inline event handlers
+    # included), and the page can only talk to this server and Supabase.
+    # Inline STYLE attributes are still allowed -- the page uses them
+    # throughout -- which doesn't let anything run.
+    nonce = secrets.token_urlsafe(16)
+    html = html.replace("<script", f'<script nonce="{nonce}"')
+    csp = "; ".join([
+        "default-src 'self'",
+        f"script-src 'self' 'nonce-{nonce}'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "media-src 'self' data: blob:",
+        f"connect-src 'self' {_SUPABASE_URL}".rstrip(),
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ])
     return HTMLResponse(
         content=html,
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache",
+            "Content-Security-Policy": csp, "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -1202,6 +1227,7 @@ def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
     )
     pending_delete = state.get("pending_delete")
     cli._pending_delete = pending_delete["rifle_name"] if pending_delete else None
+    cli._pending_delete_load = pending_delete.get("load_name") if pending_delete else None
     cli._pending_delete_at = pending_delete["at"] if pending_delete else 0.0
     pending_cal = state.get("pending_calibration_start")
     cli._pending_calibration_start = bool(pending_cal)
@@ -1251,7 +1277,8 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
         "setup": cli._setup.to_dict() if cli._setup else None,
         "calibration": cli._calibration.to_dict() if cli._calibration else None,
         "pending_delete": (
-            {"rifle_name": cli._pending_delete, "at": cli._pending_delete_at}
+            {"rifle_name": cli._pending_delete, "load_name": cli._pending_delete_load,
+             "at": cli._pending_delete_at}
             if cli._pending_delete else None
         ),
         "pending_calibration_start": (
