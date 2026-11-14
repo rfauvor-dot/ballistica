@@ -51,6 +51,10 @@ FT_PER_YARD = 3.0
 IN_PER_FT = 12.0
 MPH_TO_FPS = 5280.0 / 3600.0
 
+# Steepest launch angle the zero solver will consider. Real zeros need a
+# degree or two; anything that can't be zeroed within this can't be zeroed.
+_MAX_ZERO_ANGLE_DEG = 15.0
+
 
 @dataclass(frozen=True)
 class WindCondition:
@@ -182,20 +186,43 @@ class TrajectorySolver:
     def solve_zero_angle(self, zero_distance_yd: float) -> float:
         """Bisects on launch angle (radians) so the trajectory crosses
         y=0 (the line of sight) at zero_distance_yd."""
+        if not zero_distance_yd > 0:
+            raise ValueError("Zero distance must be more than 0 yards.")
         zero_ft = zero_distance_yd * FT_PER_YARD
+        unreachable = ValueError(
+            f"A {zero_distance_yd:g} yard zero is beyond this load's reach -- "
+            f"check the zero distance and muzzle velocity."
+        )
 
         def height_at_zero(angle: float) -> float:
             pts = self._run(angle, zero_ft + 5.0)
+            # A bullet that never got to the zero distance (it stopped, or
+            # the flight-time cap ran out) counts as falling short -- the
+            # last point's height is not its height AT the zero distance.
+            if pts[-1].range_ft < zero_ft:
+                return -math.inf
             return _interp_y_at_x(pts, zero_ft)
 
+        # Both bracket searches are bounded. They used to widen forever: a
+        # zero the bullet can't reach (found 2026-11-14: 1050 fps, BC 0.12,
+        # zero 2000 yd) is below the line of sight at every angle, so the
+        # upper search never ended and the request hung a server thread.
         lo, hi = math.radians(-3.0), math.radians(3.0)
+        limit = math.radians(_MAX_ZERO_ANGLE_DEG)
         f_lo, f_hi = height_at_zero(lo), height_at_zero(hi)
         while f_lo > 0:
             lo -= math.radians(1.0)
+            if lo < -limit:
+                raise unreachable
             f_lo = height_at_zero(lo)
-        while f_hi < 0:
-            hi += math.radians(1.0)
-            f_hi = height_at_zero(hi)
+        if f_hi < 0:
+            # One run at the steepest angle allowed settles "can it get
+            # there at all" before stepping up a degree at a time.
+            if height_at_zero(limit) < 0:
+                raise unreachable
+            while f_hi < 0:
+                hi = min(hi + math.radians(1.0), limit)
+                f_hi = height_at_zero(hi)
 
         for _ in range(40):
             mid = (lo + hi) / 2

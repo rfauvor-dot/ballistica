@@ -167,6 +167,7 @@
   const FT_PER_YARD = 3.0;
   const IN_PER_FT = 12.0;
   const MPH_TO_FPS = 5280.0 / 3600.0;
+  const MAX_ZERO_ANGLE_DEG = 15.0;
 
   class WindCondition {
     constructor(speedMph, clockDeg) {
@@ -294,23 +295,38 @@
     }
 
     solveZeroAngle(zeroDistanceYd) {
+      if (!(zeroDistanceYd > 0)) throw new Error("Zero distance must be more than 0 yards.");
       const zeroFt = zeroDistanceYd * FT_PER_YARD;
+      const unreachable = () => new Error(
+        "A " + zeroDistanceYd + " yard zero is beyond this load's reach -- " +
+        "check the zero distance and muzzle velocity."
+      );
+      // Same as trajectory.py: a bullet that never reached the zero
+      // distance counts as falling short, and both bracket searches are
+      // bounded so an unreachable zero raises instead of looping forever.
       const heightAtZero = (angle) => {
         const pts = this._run(angle, zeroFt + 5.0);
+        if (pts[pts.length - 1].rangeFt < zeroFt) return -Infinity;
         return interpPointAtRange(pts, zeroFt).dropFt;
       };
 
-      let lo = (-3.0 * Math.PI) / 180.0;
-      let hi = (3.0 * Math.PI) / 180.0;
+      const degree = Math.PI / 180.0;
+      const limit = MAX_ZERO_ANGLE_DEG * degree;
+      let lo = -3.0 * degree;
+      let hi = 3.0 * degree;
       let fLo = heightAtZero(lo);
       let fHi = heightAtZero(hi);
       while (fLo > 0) {
-        lo -= (1.0 * Math.PI) / 180.0;
+        lo -= degree;
+        if (lo < -limit) throw unreachable();
         fLo = heightAtZero(lo);
       }
-      while (fHi < 0) {
-        hi += (1.0 * Math.PI) / 180.0;
-        fHi = heightAtZero(hi);
+      if (fHi < 0) {
+        if (heightAtZero(limit) < 0) throw unreachable();
+        while (fHi < 0) {
+          hi = Math.min(hi + degree, limit);
+          fHi = heightAtZero(hi);
+        }
       }
 
       let mid = (lo + hi) / 2;

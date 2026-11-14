@@ -1579,7 +1579,10 @@ def v2_calc_drop_at_range(
         scope_height_in=rifle.scope_height_in,
         atmosphere=req.atmosphere.to_conditions(), wind=req.wind.to_condition(),
     )
-    point = solver.at_range(load.zero_distance_yd, req.range_yd)
+    try:
+        point = solver.at_range(load.zero_distance_yd, req.range_yd)
+    except ValueError as exc:  # e.g. a zero distance this load can't reach
+        raise HTTPException(status_code=400, detail=_msg(exc))
     return RangeReportOut(**report_for_point(point, rifle.click_value_mrad).__dict__)
 
 

@@ -21,11 +21,17 @@ Storage mapping:
   data, and that table already exists for exactly this kind of state
   (voice conversation state lands there too, in a later phase).
 
-save() does a full delete-and-reinsert of the user's rifles/loads on
-every call, matching the flat-file store's own save() semantics
-exactly (a full snapshot overwrite, not an incremental diff) -- correct
-and simple at the scale this app actually runs at (one user's handful
-of rifles), not a performance concern worth engineering around.
+save() writes only what changed since load() (or the previous save()):
+it deletes the rows that are gone, updates the rows whose fields differ,
+and inserts the new ones, keeping every surviving row's id. It used to
+delete ALL of the user's rifles and re-insert them on every call, even
+for a plain "switch to X" -- a failure between the delete and the
+re-insert (timeout, deploy mid-request) lost everything, two overlapping
+requests could overwrite each other with a stale copy, and no row id
+survived a save. This is still several separate requests, not one
+database transaction, so a failure part-way can leave a save partly
+applied -- but there is no longer any moment at which rows that weren't
+being changed have been deleted.
 """
 from __future__ import annotations
 
@@ -48,6 +54,10 @@ _LOAD_COLUMNS = (
     "name", "bullet_weight_gr", "bc", "drag_model", "muzzle_velocity_fps",
     "zero_distance_yd", "bullet_type", "powder", "powder_charge_gr", "notes",
 )
+
+
+def _columns(obj, names: tuple[str, ...]) -> dict:
+    return {k: getattr(obj, k) for k in names}
 
 
 class SupabaseProfileStore(ProfileStore):
@@ -87,12 +97,20 @@ class SupabaseProfileStore(ProfileStore):
             "GET", "loads", params={"user_id": f"eq.{self.user_id}", "select": "*"},
         ).json()
 
+        # What the database holds, as of this load()/the last save() --
+        # save() diffs the in-memory objects against these. Keyed by row id.
+        self._saved_rifles: dict[str, dict] = {}   # id -> {"obj", "cols", "active_load_id"}
+        self._saved_loads: dict[str, dict] = {}    # id -> {"obj", "cols", "rifle_id"}
+
         loads_by_rifle_id: dict[str, dict[str, Load]] = {}
         load_id_to_name: dict[str, str] = {}
         for row in load_rows:
             load_obj = Load(**{k: row[k] for k in _LOAD_COLUMNS})
             loads_by_rifle_id.setdefault(row["rifle_id"], {})[load_obj.name] = load_obj
             load_id_to_name[row["id"]] = load_obj.name
+            self._saved_loads[row["id"]] = {
+                "obj": load_obj, "cols": _columns(load_obj, _LOAD_COLUMNS), "rifle_id": row["rifle_id"],
+            }
 
         self.rifles = {}
         for row in rifle_rows:
@@ -104,9 +122,14 @@ class SupabaseProfileStore(ProfileStore):
                 active_load_name=active_load_name,
             )
             self.rifles[rifle_obj.name] = rifle_obj
+            self._saved_rifles[row["id"]] = {
+                "obj": rifle_obj, "cols": _columns(rifle_obj, _RIFLE_COLUMNS),
+                "active_load_id": row["active_load_id"],
+            }
 
         state = self.get_conversation_state()
         active_rifle_id = state.get("active_rifle_id")
+        self._saved_active_rifle_id = active_rifle_id
         self.active_rifle_name = None
         if active_rifle_id:
             for row in rifle_rows:
@@ -119,53 +142,118 @@ class SupabaseProfileStore(ProfileStore):
             # "make active if nothing else is" default.
             self.active_rifle_name = next(iter(self.rifles))
 
+    @staticmethod
+    def _match_saved(objects: list, saved: dict[str, dict]) -> tuple[dict[int, str], dict[str, dict]]:
+        """Pairs in-memory objects with saved rows: by identity first (so a
+        rename is an UPDATE of the same row), then by name (so an object
+        replaced by a new one of the same name is also an UPDATE, not a
+        delete plus an insert). Returns ({id(obj): row id}, the saved rows
+        nothing claimed -- i.e. the ones to delete)."""
+        unclaimed = dict(saved)
+        ids: dict[int, str] = {}
+        for same in (lambda entry, obj: entry["obj"] is obj,
+                     lambda entry, obj: entry["cols"]["name"] == obj.name):
+            for obj in objects:
+                if id(obj) in ids:
+                    continue
+                row_id = next((i for i, entry in unclaimed.items() if same(entry, obj)), None)
+                if row_id is not None:
+                    ids[id(obj)] = row_id
+                    del unclaimed[row_id]
+        return ids, unclaimed
+
     def save(self) -> None:
-        self._rest("DELETE", "rifles", params={"user_id": f"eq.{self.user_id}"})
+        """Writes only the difference between the in-memory rifles/loads
+        and what load() (or the previous save()) saw -- see the module
+        docstring for why this is no longer delete-everything-and-reinsert.
+        Order is deletes, then updates, then inserts, so a name freed by a
+        delete or a rename is free before anything new claims it."""
+        own = {"user_id": f"eq.{self.user_id}"}
+        rifles = list(self.rifles.values())
+        rifle_ids, gone = self._match_saved(rifles, self._saved_rifles)
 
-        if not self.rifles:
-            self.set_conversation_state(active_rifle_id=None)
-            return
+        # 1. Rifles that are gone. Their loads go with them (ON DELETE CASCADE).
+        for rid in gone:
+            self._rest("DELETE", "rifles", params={"id": f"eq.{rid}", **own})
+            del self._saved_rifles[rid]
+            for lid in [i for i, e in self._saved_loads.items() if e["rifle_id"] == rid]:
+                del self._saved_loads[lid]
 
-        rifle_payload = [
-            {**{k: getattr(rifle, k) for k in _RIFLE_COLUMNS}, "user_id": self.user_id}
-            for rifle in self.rifles.values()
-        ]
-        inserted_rifles = self._rest(
-            "POST", "rifles", json=rifle_payload,
-            headers={"Prefer": "return=representation"},
-        ).json()
-        rifle_id_by_name = {row["name"]: row["id"] for row in inserted_rifles}
-
-        load_payload = []
-        for rifle in self.rifles.values():
-            rifle_id = rifle_id_by_name[rifle.name]
-            for load_obj in rifle.loads.values():
-                load_payload.append({
-                    **{k: getattr(load_obj, k) for k in _LOAD_COLUMNS},
-                    "rifle_id": rifle_id, "user_id": self.user_id,
-                })
-        load_id_by_rifle_and_name = {}
-        if load_payload:
-            inserted_loads = self._rest(
-                "POST", "loads", json=load_payload,
-                headers={"Prefer": "return=representation"},
-            ).json()
-            for row in inserted_loads:
-                load_id_by_rifle_and_name[(row["rifle_id"], row["name"])] = row["id"]
-
-        for rifle in self.rifles.values():
-            if rifle.active_load_name is None:
+        # 2. Existing rifles whose own fields changed.
+        for rifle in rifles:
+            rid = rifle_ids.get(id(rifle))
+            if rid is None:
                 continue
-            rifle_id = rifle_id_by_name[rifle.name]
-            load_id = load_id_by_rifle_and_name.get((rifle_id, rifle.active_load_name))
-            if load_id:
-                self._rest(
-                    "PATCH", "rifles", params={"id": f"eq.{rifle_id}"},
-                    json={"active_load_id": load_id},
-                )
+            cols = _columns(rifle, _RIFLE_COLUMNS)
+            entry = self._saved_rifles[rid]
+            if cols != entry["cols"]:
+                self._rest("PATCH", "rifles", params={"id": f"eq.{rid}", **own}, json=cols)
+            entry["obj"], entry["cols"] = rifle, cols
 
-        active_rifle_id = rifle_id_by_name.get(self.active_rifle_name) if self.active_rifle_name else None
-        self.set_conversation_state(active_rifle_id=active_rifle_id)
+        # 3. New rifles.
+        for rifle in rifles:
+            if id(rifle) in rifle_ids:
+                continue
+            cols = _columns(rifle, _RIFLE_COLUMNS)
+            row = self._rest(
+                "POST", "rifles", json={**cols, "user_id": self.user_id},
+                headers={"Prefer": "return=representation"},
+            ).json()[0]
+            rifle_ids[id(rifle)] = row["id"]
+            self._saved_rifles[row["id"]] = {"obj": rifle, "cols": cols, "active_load_id": None}
+
+        # 4. Loads, one rifle at a time, same three steps.
+        for rifle in rifles:
+            rid = rifle_ids[id(rifle)]
+            loads = list(rifle.loads.values())
+            load_ids, gone_loads = self._match_saved(
+                loads, {i: e for i, e in self._saved_loads.items() if e["rifle_id"] == rid},
+            )
+            for lid in gone_loads:
+                self._rest("DELETE", "loads", params={"id": f"eq.{lid}", **own})
+                del self._saved_loads[lid]
+                if self._saved_rifles[rid]["active_load_id"] == lid:
+                    self._saved_rifles[rid]["active_load_id"] = None  # the FK is ON DELETE SET NULL
+
+            new_loads = []
+            for load_obj in loads:
+                cols = _columns(load_obj, _LOAD_COLUMNS)
+                lid = load_ids.get(id(load_obj))
+                if lid is None:
+                    new_loads.append((load_obj, cols))
+                    continue
+                entry = self._saved_loads[lid]
+                if cols != entry["cols"]:
+                    self._rest("PATCH", "loads", params={"id": f"eq.{lid}", **own}, json=cols)
+                entry["obj"], entry["cols"] = load_obj, cols
+
+            if new_loads:
+                inserted = self._rest(
+                    "POST", "loads",
+                    json=[{**cols, "rifle_id": rid, "user_id": self.user_id} for _, cols in new_loads],
+                    headers={"Prefer": "return=representation"},
+                ).json()
+                id_by_name = {row["name"]: row["id"] for row in inserted}
+                for load_obj, cols in new_loads:
+                    lid = id_by_name[load_obj.name]
+                    load_ids[id(load_obj)] = lid
+                    self._saved_loads[lid] = {"obj": load_obj, "cols": cols, "rifle_id": rid}
+
+            active_load = rifle.loads.get(rifle.active_load_name) if rifle.active_load_name else None
+            active_load_id = load_ids.get(id(active_load)) if active_load is not None else None
+            if active_load_id != self._saved_rifles[rid]["active_load_id"]:
+                self._rest(
+                    "PATCH", "rifles", params={"id": f"eq.{rid}", **own},
+                    json={"active_load_id": active_load_id},
+                )
+                self._saved_rifles[rid]["active_load_id"] = active_load_id
+
+        # 5. Which rifle is active -- only written when it actually changed.
+        active_rifle = self.rifles.get(self.active_rifle_name) if self.active_rifle_name else None
+        active_rifle_id = rifle_ids.get(id(active_rifle)) if active_rifle is not None else None
+        if active_rifle_id != self._saved_active_rifle_id:
+            self.set_conversation_state(active_rifle_id=active_rifle_id)
+            self._saved_active_rifle_id = active_rifle_id
 
     def get_conversation_state(self) -> dict:
         """Public: also used directly by api.py's /v2/voice/query to
