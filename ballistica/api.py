@@ -39,7 +39,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 import httpx
 import jwt
 import openai
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -51,7 +51,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
-from .aggregate_pool import contribute_load
+from .aggregate_pool import build_load_event_payload, contribute_load
 from .atmosphere import AtmosphereConditions, pressure_at_altitude_inhg
 from . import spend
 from .cli import BallisticaCLI, _CalibrationSession, _SessionLog, _SetupSession
@@ -63,7 +63,7 @@ from .openai_client import get_openai_client
 from .profiles import Load, Rifle
 from .reporting import report_for_point
 from .supabase_auth import verify_token
-from .supabase_store import SupabaseProfileStore
+from .supabase_store import SupabaseProfileStore, supabase_http
 from . import target as target_photo
 from .trajectory import TrajectorySolver, WindCondition
 from .waiver import (
@@ -886,7 +886,7 @@ def v2_waiver_status(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
     separate re-consent screen is needed beyond that notice. Reads the
     caller's own rows only (RLS-scoped, no service role)."""
     user_id, token = auth
-    resp = httpx.get(
+    resp = supabase_http().get(
         f"{_SUPABASE_URL}/rest/v1/waiver_acceptances",
         headers={"apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"},
         params={"user_id": f"eq.{user_id}", "select": "waiver_version", "order": "created_at.desc", "limit": 1},
@@ -931,7 +931,7 @@ def v2_accept_waiver(payload: WaiverAcceptIn, auth: tuple[str, str] = Depends(_v
             detail="The waiver has changed since this was loaded -- reload and accept the current version.",
         )
     user_id, token = auth
-    resp = httpx.post(
+    resp = supabase_http().post(
         f"{_SUPABASE_URL}/rest/v1/waiver_acceptances",
         headers={
             "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
@@ -963,7 +963,7 @@ def v2_walkthrough_status(auth: tuple[str, str] = Depends(_verify_bearer)) -> di
         "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-    resp = httpx.post(
+    resp = supabase_http().post(
         f"{_SUPABASE_URL}/rest/v1/profiles", headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
         json={"user_id": user_id}, params={"on_conflict": "user_id"}, timeout=15,
     )
@@ -988,7 +988,7 @@ def v2_mark_walkthrough_first_played(auth: tuple[str, str] = Depends(_verify_bea
         "Content-Type": "application/json",
     }
     now = datetime.now(timezone.utc).isoformat()
-    resp = httpx.patch(
+    resp = supabase_http().patch(
         f"{_SUPABASE_URL}/rest/v1/profiles", headers=headers,
         params={"user_id": f"eq.{user_id}", "first_walkthrough_played_at": "is.null"},
         json={"first_walkthrough_played_at": now}, timeout=15,
@@ -1015,7 +1015,7 @@ def v2_get_profile(auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
         "apikey": _SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-    resp = httpx.post(
+    resp = supabase_http().post(
         f"{_SUPABASE_URL}/rest/v1/profiles", headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
         json={"user_id": user_id}, params={"on_conflict": "user_id"}, timeout=15,
     )
@@ -1041,7 +1041,7 @@ def v2_update_profile(payload: ProfileUpdateIn, auth: tuple[str, str] = Depends(
         update["display_name"] = payload.display_name
     if payload.voice_id is not None:
         update["voice_id"] = payload.voice_id
-    resp = httpx.post(
+    resp = supabase_http().post(
         f"{_SUPABASE_URL}/rest/v1/profiles",
         headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
         json=update, params={"on_conflict": "user_id"}, timeout=15,
@@ -1111,6 +1111,13 @@ async def v2_import_commit(
     except (ImportError_, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # What the pool already has for each existing load, taken before the
+    # import changes anything, so re-importing a file contributes only the
+    # rows that are actually new or different.
+    already_contributed = {
+        (rifle.name, load.name): build_load_event_payload(rifle, load)
+        for rifle in user_store.rifles.values() for load in rifle.loads.values()
+    }
     results, touched = apply_mapping(rows, mapping_dict, existing_rifles=user_store.rifles)
     user_store.rifles.update(touched)  # new rifles weren't in user_store.rifles until now -- save()
                                         # persists the FULL set it finds there, so this must happen
@@ -1128,7 +1135,8 @@ async def v2_import_commit(
             rifle = touched.get(r.rifle_name)
             load = rifle.loads.get(r.load_name) if rifle else None
             if rifle and load:
-                contribute_load(rifle, load, user_store.access_token)
+                contribute_load(rifle, load, user_store.access_token,
+                                previous=already_contributed.get((rifle.name, load.name)))
 
     return {
         "results": [
@@ -1189,7 +1197,7 @@ def v2_delete_account(request: Request, auth: tuple[str, str] = Depends(_verify_
                    "(SUPABASE_SERVICE_ROLE_KEY is not set).",
         )
     user_id, _ = auth
-    resp = httpx.delete(
+    resp = supabase_http().delete(
         f"{_SUPABASE_URL}/auth/v1/admin/users/{user_id}",
         headers={
             "apikey": _SUPABASE_SERVICE_ROLE_KEY,
@@ -1375,10 +1383,20 @@ def _dehydrate_cli(cli: BallisticaCLI) -> dict:
     }
 
 
+def _log_turn_quietly(
+    user_store: SupabaseProfileStore, text: str, tool_name: str, reply: str, duration_ms: int,
+) -> None:
+    try:
+        user_store.log_conversation_turn(text, tool_name, reply, duration_ms)
+    except Exception:
+        pass
+
+
 @app.post("/v2/voice/query", response_model=VoiceQueryOut)
 @limiter.limit("20/minute")
 def v2_voice_query(
-    request: Request, payload: VoiceQueryIn, _budget: None = Depends(_budget_gate),
+    request: Request, payload: VoiceQueryIn, background_tasks: BackgroundTasks,
+    _budget: None = Depends(_budget_gate),
     user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
     """Per-user, per-request BallisticaCLI -- a fresh one every call
@@ -1437,11 +1455,12 @@ def v2_voice_query(
     # see db/010_conversation_debug_log.sql and supabase_store.py's
     # log_conversation_turn()). Best-effort: a logging failure (e.g. the
     # migration not yet applied to this Supabase project) must never
-    # break the actual voice reply the shooter is waiting on.
-    try:
-        user_store.log_conversation_turn(payload.text, cli._last_tool_name, reply or "", duration_ms)
-    except Exception:
-        pass
+    # break the actual voice reply the shooter is waiting on. Written
+    # AFTER the response has gone out (a background task), so the shooter
+    # isn't kept waiting on a database write that is only for diagnostics.
+    background_tasks.add_task(
+        _log_turn_quietly, user_store, payload.text, cli._last_tool_name, reply or "", duration_ms,
+    )
     # Every structured pending gate above (setup/calibration/delete/
     # switch-disambiguation/etc.) already tracks itself, so a real
     # question from one of those was always covered here. The gap
@@ -1556,12 +1575,15 @@ def v2_add_load(
         load = Load(**payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_msg(exc))
+    replaced = rifle.loads.get(load.name)
+    previous = build_load_event_payload(rifle, replaced) if replaced else None
     rifle.add_load(load)
     user_store.save()
     # Every saved load is automatically anonymized and contributed to
     # the aggregate pool -- standard, non-optional, per waiver.py
     # Section 4. Best-effort: never blocks this endpoint's own success.
-    contribute_load(rifle, load, user_store.access_token)
+    # Skipped only when this save changed nothing the pool records.
+    contribute_load(rifle, load, user_store.access_token, previous=previous)
     return _load_to_out(load)
 
 
@@ -1585,13 +1607,18 @@ def v2_update_load(
     if payload.name != load_name and payload.name in rifle.loads:
         raise HTTPException(status_code=409, detail=f"A load named '{payload.name}' already exists on this rifle")
     try:
+        existing = rifle.find_load(load_name)
+    except KeyError:
+        existing = None
+    previous = build_load_event_payload(rifle, existing) if existing else None
+    try:
         load = user_store.update_load_fields(rifle_name, load_name, **payload.model_dump())
     except KeyError as exc:      # no such rifle or load
         raise HTTPException(status_code=404, detail=_msg(exc))
     except ValueError as exc:    # it exists; the new values are invalid
         raise HTTPException(status_code=400, detail=_msg(exc))
     user_store.save()
-    contribute_load(rifle, load, user_store.access_token)
+    contribute_load(rifle, load, user_store.access_token, previous=previous)
     return _load_to_out(load)
 
 

@@ -69,6 +69,9 @@ G7: tuple[tuple[float, float], ...] = (
 )
 
 _TABLES = {"G1": G1, "G7": G7}
+# The Mach column of each table, built once. drag_coefficient() used to
+# rebuild this list on every call -- four times per integration step.
+_MACHS = {name: [row[0] for row in table] for name, table in _TABLES.items()}
 
 assert len(G1) == 79, f"G1 table has {len(G1)} rows, expected 79"
 assert len(G7) == 84, f"G7 table has {len(G7)} rows, expected 84"
@@ -81,7 +84,7 @@ def drag_coefficient(drag_model: str, mach: float) -> float:
     (Mach 0 to 5), which comfortably covers all small-arms velocities.
     """
     table = _TABLES[drag_model]
-    machs = [row[0] for row in table]
+    machs = _MACHS[drag_model]
 
     if mach <= machs[0]:
         return table[0][1]

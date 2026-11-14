@@ -36,6 +36,7 @@ being changed have been deleted.
 from __future__ import annotations
 
 import os
+import threading
 
 import httpx
 
@@ -54,6 +55,36 @@ _LOAD_COLUMNS = (
     "name", "bullet_weight_gr", "bc", "drag_model", "muzzle_velocity_fps",
     "zero_distance_yd", "bullet_type", "powder", "powder_charge_gr", "notes",
 )
+
+
+_http_client: httpx.Client | None = None
+_http_client_lock = threading.Lock()
+
+
+def supabase_http() -> httpx.Client:
+    """The one HTTP client every Supabase call in this app goes through
+    (this store, api.py's direct calls, the aggregate pool).
+
+    Each call used to be a bare httpx.get()/post(), which opens a new
+    connection -- a fresh TCP and TLS handshake -- every time, and a single
+    voice turn makes five or more of them back to back. A shared client
+    keeps the connection open and reuses it, within a turn and across
+    turns. httpx.Client is safe to share between the server's threads.
+    Created on first use rather than at import so importing this module
+    never opens a socket."""
+    global _http_client
+    if _http_client is None:
+        with _http_client_lock:
+            if _http_client is None:
+                _http_client = httpx.Client(
+                    timeout=15,
+                    limits=httpx.Limits(max_keepalive_connections=10, keepalive_expiry=60),
+                    # Retries only a failure to CONNECT (e.g. a kept-alive
+                    # connection the far end has since closed) -- never a
+                    # request that may already have been received.
+                    transport=httpx.HTTPTransport(retries=1),
+                )
+    return _http_client
 
 
 def _columns(obj, names: tuple[str, ...]) -> dict:
@@ -85,7 +116,7 @@ class SupabaseProfileStore(ProfileStore):
         reaching the network."""
         url = f"{_SUPABASE_URL}/rest/v1/{table}"
         merged_headers = {**self._headers(), **(headers or {})}
-        resp = httpx.request(method, url, headers=merged_headers, timeout=15, **kwargs)
+        resp = supabase_http().request(method, url, headers=merged_headers, **kwargs)
         resp.raise_for_status()
         return resp
 
@@ -127,6 +158,7 @@ class SupabaseProfileStore(ProfileStore):
                 "active_load_id": row["active_load_id"],
             }
 
+        self._state = None  # force one real read; see get_conversation_state()
         state = self.get_conversation_state()
         active_rifle_id = state.get("active_rifle_id")
         self._saved_active_rifle_id = active_rifle_id
@@ -262,24 +294,33 @@ class SupabaseProfileStore(ProfileStore):
         to_dict()/from_dict() round-trip through the same "setup"/
         "calibration"/"pending_delete" keys this dict holds alongside
         "active_rifle_id")."""
-        rows = self._rest(
-            "GET", "conversation_state",
-            params={"user_id": f"eq.{self.user_id}", "select": "state_json"},
-        ).json()
-        return rows[0]["state_json"] if rows else {}
+        # Read from the database once per store (i.e. once per request) and
+        # served from memory after that. A voice turn used to fetch this
+        # same row three times: in load(), again in api.py to hydrate the
+        # conversation, and a third time inside set_conversation_state().
+        if getattr(self, "_state", None) is None:
+            rows = self._rest(
+                "GET", "conversation_state",
+                params={"user_id": f"eq.{self.user_id}", "select": "state_json"},
+            ).json()
+            self._state = dict(rows[0]["state_json"]) if rows else {}
+        return dict(self._state)
 
     def set_conversation_state(self, **updates) -> None:
-        # Read-modify-write rather than a blind overwrite -- state_json
-        # holds both active_rifle_id (this class's own concern) and
-        # voice conversation state (api.py's concern) side by side, and
-        # a caller updating one must never clobber the other.
+        # Merge into the whole state rather than overwrite it -- state_json
+        # holds both active_rifle_id (this class's own concern) and voice
+        # conversation state (api.py's concern) side by side, and a caller
+        # updating one must never clobber the other. The merge is against
+        # the copy this store read when it was created (see
+        # get_conversation_state()), not a fresh read.
         state = self.get_conversation_state()
-        state.update({k: v for k, v in updates.items()})
+        state.update(updates)
         self._rest(
             "POST", "conversation_state",
             json={"user_id": self.user_id, "state_json": state},
             headers={"Prefer": "resolution=merge-duplicates"},
         )
+        self._state = state
 
     def log_conversation_turn(
         self, input_text: str, tool_name: str, reply_text: str, duration_ms: int | None = None,

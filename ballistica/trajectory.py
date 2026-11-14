@@ -55,6 +55,12 @@ MPH_TO_FPS = 5280.0 / 3600.0
 # degree or two; anything that can't be zeroed within this can't be zeroed.
 _MAX_ZERO_ANGLE_DEG = 15.0
 
+# Solved zero angles, keyed on everything the angle depends on. Shared by
+# every solver in the process; emptied when full rather than tracking
+# recency -- refilling costs one zero solve per entry.
+_ZERO_ANGLE_CACHE: dict[tuple, float] = {}
+_ZERO_ANGLE_CACHE_MAX = 2000
+
 
 @dataclass(frozen=True)
 class WindCondition:
@@ -125,19 +131,6 @@ def _acceleration(
     return ax, ay, az
 
 
-def _rk4_step(state: list[float], dt: float, deriv) -> list[float]:
-    def f(s):
-        x, y, z, vx, vy, vz = s
-        ax, ay, az = deriv(vx, vy, vz)
-        return [vx, vy, vz, ax, ay, az]
-
-    k1 = f(state)
-    k2 = f([state[i] + dt / 2 * k1[i] for i in range(6)])
-    k3 = f([state[i] + dt / 2 * k2[i] for i in range(6)])
-    k4 = f([state[i] + dt * k3[i] for i in range(6)])
-    return [state[i] + dt / 6 * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]) for i in range(6)]
-
-
 @dataclass
 class TrajectorySolver:
     muzzle_velocity_fps: float
@@ -154,34 +147,84 @@ class TrajectorySolver:
         if self.bc <= 0:
             raise ValueError("bc must be positive")
 
-    def _run(self, launch_angle_rad: float, max_range_ft: float) -> list[TrajectoryPoint]:
+    def _steps(self, launch_angle_rad: float, max_range_ft: float):
+        """The integration itself: yields (t, x, y, z, speed) after each
+        RK4 step until the bullet passes max_range_ft, stops moving
+        downrange, or the flight-time cap runs out. Nothing is yielded for
+        the muzzle (t=0); callers build that point themselves.
+
+        The RK4 step is written out longhand (2026-11-14). It is the same
+        arithmetic, in the same order, as the generic list-based step it
+        replaced (and as engine.js's rk4Step) -- results are bit-for-bit
+        identical -- without building a dozen short lists per step. Position doesn't feed the
+        acceleration, so only the velocities are advanced between stages."""
         density_ratio = self.atmosphere.density_ratio()
         speed_of_sound = self.atmosphere.speed_of_sound_fps()
         wind_x, wind_z = self.wind.vector_fps()
-        scope_height_ft = self.scope_height_in / IN_PER_FT
+        bc, drag_model, dt = self.bc, self.drag_model, self.dt
+        half, sixth = dt / 2, dt / 6
+        accel, sqrt = _acceleration, math.sqrt
 
-        vx0 = self.muzzle_velocity_fps * math.cos(launch_angle_rad)
-        vy0 = self.muzzle_velocity_fps * math.sin(launch_angle_rad)
-        state = [0.0, -scope_height_ft, 0.0, vx0, vy0, 0.0]
-
-        def deriv(vx, vy, vz):
-            return _acceleration(vx, vy, vz, wind_x, wind_z, self.bc, self.drag_model,
-                                  density_ratio, speed_of_sound)
-
-        points = [TrajectoryPoint(0.0, 0.0, state[1], state[2],
-                                   self.muzzle_velocity_fps, self.muzzle_velocity_fps / speed_of_sound)]
+        x, y, z = 0.0, -(self.scope_height_in / IN_PER_FT), 0.0
+        vx = self.muzzle_velocity_fps * math.cos(launch_angle_rad)
+        vy = self.muzzle_velocity_fps * math.sin(launch_angle_rad)
+        vz = 0.0
 
         t = 0.0
         max_time_s = 15.0
-        while state[0] < max_range_ft and t < max_time_s:
-            state = _rk4_step(state, self.dt, deriv)
-            t += self.dt
-            if state[3] <= 0:
+        while x < max_range_ft and t < max_time_s:
+            ax1, ay1, az1 = accel(vx, vy, vz, wind_x, wind_z, bc, drag_model, density_ratio, speed_of_sound)
+            vx2, vy2, vz2 = vx + half * ax1, vy + half * ay1, vz + half * az1
+            ax2, ay2, az2 = accel(vx2, vy2, vz2, wind_x, wind_z, bc, drag_model, density_ratio, speed_of_sound)
+            vx3, vy3, vz3 = vx + half * ax2, vy + half * ay2, vz + half * az2
+            ax3, ay3, az3 = accel(vx3, vy3, vz3, wind_x, wind_z, bc, drag_model, density_ratio, speed_of_sound)
+            vx4, vy4, vz4 = vx + dt * ax3, vy + dt * ay3, vz + dt * az3
+            ax4, ay4, az4 = accel(vx4, vy4, vz4, wind_x, wind_z, bc, drag_model, density_ratio, speed_of_sound)
+
+            x = x + sixth * (vx + 2 * vx2 + 2 * vx3 + vx4)
+            y = y + sixth * (vy + 2 * vy2 + 2 * vy3 + vy4)
+            z = z + sixth * (vz + 2 * vz2 + 2 * vz3 + vz4)
+            vx = vx + sixth * (ax1 + 2 * ax2 + 2 * ax3 + ax4)
+            vy = vy + sixth * (ay1 + 2 * ay2 + 2 * ay3 + ay4)
+            vz = vz + sixth * (az1 + 2 * az2 + 2 * az3 + az4)
+            t += dt
+            if vx <= 0:
                 break
-            vel = math.sqrt(state[3] ** 2 + state[4] ** 2 + state[5] ** 2)
-            points.append(TrajectoryPoint(t, state[0], state[1], state[2],
-                                           vel, vel / speed_of_sound))
+            yield t, x, y, z, sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+
+    def _muzzle_point(self) -> TrajectoryPoint:
+        return TrajectoryPoint(
+            0.0, 0.0, -(self.scope_height_in / IN_PER_FT), 0.0, self.muzzle_velocity_fps,
+            self.muzzle_velocity_fps / self.atmosphere.speed_of_sound_fps(),
+        )
+
+    def _run(self, launch_angle_rad: float, max_range_ft: float) -> list[TrajectoryPoint]:
+        """Every point of the trajectory out to max_range_ft."""
+        speed_of_sound = self.atmosphere.speed_of_sound_fps()
+        points = [self._muzzle_point()]
+        for t, x, y, z, vel in self._steps(launch_angle_rad, max_range_ft):
+            points.append(TrajectoryPoint(t, x, y, z, vel, vel / speed_of_sound))
         return points
+
+    def _point_at(self, launch_angle_rad: float, target_x_ft: float) -> tuple[TrajectoryPoint | None, float]:
+        """The trajectory point at one downrange distance, without keeping
+        the thousands of points before it or integrating past it. Returns
+        (point, range reached in ft); point is None if the bullet never got
+        to target_x_ft. Interpolates between the same two steps
+        _interp_point_at_range() would pick from a full _run(), so the
+        result is identical."""
+        prev = self._muzzle_point()
+        if target_x_ft <= prev.range_ft:
+            return prev, prev.range_ft
+        speed_of_sound = self.atmosphere.speed_of_sound_fps()
+        last = (prev.time_s, prev.range_ft, prev.drop_ft, prev.windage_ft, prev.velocity_fps)
+        for step in self._steps(launch_angle_rad, target_x_ft):
+            if step[1] >= target_x_ft:
+                p0 = TrajectoryPoint(*last, last[4] / speed_of_sound) if last[0] else prev
+                p1 = TrajectoryPoint(*step, step[4] / speed_of_sound)
+                return _interp_point_at_range([p0, p1], target_x_ft), step[1]
+            last = step
+        return None, last[1]
 
     def solve_zero_angle(self, zero_distance_yd: float) -> float:
         """Bisects on launch angle (radians) so the trajectory crosses
@@ -194,14 +237,27 @@ class TrajectorySolver:
             f"check the zero distance and muzzle velocity."
         )
 
+        # The zero angle depends only on the load, the scope height and the
+        # conditions, and finding it is ~40 short trajectories. Asking for
+        # several ranges under the same conditions -- the normal case --
+        # used to redo that search for every one.
+        cache_key = (self.muzzle_velocity_fps, self.bc, self.drag_model, self.scope_height_in,
+                     self.atmosphere, self.wind, self.dt, zero_distance_yd)
+        cached = _ZERO_ANGLE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
         def height_at_zero(angle: float) -> float:
-            pts = self._run(angle, zero_ft + 5.0)
+            point, _ = self._point_at(angle, zero_ft)
             # A bullet that never got to the zero distance (it stopped, or
-            # the flight-time cap ran out) counts as falling short -- the
-            # last point's height is not its height AT the zero distance.
-            if pts[-1].range_ft < zero_ft:
-                return -math.inf
-            return _interp_y_at_x(pts, zero_ft)
+            # the flight-time cap ran out) counts as falling short.
+            return -math.inf if point is None else point.drop_ft
+
+        def remember(angle: float) -> float:
+            if len(_ZERO_ANGLE_CACHE) >= _ZERO_ANGLE_CACHE_MAX:
+                _ZERO_ANGLE_CACHE.clear()
+            _ZERO_ANGLE_CACHE[cache_key] = angle
+            return angle
 
         # Both bracket searches are bounded. They used to widen forever: a
         # zero the bullet can't reach (found 2026-11-14: 1050 fps, BC 0.12,
@@ -228,12 +284,12 @@ class TrajectorySolver:
             mid = (lo + hi) / 2
             f_mid = height_at_zero(mid)
             if abs(f_mid) < 1e-5:
-                return mid
+                return remember(mid)
             if f_mid < 0:
                 lo = mid
             else:
                 hi = mid
-        return (lo + hi) / 2
+        return remember((lo + hi) / 2)
 
     def trajectory(self, zero_distance_yd: float, max_range_yd: float,
                     launch_angle_rad: float | None = None) -> list[TrajectoryPoint]:
@@ -257,17 +313,13 @@ class TrajectorySolver:
         stopped, or the 15 second flight cap ran out). This used to hand
         back the last tracked point instead, so a request for 5000 yards
         was answered with a real-looking solution for about 3500."""
-        pts = self.trajectory(zero_distance_yd, range_yd + 10.0)
-        if pts[-1].range_ft < range_yd * FT_PER_YARD:
+        point, reached_ft = self._point_at(self.solve_zero_angle(zero_distance_yd), range_yd * FT_PER_YARD)
+        if point is None:
             raise ValueError(
                 f"{range_yd:g} yards is past where this load can be solved -- "
-                f"it only carries to about {pts[-1].range_yd:.0f} yards."
+                f"it only carries to about {reached_ft / FT_PER_YARD:.0f} yards."
             )
-        return _interp_point_at_range(pts, range_yd * FT_PER_YARD)
-
-
-def _interp_y_at_x(points: list[TrajectoryPoint], target_x_ft: float) -> float:
-    return _interp_point_at_range(points, target_x_ft).drop_ft
+        return point
 
 
 def _interp_point_at_range(points: list[TrajectoryPoint], target_x_ft: float) -> TrajectoryPoint:

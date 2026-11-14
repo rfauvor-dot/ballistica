@@ -32,6 +32,7 @@ import os
 import httpx
 
 from .profiles import Load, Rifle
+from .supabase_store import supabase_http
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +64,25 @@ def build_load_event_payload(rifle: Rifle, load: Load) -> dict:
     }
 
 
-def contribute_load(rifle: Rifle, load: Load, access_token: str) -> None:
+def contribute_load(rifle: Rifle, load: Load, access_token: str, previous: dict | None = None) -> None:
     """Best-effort, fire-and-forget: logs and returns on any failure,
-    never raises. The aggregate pool existing is secondary to the
+    never raises.
+
+    previous: what build_load_event_payload() gave for this load BEFORE the
+    save that triggered this call (None for a brand new load). If nothing
+    the pool records has changed, nothing is sent. Every save used to send
+    a fresh event, so renaming a load, editing its notes, or re-importing
+    the same file added exact duplicates of data already contributed and
+    over-weighted that load in any aggregate. The aggregate pool existing is secondary to the
     user's own save succeeding -- a network blip or a not-yet-applied
     migration (db/009) here must never surface as an error on an
     otherwise-successful rifle/load save."""
     if not _SUPABASE_URL:
         return
+    if previous is not None and previous == build_load_event_payload(rifle, load):
+        return
     try:
-        httpx.post(
+        supabase_http().post(
             f"{_SUPABASE_URL}/rest/v1/events",
             headers={
                 "apikey": _SUPABASE_ANON_KEY,
