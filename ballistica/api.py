@@ -54,7 +54,7 @@ from slowapi.util import get_remote_address
 from .aggregate_pool import build_load_event_payload, contribute_load
 from .atmosphere import AtmosphereConditions, pressure_at_altitude_inhg
 from . import spend
-from .cli import BallisticaCLI, _CalibrationSession, _SessionLog, _SetupSession
+from .cli import BallisticaCLI
 from .import_export import (
     MAX_IMPORT_FILE_BYTES, TARGET_FIELDS, ImportError_, apply_mapping,
     generate_export_csv, parse_uploaded_file, suggest_mapping,
@@ -1265,122 +1265,18 @@ def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(
 
 
 def _hydrate_cli(cli: BallisticaCLI, state: dict) -> None:
-    """Reconstructs a BallisticaCLI's in-progress voice-conversation
-    state (setup/calibration/pending_delete/pending_calibration_start/
-    chat_history/atmosphere/wind) from what the previous request
-    persisted -- the API is stateless per-request, so this stands in
-    for the single-tenant CLI's long-lived in-memory object.
-
-    atmosphere/wind added 2026-09-06: a real, confirmed-live bug found
-    during a deep-dive review -- these were never part of this round
-    trip at all, so "set conditions temp 90..." or "set wind 10 mph
-    from 3 o'clock" took effect for exactly one request and then
-    silently reverted to STANDARD_ATMOSPHERE / a calm WindCondition()
-    default on the very next voice turn, since every turn constructs a
-    brand new BallisticaCLI. Matches Rick's own report of a solve
-    reading back conditions that didn't match what he'd just set.
-
-    pending_calibration_start / pending_setup added 2026-09-06 (same
-    day, second and third passes): the confirmation gates in front of a
-    calibration session (_request_start_calibration()) and a guided
-    setup interview (_request_start_setup()) are exactly this same
-    class of state -- omitting either here would mean the "yes" reply
-    to "start a calibration session?"/"set up a new rifle?" arrives on
-    a brand new CLI that never heard the question, landing in ordinary
-    dispatch instead of confirming anything. pending_setup also carries
-    the original triggering text (kind + text), since confirming defers
-    field pre-fill (extract_setup_fields) until the "yes" turn, not the
-    original one."""
-    cli._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
-    cli._calibration = (
-        _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
-    )
-    pending_delete = state.get("pending_delete")
-    cli._pending_delete = pending_delete["rifle_name"] if pending_delete else None
-    cli._pending_delete_load = pending_delete.get("load_name") if pending_delete else None
-    cli._pending_delete_at = pending_delete["at"] if pending_delete else 0.0
-    pending_cal = state.get("pending_calibration_start")
-    cli._pending_calibration_start = bool(pending_cal)
-    cli._pending_calibration_start_at = pending_cal["at"] if pending_cal else 0.0
-    pending_setup = state.get("pending_setup")
-    cli._pending_setup_kind = pending_setup["kind"] if pending_setup else None
-    cli._pending_setup_text = pending_setup["text"] if pending_setup else ""
-    cli._pending_setup_at = pending_setup["at"] if pending_setup else 0.0
-    # Same class of state as pending_delete/pending_setup above --
-    # added 2026-09-18 alongside the switch_rifle/switch_load
-    # disambiguation fix in cli.py. Without this round trip, "which one
-    # do you mean?" would still get asked correctly on one request, but
-    # the answer to it would arrive on a brand-new CLI that never heard
-    # the question -- the exact bug this whole fix exists to close,
-    # just moved from "in-process state" to "state that doesn't survive
-    # the stateless-per-request API."
-    pending_rifle_switch = state.get("pending_rifle_switch")
-    cli._pending_rifle_switch = pending_rifle_switch["candidates"] if pending_rifle_switch else None
-    cli._pending_rifle_switch_at = pending_rifle_switch["at"] if pending_rifle_switch else 0.0
-    pending_load_switch = state.get("pending_load_switch")
-    cli._pending_load_switch = pending_load_switch["candidates"] if pending_load_switch else None
-    cli._pending_load_switch_at = pending_load_switch["at"] if pending_load_switch else 0.0
-    # Open-ended conversational memory (2026-09-05) -- plain list of
-    # {"role", "content"} dicts, already JSON-safe as-is, no to_dict()/
-    # from_dict() round-trip needed like the session objects above.
-    cli._chat_history = state.get("chat_history") or []
-    # The last drop-at-range solution, so "repeat windage/elevation/
-    # solution" works. Never part of this round trip before 2026-11-14, so
-    # over the API every repeat answered "No solution given yet" -- each
-    # request builds a brand new CLI that had never given one.
-    cli._last_solution = state.get("last_solution") or None
-    # Session Mode tracker (2026-09-19, component 2): the readings log
-    # deliberately outlives Session Mode itself so unsaved readings stay
-    # saveable afterward; the pending save gate is the same per-request
-    # confirmation-gate shape as the others above.
-    session_log = state.get("session_log")
-    cli._session_log = _SessionLog.from_dict(session_log) if session_log else None
-    pending_save = state.get("pending_session_save")
-    cli._pending_session_save = pending_save["entries"] if pending_save else None
-    cli._pending_session_save_at = pending_save["at"] if pending_save else 0.0
-    if state.get("atmosphere"):
-        cli.atmosphere = AtmosphereConditions(**state["atmosphere"])
-    if state.get("wind"):
-        cli.wind = WindCondition(**state["wind"])
+    """Restores a BallisticaCLI's conversation state from what the previous
+    request persisted -- the API is stateless per request, so this stands in
+    for the single-tenant CLI's long-lived in-memory object. The state
+    itself is defined in one place, next to the attributes it covers:
+    BallisticaCLI.load_state() / to_state() in cli.py."""
+    cli.load_state(state)
 
 
 def _dehydrate_cli(cli: BallisticaCLI) -> dict:
-    """The inverse of _hydrate_cli -- what to persist back after
-    handle() runs, whatever it left the session state as (unchanged,
-    advanced a turn, or cleared entirely on completion/cancellation)."""
-    return {
-        "setup": cli._setup.to_dict() if cli._setup else None,
-        "calibration": cli._calibration.to_dict() if cli._calibration else None,
-        "pending_delete": (
-            {"rifle_name": cli._pending_delete, "load_name": cli._pending_delete_load,
-             "at": cli._pending_delete_at}
-            if cli._pending_delete else None
-        ),
-        "pending_calibration_start": (
-            {"at": cli._pending_calibration_start_at} if cli._pending_calibration_start else None
-        ),
-        "pending_setup": (
-            {"kind": cli._pending_setup_kind, "text": cli._pending_setup_text, "at": cli._pending_setup_at}
-            if cli._pending_setup_kind else None
-        ),
-        "pending_rifle_switch": (
-            {"candidates": cli._pending_rifle_switch, "at": cli._pending_rifle_switch_at}
-            if cli._pending_rifle_switch else None
-        ),
-        "pending_load_switch": (
-            {"candidates": cli._pending_load_switch, "at": cli._pending_load_switch_at}
-            if cli._pending_load_switch else None
-        ),
-        "chat_history": cli._chat_history,
-        "last_solution": cli._last_solution,
-        "session_log": cli._session_log.to_dict() if cli._session_log else None,
-        "pending_session_save": (
-            {"entries": cli._pending_session_save, "at": cli._pending_session_save_at}
-            if cli._pending_session_save else None
-        ),
-        "atmosphere": dataclasses.asdict(cli.atmosphere),
-        "wind": dataclasses.asdict(cli.wind),
-    }
+    """The inverse of _hydrate_cli -- what to persist back after handle()
+    runs. See BallisticaCLI.to_state()."""
+    return cli.to_state()
 
 
 def _log_turn_quietly(

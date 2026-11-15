@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -55,6 +56,27 @@ _LOAD_COLUMNS = (
     "name", "bullet_weight_gr", "bc", "drag_model", "muzzle_velocity_fps",
     "zero_distance_yd", "bullet_type", "powder", "powder_charge_gr", "notes",
 )
+
+
+# Conversation debug log retention (2026-11-14, Rick's decision): entries
+# older than this are deleted and are never returned, whether or not the
+# delete has run yet.
+CONVERSATION_LOG_RETENTION_DAYS = 30
+# user_id -> the UTC date this process last deleted that user's old entries,
+# so the delete runs once a day per user rather than on every voice turn.
+_log_pruned_on: dict[str, str] = {}
+
+
+def conversation_log_enabled() -> bool:
+    """CONVERSATION_DEBUG_LOG=off (or 0/false/no) stops new entries being
+    written. On by default: the log is how range sessions get reviewed.
+    Read on every call so it can be flipped without a code change."""
+    return os.environ.get("CONVERSATION_DEBUG_LOG", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def _log_cutoff() -> str:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CONVERSATION_LOG_RETENTION_DAYS)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 _http_client: httpx.Client | None = None
@@ -341,21 +363,48 @@ class SupabaseProfileStore(ProfileStore):
         here) so this call doesn't start failing against a project that
         hasn't run that migration yet -- same reasoning as every other
         best-effort piece of this log."""
-        payload = {
-            "user_id": self.user_id, "input_text": input_text,
-            "tool_name": tool_name, "reply_text": reply_text,
-        }
-        if duration_ms is not None:
-            payload["duration_ms"] = duration_ms
-        self._rest("POST", "conversation_debug_log", json=payload)
+        if conversation_log_enabled():
+            payload = {
+                "user_id": self.user_id, "input_text": input_text,
+                "tool_name": tool_name, "reply_text": reply_text,
+            }
+            if duration_ms is not None:
+                payload["duration_ms"] = duration_ms
+            self._rest("POST", "conversation_debug_log", json=payload)
+        # Runs even with logging switched off, so turning the log off
+        # doesn't also freeze old entries in place.
+        self.prune_conversation_log()
+
+    def prune_conversation_log(self, force: bool = False) -> None:
+        """Deletes this user's entries older than
+        CONVERSATION_LOG_RETENTION_DAYS, at most once per UTC day per
+        process unless forced. Uses the user's own token like everything
+        else here, so it can only ever delete their own rows.
+
+        This only reaches users who are still using voice. Entries
+        belonging to an account that has gone quiet are removed by the
+        scheduled database job in db/014_conversation_debug_log_retention
+        .sql instead."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not force and _log_pruned_on.get(self.user_id) == today:
+            return
+        self._rest(
+            "DELETE", "conversation_debug_log",
+            params={"user_id": f"eq.{self.user_id}", "created_at": f"lt.{_log_cutoff()}"},
+        )
+        if len(_log_pruned_on) > 5000:
+            _log_pruned_on.clear()
+        _log_pruned_on[self.user_id] = today
 
     def get_recent_conversation_log(self, limit: int = 50) -> list[dict]:
         """Most recent rows first -- for pulling up what actually
-        happened in a real session after the fact."""
+        happened in a real session after the fact. Never returns an entry
+        past the retention period, even one not yet deleted."""
         return self._rest(
             "GET", "conversation_debug_log",
             params={
                 "user_id": f"eq.{self.user_id}", "select": "*",
+                "created_at": f"gte.{_log_cutoff()}",
                 "order": "created_at.desc", "limit": str(limit),
             },
         ).json()

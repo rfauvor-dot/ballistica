@@ -187,24 +187,62 @@ affects whether the contribution itself lands.
 
 ---
 
-## Data Architecture / Schema Evolution
+## Data Architecture / Schema Evolution -- REWRITTEN (2026-11-14)
 
-**Status:** Flat JSON file (`profiles.json`), no schema versioning, no
-migration mechanism. Works cleanly for one user's rifles/loads today.
+**Status:** Supabase Postgres, one row per rifle and per load, isolated per
+user by row-level security. Schema changes are numbered SQL files in `db/`
+that Rick runs by hand in the Supabase SQL Editor. (This entry used to
+describe a flat `profiles.json`; that is now only the standalone CLI's local
+store.)
 
-**Why it matters:** Every field added this session (optic_type, suppressor
-fields, etc.) has been a manual dataclass edit with no migration path for
-existing data -- fine at this scale, but the pattern doesn't extend to
-multi-user data, historical chronograph strings at volume, or aggregate
-analytics. This is the same underlying gap as the persistent-disk incident:
-the storage model wasn't designed for what it's being asked to eventually do.
+**What changed 2026-11-14:** `save()` used to delete every rifle a user had
+and re-insert them all on each call, including a plain active-load switch. A
+failure between the delete and the re-insert lost the account's data, and no
+row id survived a save. It now writes only the rows that changed and keeps
+ids (`ballistica/supabase_store.py`).
 
-**Next step:** No action needed now. When multi-tenancy work starts (above),
-revisit storage as part of the same design pass rather than as an
-afterthought -- likely a real database at that point (Render offers managed
-Postgres), not a bigger JSON file.
+**What is still open:**
+- A save is several separate requests, not one database transaction. A
+  failure part-way can leave that one save partly applied. Closing this
+  needs a Postgres function doing the whole save in a transaction.
+- Two overlapping requests that change the same row, or the same account's
+  conversation state, resolve as last-write-wins.
+- Migrations are manual and nothing records which have been run against the
+  live project. `db/014` (below) is one that has not been.
+- Limits on saved values (zero distance, BC, velocity) are enforced by the
+  API, not by database constraints beyond `bc > 0` and `mv > 0`.
+
+**Next step:** No action needed at current scale. Revisit the transaction
+and a migration record before real user volume.
 
 **Owning lens:** Build.
+
+---
+
+## Conversation debug log retention -- NEW (2026-11-14)
+
+**Status:** The per-turn log (`conversation_debug_log`: what was said, what
+handled it, the reply) was described as temporary but kept every utterance
+indefinitely. Rick's decision 2026-11-14: delete entries older than 30 days.
+
+**What is in place:** The app deletes a user's own entries older than 30
+days once a day while they use voice, and never returns one older than 30
+days. `CONVERSATION_DEBUG_LOG=off` stops new entries being written.
+
+**What is not yet in place:** The app can only delete rows belonging to the
+user making the request. Entries for an account that has stopped using voice
+are removed by a scheduled database job, `db/014_conversation_debug_log_
+retention.sql`, which **has not been run** against the live project and uses
+an extension (pg_cron) not confirmed to be enabled there.
+
+**Why it matters:** These are users' spoken words. The waiver and any privacy
+statement should say what is kept and for how long before real signups.
+
+**Next step:** Rick runs `db/014` and confirms the job is scheduled (check
+queries are at the bottom of the file). Chief of Staff: confirm the 30-day
+figure is reflected wherever retention is described to users.
+
+**Owning lens:** Build implements; Chief of Staff owns the user-facing wording.
 
 ---
 

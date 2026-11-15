@@ -8,7 +8,12 @@
  * with auth, rate limiting, or any dynamic response.
  *
  * Strategy is network-first, falling back to cache only when the
- * network request actually fails. This matters: the page (`/`) is
+ * network request fails or (2026-11-14) hasn't answered within
+ * NETWORK_WAIT_MS -- see shellResponse() below. On a connection too slow
+ * to answer in that time the page shown can therefore be the last cached
+ * one; the waiver text and its acceptance are still checked by the server
+ * (a stale version is refused with a 409), so that is not a way around
+ * them. This matters: the page (`/`) is
  * server-templated per-request (live Supabase config injected) and
  * deliberately served with no-cache headers so a deploy is never
  * masked by a stale cached copy while online (see api.py's web_ui()
@@ -54,18 +59,39 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || !isShellRequest(url)) return; // let everything else (all API calls) pass through untouched
 
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        // Only cache a genuinely good response -- a transient 500 during
-        // a deploy, or any other error, must never overwrite a known-
-        // good cached copy with a broken one.
-        if (response.ok) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
-  );
+  event.respondWith(shellResponse(event));
 });
+
+// How long a shell request may wait on the network before a cached copy is
+// used instead. A weak signal at the range often isn't a clean failure: the
+// request just hangs, and fetch() has no timeout of its own, so the old
+// "fall back only when fetch rejects" never fell back and the app sat on a
+// blank screen. 4 seconds is long enough that any working connection wins.
+const NETWORK_WAIT_MS = 4000;
+
+async function shellResponse(event) {
+  const request = event.request;
+  const network = fetch(request).then((response) => {
+    // Only cache a genuinely good response -- a transient 500 during a
+    // deploy, or any other error, must never overwrite a known-good cached
+    // copy with a broken one.
+    if (response.ok) {
+      const copy = response.clone();
+      event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
+    }
+    return response;
+  });
+
+  const cached = await caches.match(request);
+  if (!cached) return network;  // nothing to fall back to: wait as long as it takes
+
+  // The network request keeps going after a timeout (waitUntil), so a slow
+  // answer still refreshes the cache for next time.
+  event.waitUntil(network.catch(() => {}));
+  const timedOut = new Promise((resolve) => setTimeout(() => resolve(null), NETWORK_WAIT_MS));
+  try {
+    return (await Promise.race([network, timedOut])) || cached;
+  } catch (e) {
+    return cached;  // the network failed outright
+  }
+}

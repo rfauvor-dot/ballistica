@@ -34,6 +34,14 @@ requires_supabase = pytest.mark.skipif(
            "the real Supabase project.",
 )
 
+# For the few tests that make a real (billed) Claude call to exercise the
+# intent/setup extraction end to end. Skipped where no key is configured
+# (CI), so the suite never fails for lack of a paid credential.
+requires_anthropic = pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"),
+    reason="ANTHROPIC_API_KEY not configured -- this test makes a real Claude call.",
+)
+
 USER_A = {"email": "dt-auth-smoketest@mailinator.com", "password": "Sm0keTest!Passw0rd"}
 USER_B = {"email": "dt-tenant-test-b@mailinator.com", "password": "Sm0keTest!Passw0rd2"}
 

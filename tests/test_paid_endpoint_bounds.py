@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import ballistica.api as api_module
+from conftest import requires_supabase
 
 
 class _FakeOpenAI:
@@ -49,6 +50,7 @@ def signed_in():
     api_module.app.dependency_overrides.pop(api_module._verify_bearer, None)
 
 
+@requires_supabase
 def test_speak_and_transcribe_reject_missing_and_forged_auth_without_calling_openai(client, fake_openai):
     import jwt as pyjwt
 

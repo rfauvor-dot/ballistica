@@ -28,7 +28,7 @@ data/profiles.json    profile storage (created on first run, gitignored)
 ## Running it
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # requirements.txt alone is enough to run; -dev adds pytest
 python -m ballistica.cli
 ```
 

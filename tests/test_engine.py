@@ -20,6 +20,7 @@ from ballistica.profiles import Load, ProfileStore, Rifle
 from ballistica.trajectory import TrajectorySolver, WindCondition
 from ballistica.units import inches_to_mrad, mrad_to_inches, moa_to_inches
 from ballistica.zero import find_minimum_spread_zero, vertical_spread
+from conftest import requires_anthropic
 
 
 def test_matches_reference_implementation_standard_atmosphere():
@@ -711,6 +712,7 @@ def test_top_level_intent_interrupts_a_stuck_modal_session(tmp_path):
     assert store.active_rifle_name == "AR-15 20in Faxon"
 
 
+@requires_anthropic
 def test_bare_distance_mid_setup_is_not_mistaken_for_a_solution_request(tmp_path):
     """The collision risk the interrupt-check has to avoid: a bare
     "100 yards" is a completely normal answer to "what yardage is it

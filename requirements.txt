@@ -1,15 +1,22 @@
-pytest
-fastapi
-uvicorn[standard]
-httpx
-python-dotenv
-openai
-anthropic
-certifi
-httpx2
-python-multipart
-PyJWT[crypto]
-slowapi
-opencv-python-headless
-numpy
-openpyxl
+# Exact versions, so a deploy installs what was tested rather than whatever
+# is newest that day. These are the versions the suite passes against
+# (2026-11-14). numpy 2.5 needs Python 3.12 or newer.
+# To upgrade: change a version here, run the tests, commit.
+# Test-only tools are in requirements-dev.txt.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+httpx==0.28.1
+python-dotenv==1.0.1
+openai==3.3.1
+anthropic==0.117.0
+certifi==2026.6.17
+httpx2==2.12.0
+python-multipart==0.0.32
+PyJWT[crypto]==2.13.0
+slowapi==0.1.10
+opencv-python-headless==5.0.0.93
+numpy==2.5.0
+openpyxl==3.1.5
+pydantic==2.13.4
+starlette==1.6.0

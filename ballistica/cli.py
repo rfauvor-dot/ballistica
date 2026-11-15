@@ -796,6 +796,119 @@ class BallisticaCLI:
         self._pending_session_save: list[dict] | None = None
         self._pending_session_save_at: float = 0.0
 
+    # ------------------------------------------------------------------
+    # Conversation state that outlives one request.
+    #
+    # The API builds a brand new BallisticaCLI for every request, so anything
+    # that has to survive from one voice turn to the next must go through
+    # to_state()/load_state() below (api.py stores the dict in the user's
+    # conversation_state row). This used to live in api.py, a file away from
+    # the attributes it covered, and things got missed one at a time: wind
+    # and atmosphere (2026-09-06), the confirmation gates (2026-09-06 and
+    # 2026-09-18), and the last solution, which left "repeat" broken over
+    # the API until 2026-11-14.
+    #
+    # EVERY attribute set in __init__ must be named in exactly one of the two
+    # sets below. tests/test_cli_state.py fails if one isn't -- so adding an
+    # attribute forces the question "does this need to survive a request?"
+    # instead of leaving it to be found at the range.
+    _PERSISTED_ATTRS = frozenset({
+        "atmosphere", "wind", "_last_solution", "_setup", "_calibration",
+        "_pending_delete", "_pending_delete_load", "_pending_delete_at",
+        "_pending_rifle_switch", "_pending_rifle_switch_at",
+        "_pending_load_switch", "_pending_load_switch_at",
+        "_pending_calibration_start", "_pending_calibration_start_at",
+        "_pending_setup_kind", "_pending_setup_text", "_pending_setup_at",
+        "_chat_history", "_session_log",
+        "_pending_session_save", "_pending_session_save_at",
+    })
+    _REQUEST_ONLY_ATTRS = frozenset({
+        "store",                   # rebuilt per request from the database
+        "_session_mode",           # sent by the frontend on every request
+        "_last_reply_is_readout",  # describes this turn's reply only
+        "_last_tool_name",         # describes this turn's routing only
+    })
+
+    def to_state(self) -> dict:
+        """Everything in _PERSISTED_ATTRS as a JSON-safe dict. The key names
+        and shapes are what is already stored for existing users -- change
+        them only together with load_state()."""
+        return {
+            "setup": self._setup.to_dict() if self._setup else None,
+            "calibration": self._calibration.to_dict() if self._calibration else None,
+            "pending_delete": (
+                {"rifle_name": self._pending_delete, "load_name": self._pending_delete_load,
+                 "at": self._pending_delete_at}
+                if self._pending_delete else None
+            ),
+            "pending_calibration_start": (
+                {"at": self._pending_calibration_start_at} if self._pending_calibration_start else None
+            ),
+            "pending_setup": (
+                {"kind": self._pending_setup_kind, "text": self._pending_setup_text,
+                 "at": self._pending_setup_at}
+                if self._pending_setup_kind else None
+            ),
+            "pending_rifle_switch": (
+                {"candidates": self._pending_rifle_switch, "at": self._pending_rifle_switch_at}
+                if self._pending_rifle_switch else None
+            ),
+            "pending_load_switch": (
+                {"candidates": self._pending_load_switch, "at": self._pending_load_switch_at}
+                if self._pending_load_switch else None
+            ),
+            "chat_history": self._chat_history,
+            "last_solution": self._last_solution,
+            "session_log": self._session_log.to_dict() if self._session_log else None,
+            "pending_session_save": (
+                {"entries": self._pending_session_save, "at": self._pending_session_save_at}
+                if self._pending_session_save else None
+            ),
+            "atmosphere": dataclasses.asdict(self.atmosphere),
+            "wind": dataclasses.asdict(self.wind),
+        }
+
+    def load_state(self, state: dict) -> None:
+        """Inverse of to_state(). A missing key means "nothing pending" (or,
+        for atmosphere and wind, "leave the default"), so an empty dict --
+        a brand new account -- is valid."""
+        self._setup = _SetupSession.from_dict(state["setup"]) if state.get("setup") else None
+        self._calibration = (
+            _CalibrationSession.from_dict(state["calibration"]) if state.get("calibration") else None
+        )
+        pending = state.get("pending_delete")
+        self._pending_delete = pending["rifle_name"] if pending else None
+        self._pending_delete_load = pending.get("load_name") if pending else None
+        self._pending_delete_at = pending["at"] if pending else 0.0
+        pending = state.get("pending_calibration_start")
+        self._pending_calibration_start = bool(pending)
+        self._pending_calibration_start_at = pending["at"] if pending else 0.0
+        # Carries the original triggering text too: field pre-fill is
+        # deferred until the "yes" turn, which is a different request.
+        pending = state.get("pending_setup")
+        self._pending_setup_kind = pending["kind"] if pending else None
+        self._pending_setup_text = pending["text"] if pending else ""
+        self._pending_setup_at = pending["at"] if pending else 0.0
+        pending = state.get("pending_rifle_switch")
+        self._pending_rifle_switch = pending["candidates"] if pending else None
+        self._pending_rifle_switch_at = pending["at"] if pending else 0.0
+        pending = state.get("pending_load_switch")
+        self._pending_load_switch = pending["candidates"] if pending else None
+        self._pending_load_switch_at = pending["at"] if pending else 0.0
+        self._chat_history = state.get("chat_history") or []
+        self._last_solution = state.get("last_solution") or None
+        # The readings log deliberately outlives Session Mode itself, so
+        # unsaved readings stay saveable afterward.
+        session_log = state.get("session_log")
+        self._session_log = _SessionLog.from_dict(session_log) if session_log else None
+        pending = state.get("pending_session_save")
+        self._pending_session_save = pending["entries"] if pending else None
+        self._pending_session_save_at = pending["at"] if pending else 0.0
+        if state.get("atmosphere"):
+            self.atmosphere = AtmosphereConditions(**state["atmosphere"])
+        if state.get("wind"):
+            self.wind = WindCondition(**state["wind"])
+
     def solver(self) -> tuple[TrajectorySolver, Rifle, Load]:
         rifle = self.store.get_active_rifle()
         load = rifle.get_active_load()

@@ -2,15 +2,11 @@
 tiers described in Addendum 20.
 
 Deliberately standalone and dependency-free: it's pure math over numbers a
-caller supplies (turns used, a billing cycle, an allotment) rather than
-anything that reads real per-user data, because there's no accounts/billing
-system in this codebase yet to read that data from -- see api.py's module
-docstring ("single-user local tool ... not multi-tenant SaaS"). This module
-is the one piece of Addendum 20 that doesn't depend on that gap: once real
-per-user turn counts exist, wiring them into project_usage() is a small
-integration, not a rewrite. The web-UI nudge banner, the top-up purchase
-flow, and the actual turn-counting itself all still need that groundwork
-built first.
+caller supplies (turns used, a billing cycle, an allotment). Nothing calls it
+yet. The app now has accounts and a measured per-user daily spend
+(spend.py), but still no billing cycle, tiers, top-ups or stored per-user
+turn counts -- those are what project_usage() needs fed into it, and what the
+nudge banner and top-up flow would be built on.
 """
 from __future__ import annotations
 

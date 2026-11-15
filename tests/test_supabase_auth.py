@@ -16,18 +16,22 @@ import jwt
 import pytest
 
 from ballistica.supabase_auth import verify_token
+from conftest import requires_supabase
 
 
+@requires_supabase
 def test_garbage_token_rejected():
     with pytest.raises(jwt.InvalidTokenError):
         verify_token("not.a.jwt")
 
 
+@requires_supabase
 def test_empty_token_rejected():
     with pytest.raises(jwt.InvalidTokenError):
         verify_token("")
 
 
+@requires_supabase
 def test_forged_token_wrong_signer_rejected():
     """A token structurally valid and even claiming aud=authenticated,
     but signed with a key nobody but an attacker knows -- must never be
@@ -41,6 +45,7 @@ def test_forged_token_wrong_signer_rejected():
         verify_token(forged)
 
 
+@requires_supabase
 def test_token_with_stripped_signature_rejected():
     """A real-shaped token with its signature segment removed -- must
     fail closed, not be treated as an unsigned-but-trusted token."""
