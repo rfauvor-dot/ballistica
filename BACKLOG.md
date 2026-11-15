@@ -844,7 +844,63 @@ sheet numbers. Pen numbers are for human review; software identity should
 come from per-sheet marker IDs (still to do) or a voice "sheet 2 is up".
 Do not tune thresholds until a ground-tripod clip exists.
 
-**Status: top priority, prototype works on replay; not yet running live.**
+**Build plan, ranked (agreed with Rick 2026-11-14).** Capture setup from now
+on: one sheet in frame, tripod on the ground, sheets numbered in black felt pen.
+1. Detector as a tested module plus a replay benchmark with labeled clips. **Done 2026-11-14, see below.**
+2. Sheet identity: a number picker on the printable sheet, each number with
+   its own corner markers and a large printed number; a saved hole list per
+   sheet number; never call a shot while identity is uncertain. Felt-pen
+   numbers stay as the human check -- software should not depend on reading
+   handwriting through a spotting scope.
+3. Find new holes by comparing the flattened sheet with how it looked before
+   the shot, instead of re-finding every hole in every frame.
+4. Use the shot sound as the trigger: one shot, at most one new hole.
+5. Better stills (sharpest or combined frame, before/after pair) and an
+   after-the-session shot table from a recorded video.
+6. The live loop with spoken calls (phone to laptop over the phone's hotspot
+   first, then decide phone vs server).
+7. Saved shot records tied to rifle, load and session.
+8. Later: calling shots, a distance check from the sheet's known size, and
+   wind from mirage (start logging marker shimmer in step 3).
+
+**Step 1, done 2026-11-14.** The prototype's logic now lives in
+`ballistica/shot_tracker.py` (frames in, shots out) with scoring in
+`ballistica/shot_scoring.py`. `tools/live_shot_replay.py` is a thin wrapper
+round it; `tools/shot_benchmark.py` runs every labeled clip listed in
+`data/shot_benchmark/clips.json` and fails if a clip does worse than its
+recorded numbers (`tools/live_shot_eval.py` is gone, replaced by it). Videos
+are not in the repo: set `BALLISTICA_CLIPS_DIR` to the folder holding them.
+`tools/replay_in_chunks.py` does the same replay gently (2 threads, low
+priority, 60 s chunks with pauses, resumable after an interruption); the full
+November 13 video through it gave the prototype's exact 17 shots.
+`tests/test_shot_tracker.py` drives the tracker with synthetic camera frames
+(`tests/synthetic_range.py`), so it runs in CI with no video.
+
+**What the synthetic tests found (each is a test marked as an expected
+failure, labelled with the step that should fix it):**
+- Tight groups cause duplicates without the camera moving. Touching holes
+  merge into one blob too big to count and both vanish; if that hides enough
+  known holes the sheet is no longer recognised, a new empty sheet is started,
+  and the holes still visible are called again. November 13 never exercised
+  this (sheet 2's dense cluster was off camera).
+- If a sheet's only hole gets a touching neighbour, the tracker starts a new
+  empty sheet every frame and calls nothing more on that sheet.
+- A hole within 0.3 in of an old one is never called.
+- Two different sheets with a hole in a similar place are taken for one sheet.
+  (Correction to the 2026-11-13 note: ONE confirmed hole is enough to
+  recognise a sheet again; only a blank sheet depends on image position.)
+- In a crisp, full-contrast view the printed crosshair is called as a shot at
+  dead centre, a hole on the ring is lost, and the scale bar can be called
+  when the view is tilted. The November 13 footage was flat enough to stay
+  under the threshold; a sharper ground-tripod clip may not be. **Watch for a
+  phantom shot at the exact centre on the next clip.**
+
+**For the next range session:** record with sound on, all four corner squares
+in frame with a little margin, zoom/focus/exposure left alone once set, and
+one pair of shots deliberately close together. That clip becomes the second
+benchmark clip.
+
+**Status: top priority. Step 1 of 8 done; detection behaviour is unchanged from the prototype; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

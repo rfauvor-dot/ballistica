@@ -2955,3 +2955,32 @@ about 0.25-0.4 s per 1080x1920 frame at 2 fps; the S25 is untested.
 detection). First step is a local-wifi loop (phone streams to Rick's PC, calls
 spoken to earbuds), then decide server vs on-phone. Thresholds wait for a
 ground-tripod clip.
+
+---
+
+## 41. Shot detector moved into a tested module; synthetic tests expose tight-group duplicates (2026-11-14)
+
+**What:** step 1 of the ranked live-shot-detection plan (BACKLOG.md,
+"Video-to-shot-table"). The 2026-11-13 prototype script's logic moved,
+behaviour unchanged, into `ballistica/shot_tracker.py`; scoring into
+`ballistica/shot_scoring.py`; `tools/shot_benchmark.py` scores labeled clips
+against recorded expectations. The hand-measured November 13 table and the
+prototype's 17-shot result are kept in `data/shot_benchmark/` as the baseline.
+
+**Why a module first:** the prototype could only be judged by re-running a
+22-minute video by hand. Every later step (sheet identity, before/after
+comparison, sound trigger) changes detection behaviour, and without a fixed
+yardstick there is no way to tell better from different.
+
+**What the synthetic tests showed that the one real video could not:** the
+duplicate problem is not only about the camera moving. Touching holes vanish
+(merged blob too large), which can make a sheet unrecognisable and cause its
+other holes to be called again with the camera perfectly still. Also: the
+printed crosshair, ring and scale bar are only ignored because the November 13
+footage was low-contrast. Both are pinned as expected-failure tests.
+
+**Honest limits:** the synthetic frames are clean renders with a blur and a
+contrast adjustment, not real optics; they find logic failures, not
+image-quality ones. Still one real clip, with a table measured by the same
+hand that wrote the detector.
+

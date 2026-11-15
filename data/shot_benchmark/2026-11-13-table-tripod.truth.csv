@@ -1,0 +1,21 @@
+sheet,shot_in_stretch,video_time,video_seconds,x_in_right_of_crosshair,y_in_above_crosshair
+1,1,0:24,24,-3.77,-0.47
+1,2,0:48,48,-1.17,-2.59
+1,3,1:20,80,2.03,0.93
+1,4,2:14,134,1.35,1.05
+1,5,4:50,290,-0.92,0.14
+1,6,5:12,312,-0.86,0.78
+1,7,5:20,320,-0.12,1.24
+2,1,6:18,378,-0.68,1.0
+2,2,6:30,390,-0.07,1.06
+2,3,6:38,398,0.36,0.99
+2,4,7:04,424,0.34,0.57
+2,5,7:14,434,0.71,2.1
+1 (late),1,21:30,1290,-0.5,-0.02
+1 (late),2,21:50,1310,-0.52,0.39
+1 (late),3,22:02,1322,0.1,-0.28
+1 (late),4,22:14,1334,0.41,-0.46
+1 (late),5,22:16,1336,0.24,-0.03
+
+note,"source video 20261113_104737.mp4 (22 min). Sheet 2 took many more shots (dense cluster, ~10+ holes) mostly off camera between ~16:20 and ~20:40; its final group is half out of frame and not measured. Sheet 3 is never fully in frame (no holes visible, ring out of view)."
+note,"positions +/-0.1 in, times +/-2 s (sampled every 2 s); assumes sheets printed at 100%; aim point assumed to be the printed crosshair"

@@ -1,0 +1,14 @@
+{
+ "about": "Labeled range clips for tools/shot_benchmark.py. The videos themselves are NOT in the repo (too large): put them in one folder and point the tool at it with --clips-dir or the BALLISTICA_CLIPS_DIR environment variable. Each clip has a hand-measured table of the shots really fired (<name>.truth.csv) and the result the detector is expected to get; the tool fails if a run is worse than 'expected' on misses, late calls, duplicates or false calls. When a change makes a clip better, lower its 'expected' numbers in the same commit.",
+ "clips": [
+  {
+   "name": "2026-11-13-table-tripod",
+   "video": "20261113_104737.mp4",
+   "truth": "2026-11-13-table-tripod.truth.csv",
+   "baseline": "2026-11-13-table-tripod.baseline.json",
+   "settings": {"fps": 2.0, "scale": 1.0, "ppi": 100.0, "n_confirm": 3},
+   "expected": {"true_shots": 17, "matched": 17, "missed": 0, "late": 1, "duplicates": 0, "false_calls": 0},
+   "notes": "22 minutes, 100 yd, through the Athlon spotting scope with a phone mount, tripod ON the shooting table (camera jolts at every shot), three sheets side by side. Table covers sheets 1 and 2 only: sheet 2's later shots were off camera and sheet 3 was never fully in frame. The table was measured offline from the same video by the same person who wrote the detector, so it is not an independent check. The one late call is a hole 0.2-0.3 in from an older one."
+  }
+ ]
+}
