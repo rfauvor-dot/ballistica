@@ -43,8 +43,32 @@ import numpy as np
 # ------------------------------------------------------------------ sheet
 PAPER_W_IN, PAPER_H_IN = 8.5, 11.0
 MARKER_IN = 1.0
-# Top-left corner of each marker, in sheet inches (origin top-left, y down).
+# Top-left corner of each marker, in sheet inches (origin top-left, y down),
+# keyed by CORNER: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
 _MARKER_ORIGINS = {0: (0.5, 0.5), 1: (7.0, 0.5), 2: (0.5, 9.5), 3: (7.0, 9.5)}
+
+# Numbered sheets (2026-11-14). The original sheet uses marker ids 0-3 and
+# carries no number, so every printed copy looks the same to software. Sheet N
+# uses ids 4N .. 4N+3 instead (corner = id % 4), so a camera can tell sheet 3
+# from sheet 7 in every frame without reading handwriting. The marker set has
+# 50 ids, which leaves room for numbers 1-11. Sheets already printed (ids 0-3)
+# keep working as "unnumbered".
+MAX_SHEET_NUMBER = 11
+
+
+def marker_layout(marker_id: int) -> tuple[int | None, int] | None:
+    """(sheet number or None for an unnumbered sheet, corner 0-3) for a marker
+    id, or None if the id isn't one of ours."""
+    number, corner = divmod(int(marker_id), 4)
+    if number > MAX_SHEET_NUMBER:
+        return None
+    return (number or None), corner
+
+
+def _check_number(number: int | None) -> int | None:
+    if number is not None and not (1 <= number <= MAX_SHEET_NUMBER):
+        raise ValueError(f"Sheet number must be 1 to {MAX_SHEET_NUMBER}.")
+    return number
 AIM_IN = (4.25, 5.5)
 _RING_RADIUS_IN, _RING_WIDTH_IN = 1.0, 0.12
 _CROSS_HALF_IN, _CROSS_WIDTH_IN = 0.35, 0.03
@@ -74,14 +98,21 @@ def _draw_sheet_features(img: np.ndarray, dpi: int) -> None:
     cv2.line(img, (center[0], center[1] - px(_CROSS_HALF_IN)), (center[0], center[1] + px(_CROSS_HALF_IN)), _GUIDE_GRAY, t)
 
 
-def render_sheet(dpi: int = 300) -> np.ndarray:
-    """The printable target sheet as a grayscale image (US Letter at `dpi`)."""
+def render_sheet(dpi: int = 300, number: int | None = None) -> np.ndarray:
+    """The printable target sheet as a grayscale image (US Letter at `dpi`).
+    `number` (1-11) prints a numbered sheet: its own corner markers plus the
+    number in large type at the top right. None is the original, unnumbered
+    sheet, unchanged."""
+    _check_number(number)
     px = lambda inches: int(round(inches * dpi))
     img = np.full((px(PAPER_H_IN), px(PAPER_W_IN)), 255, np.uint8)
     d = _aruco_dict()
-    for marker_id, (ox, oy) in _MARKER_ORIGINS.items():
-        m = cv2.aruco.generateImageMarker(d, marker_id, px(MARKER_IN))
+    base = 4 * (number or 0)
+    for corner, (ox, oy) in _MARKER_ORIGINS.items():
+        m = cv2.aruco.generateImageMarker(d, base + corner, px(MARKER_IN))
         img[px(oy):px(oy) + m.shape[0], px(ox):px(ox) + m.shape[1]] = m
+    if number is not None:
+        _draw_sheet_number(img, dpi, number)
     cv2.putText(img, "BALLISTICA TARGET SHEET", (px(1.7), px(0.85)), cv2.FONT_HERSHEY_SIMPLEX,
                 dpi / 150.0, 0, max(1, dpi // 100), cv2.LINE_AA)
     cv2.putText(img, "Print at 100% (Actual size). Hang with this edge UP.", (px(1.7), px(1.2)),
@@ -98,11 +129,25 @@ def render_sheet(dpi: int = 300) -> np.ndarray:
     return img
 
 
-def render_sheet_pdf(dpi: int = 300) -> bytes:
+def _draw_sheet_number(img: np.ndarray, dpi: int, number: int) -> None:
+    """The number, about 0.9 in tall, right-aligned in the gap between the
+    title and the top-right marker -- outside the shot area, so it is never
+    mistaken for a hole. For people reviewing stills; software reads the
+    markers."""
+    px = lambda inches: int(round(inches * dpi))
+    text, font, thickness = str(number), cv2.FONT_HERSHEY_DUPLEX, max(2, px(0.11))
+    (w, h), _ = cv2.getTextSize(text, font, 1.0, thickness)
+    scale = px(0.9) / h
+    (w, h), _ = cv2.getTextSize(text, font, scale, thickness)
+    right, baseline = px(6.8), px(1.45)
+    cv2.putText(img, text, (right - w, baseline), font, scale, 0, thickness, cv2.LINE_AA)
+
+
+def render_sheet_pdf(dpi: int = 300, number: int | None = None) -> bytes:
     """The sheet as a single-page PDF at exactly Letter size, so it prints at
     100% (a bare PNG gets scaled to fit by many print dialogs, which would
     silently wreck the scale the whole measurement depends on)."""
-    img = render_sheet(dpi)
+    img = render_sheet(dpi, number)
     h, w = img.shape
     data = zlib.compress(img.tobytes(), 9)
     objs = [
@@ -220,6 +265,7 @@ class TargetAnalysis:
     markers_found: int = 0
     overlay_jpeg: bytes = b""                  # clean picture (no markings) for the UI to draw on
     overlay_ppi: float | None = None           # overlay pixels per inch
+    sheet_number: int | None = None            # printed sheet number, read from its markers (None: unnumbered)
 
 
 def _odd(n: int) -> int:
@@ -365,19 +411,27 @@ def _split_blob(pts: np.ndarray, k: int, single_d_px: float):
 
 def _decode_rectified(img_bgr: np.ndarray, marker_in: float):
     """Detect the sheet's markers and return (H_image_to_inches, markers_found,
-    rms_error_in) or None. Uses every corner of every detected marker."""
+    rms_error_in, sheet_number) or None. Uses every corner of every detected
+    marker of ONE sheet: if markers of several sheet numbers are in view, the
+    one with the most markers visible."""
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
     detector = cv2.aruco.ArucoDetector(_aruco_dict(), cv2.aruco.DetectorParameters())
     corners, ids, _ = detector.detectMarkers(gray)
     if ids is None:
         return None
+    by_number: dict[int | None, dict[int, np.ndarray]] = {}
+    for c, marker_id in zip(corners, ids.ravel().tolist()):
+        layout = marker_layout(marker_id)
+        if layout is not None:
+            by_number.setdefault(layout[0], {}).setdefault(layout[1], c)
+    if not by_number:
+        return None
+    number = max(by_number, key=lambda n: (len(by_number[n]), n is not None))
     s = marker_in / MARKER_IN
     src, dst = [], []
     found = 0
-    for c, marker_id in zip(corners, ids.ravel().tolist()):
-        if marker_id not in _MARKER_ORIGINS:
-            continue
-        ox, oy = _MARKER_ORIGINS[marker_id]
+    for corner, c in by_number[number].items():
+        ox, oy = _MARKER_ORIGINS[corner]
         m = MARKER_IN
         phys = [(ox, oy), (ox + m, oy), (ox + m, oy + m), (ox, oy + m)]   # TL, TR, BR, BL of the printed marker
         src.extend(c.reshape(4, 2).tolist())
@@ -390,7 +444,7 @@ def _decode_rectified(img_bgr: np.ndarray, marker_in: float):
         return None
     proj = cv2.perspectiveTransform(np.array(src, np.float32).reshape(-1, 1, 2), H).reshape(-1, 2)
     rms = float(np.sqrt(((proj - np.array(dst)) ** 2).sum(axis=1).mean()))
-    return H, found, rms
+    return H, found, rms, number
 
 
 def _sheet_ignore_mask(shape: tuple[int, int], ppi: int, s: float) -> np.ndarray:
@@ -474,7 +528,7 @@ def analyze_photo(img_bgr: np.ndarray, distance_yd: float, bullet_diameter_in: f
 
     sheet = _decode_rectified(img_bgr, marker_size_in)
     if sheet is not None:
-        H, found, rms = sheet
+        H, found, rms, number = sheet
         s = marker_size_in / MARKER_IN
         w_px, h_px = int(PAPER_W_IN * s * DETECT_PPI), int(PAPER_H_IN * s * DETECT_PPI)
         M = np.diag([DETECT_PPI, DETECT_PPI, 1.0]) @ H
@@ -497,7 +551,7 @@ def analyze_photo(img_bgr: np.ndarray, distance_yd: float, bullet_diameter_in: f
         overlay = cv2.resize(rect, (int(w_px * OVERLAY_PPI / DETECT_PPI), int(h_px * OVERLAY_PPI / DETECT_PPI)),
                              interpolation=cv2.INTER_AREA)
         return TargetAnalysis("sheet", float(DETECT_PPI), holes, (AIM_IN[0] * s, AIM_IN[1] * s), warnings,
-                              found, _jpeg(overlay), float(OVERLAY_PPI))
+                              found, _jpeg(overlay), float(OVERLAY_PPI), number)
 
     # FREE mode ---------------------------------------------------------------
     warnings.append("Didn't find the Ballistica sheet's corner markers, so this is an approximate "

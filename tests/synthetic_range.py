@@ -25,8 +25,9 @@ HOLE_DIAMETER_IN = 0.224
 VIDEO_CONTRAST = 0.6
 
 
-def sheet_with_holes(holes: list[tuple[float, float]], diameter_in: float = HOLE_DIAMETER_IN) -> np.ndarray:
-    sheet = target.render_sheet(dpi=PPI).copy()
+def sheet_with_holes(holes: list[tuple[float, float]], diameter_in: float = HOLE_DIAMETER_IN,
+                     number: int | None = None) -> np.ndarray:
+    sheet = target.render_sheet(dpi=PPI, number=number).copy()
     for x, y in holes:
         centre = (int(round((4.25 + x) * PPI)), int(round((5.5 - y) * PPI)))
         cv2.circle(sheet, centre, int(round(diameter_in / 2 * PPI)), 25, -1, cv2.LINE_AA)
@@ -35,12 +36,14 @@ def sheet_with_holes(holes: list[tuple[float, float]], diameter_in: float = HOLE
 
 def camera_frame(holes: list[tuple[float, float]], offset_px: tuple[float, float] = (250, 180),
                  scale: float = 1.0, rotate_deg: float = 0.0, sharp: bool = False,
-                 contrast: float = VIDEO_CONTRAST, diameter_in: float = HOLE_DIAMETER_IN) -> np.ndarray:
+                 contrast: float = VIDEO_CONTRAST, diameter_in: float = HOLE_DIAMETER_IN,
+                 number: int | None = None) -> np.ndarray:
     """A BGR camera frame showing the sheet with its top-left corner at
     `offset_px`, drawn at `scale` camera pixels per sheet pixel. `contrast`
     1.0 is the sheet exactly as printed (white paper, full-strength gray ring
-    and crosshair); the default mimics the flatter look of real footage."""
-    sheet = sheet_with_holes(holes, diameter_in)
+    and crosshair); the default mimics the flatter look of real footage.
+    `number` renders that numbered sheet (None: the original unnumbered one)."""
+    sheet = sheet_with_holes(holes, diameter_in, number)
     h, w = sheet.shape
     M = cv2.getRotationMatrix2D((w / 2, h / 2), rotate_deg, scale)
     M[0, 2] += offset_px[0] - (w / 2 - scale * w / 2)

@@ -847,7 +847,7 @@ Do not tune thresholds until a ground-tripod clip exists.
 **Build plan, ranked (agreed with Rick 2026-11-14).** Capture setup from now
 on: one sheet in frame, tripod on the ground, sheets numbered in black felt pen.
 1. Detector as a tested module plus a replay benchmark with labeled clips. **Done 2026-11-14, see below.**
-2. Sheet identity: a number picker on the printable sheet, each number with
+2. **Done 2026-11-14, see below.** Sheet identity: a number picker on the printable sheet, each number with
    its own corner markers and a large printed number; a saved hole list per
    sheet number; never call a shot while identity is uncertain. Felt-pen
    numbers stay as the human check -- software should not depend on reading
@@ -900,7 +900,22 @@ in frame with a little margin, zoom/focus/exposure left alone once set, and
 one pair of shots deliberately close together. That clip becomes the second
 benchmark clip.
 
-**Status: top priority. Step 1 of 8 done; detection behaviour is unchanged from the prototype; not yet running live.**
+**Step 2, done 2026-11-14.** Numbered sheets 1-11: sheet N uses corner
+markers 4N..4N+3 (the existing marker set has room for exactly 11 more; the
+original sheet's 0-3 means "unnumbered"), and prints N large at the top
+right, outside the shot area. Picker next to the sheet link in the target
+photo panel, or `/target-sheet.pdf?number=N`; photo analysis reports the
+number. In the live tracker a numbered sheet's identity comes from its
+markers, so a bump, a swing away or a restart can't make old holes new;
+`sheet_holes()` gives each numbered sheet's hole list to save and
+`ShotTracker(known_holes=...)` takes it back. A numbered view is used only
+with 3+ of its markers in sight, and holes already on a sheet the first time
+it is seen are recorded, not called. Unnumbered sheets behave exactly as
+before (the November 13 benchmark is unchanged). Not done: storing the hole
+lists anywhere (step 7), and a way to number an already-printed sheet by
+voice or tap.
+
+**Status: top priority. Steps 1-2 of 8 done; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

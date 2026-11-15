@@ -1629,19 +1629,21 @@ def v2_calc_drop_at_range(
 # claimed about accuracy.
 # --------------------------------------------------------------------------
 _TARGET_MAX_UPLOAD_BYTES = 12_000_000
-_target_pdf_cache: bytes | None = None
+_target_pdf_cache: dict[int | None, bytes] = {}
 
 
 @app.get("/target-sheet.pdf", include_in_schema=False)
-def target_sheet_pdf():
+def target_sheet_pdf(number: int | None = Query(None, ge=1, le=target_photo.MAX_SHEET_NUMBER)):
     """The printable Ballistica target sheet: US Letter, four corner markers.
+    `?number=N` (1-11) gives numbered sheet N, which the live camera can tell
+    apart from every other sheet; without it, the original unnumbered sheet.
     Public and static (identical for everyone). Must be printed at 100%."""
-    global _target_pdf_cache
-    if _target_pdf_cache is None:
-        _target_pdf_cache = target_photo.render_sheet_pdf(300)
+    if number not in _target_pdf_cache:
+        _target_pdf_cache[number] = target_photo.render_sheet_pdf(300, number)
+    name = f"ballistica-target-sheet-{number}.pdf" if number else "ballistica-target-sheet.pdf"
     return Response(
-        content=_target_pdf_cache, media_type="application/pdf",
-        headers={"Content-Disposition": 'inline; filename="ballistica-target-sheet.pdf"',
+        content=_target_pdf_cache[number], media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{name}"',
                  "Cache-Control": "public, max-age=3600"},
     )
 
@@ -1685,6 +1687,7 @@ async def v2_target_analyze(
         stats = _target_group_payload([(h.x_in, h.y_in) for h in result.holes], distance_yd, result.aim_in, bullet)
     return {
         "mode": result.mode, "scale_ppi": result.scale_ppi, "markers_found": result.markers_found,
+        "sheet_number": result.sheet_number,
         "bullet_diameter_in": bullet, "holes": holes, "aim_in": result.aim_in,
         "warnings": result.warnings, "stats": stats,
         "overlay_jpeg_b64": base64.b64encode(result.overlay_jpeg).decode("ascii") if result.overlay_jpeg else None,

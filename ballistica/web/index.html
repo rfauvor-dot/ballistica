@@ -466,7 +466,7 @@
   <details id="targetDetails">
     <summary>Target photo (measure a group)</summary>
     <div class="panel-body">
-      <p style="font-size:14px; color:var(--muted); margin:0 0 10px;">Photograph a paper target after a string and Ballistica finds the holes and measures the group. For exact inches, <a href="/target-sheet.pdf" target="_blank" rel="noopener">print the Ballistica target sheet</a> (US Letter, print at <strong>100% / Actual size</strong>, hang it with the title edge up) and keep all four corner squares in the photo.</p>
+      <p style="font-size:14px; color:var(--muted); margin:0 0 10px;">Photograph a paper target after a string and Ballistica finds the holes and measures the group. For exact inches, <a id="tgtSheetLink" href="/target-sheet.pdf" target="_blank" rel="noopener">print the Ballistica target sheet</a> (sheet number <select id="tgtSheetNumber" aria-label="Sheet number to print"><option value="">none</option></select> -- give each sheet on the range its own number so the camera can tell them apart) (US Letter, print at <strong>100% / Actual size</strong>, hang it with the title edge up) and keep all four corner squares in the photo.</p>
       <div class="row">
         <div class="field w-sm"><label>Distance (yd)</label><input id="tgtDistance" type="number" min="1" max="3000" step="1" placeholder="36"></div>
         <div class="field w-lg"><label>Caliber</label><input id="tgtCaliber" type="text" maxlength="60" placeholder=".223, 6mm ARC, 9mm..."></div>
@@ -3119,6 +3119,17 @@ const tgtEl = (id) => document.getElementById(id);
 function tgtStorageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function tgtStorageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode etc: fine */ } }
 
+// Numbered target sheets (2026-11-14): each number prints its own corner
+// markers, so the live camera knows which sheet it is looking at. 1-11 is
+// what target.MAX_SHEET_NUMBER allows.
+(function () {
+  const sel = tgtEl('tgtSheetNumber'), link = tgtEl('tgtSheetLink');
+  for (let n = 1; n <= 11; n++) sel.add(new Option(String(n), String(n)));
+  const update = () => { link.href = '/target-sheet.pdf' + (sel.value ? '?number=' + sel.value : ''); };
+  sel.addEventListener('change', update);
+  update();
+})();
+
 (function initTargetPanel() {
   tgtEl('tgtDistance').value = tgtStorageGet('tgtDistance') || '';
   tgtEl('tgtCaliber').value = tgtStorageGet('tgtCaliber') || '';
@@ -3173,7 +3184,7 @@ tgtEl('tgtAnalyzeBtn').addEventListener('click', async () => {
     tgt.crop = tgtCropAround();
     tgtEl('tgtResult').style.display = 'block';
     tgtRender(r.stats, r.warnings);
-    tgtEl('tgtStatus').textContent = r.mode === 'sheet' ? `Sheet found (${r.markers_found} of 4 corner squares). ${r.holes.length} hole${r.holes.length === 1 ? '' : 's'} found.` : `${r.holes.length} hole${r.holes.length === 1 ? '' : 's'} found (approximate scale).`;
+    tgtEl('tgtStatus').textContent = r.mode === 'sheet' ? `${r.sheet_number ? 'Sheet ' + r.sheet_number : 'Sheet'} found (${r.markers_found} of 4 corner squares). ${r.holes.length} hole${r.holes.length === 1 ? '' : 's'} found.` : `${r.holes.length} hole${r.holes.length === 1 ? '' : 's'} found (approximate scale).`;
   } catch (e) {
     tgtEl('tgtStatus').textContent = '';
     flash(errEl, e.message || 'Something went wrong measuring that photo.');

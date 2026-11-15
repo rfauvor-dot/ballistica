@@ -448,7 +448,12 @@ for the range. As of this cutover, it requires signing in first.
   keep all four black corner squares in the photo — they fix the scale and
   correct for camera angle. Without the sheet the scale is only an
   estimate from the bullet size (±25%) and is labeled approximate. Photos
-  are processed in memory and never stored. Ballistica reports offsets
+  are processed in memory and never stored. **Numbered sheets:** pick a
+  sheet number (1-11) next to the link before printing, or use
+  `/target-sheet.pdf?number=3`. Each number has its own corner squares and
+  prints the number large at the top right, so Ballistica knows which sheet
+  is which (the result says "Sheet 3 found"). Give every sheet on the range
+  a different number; sheets printed without a number still work. Ballistica reports offsets
   neutrally and does **not** tell you which way to turn a knob: which
   direction moves the impact is for you to confirm at the line.
   **Known limits:** holes that overlap by more than half can hide each

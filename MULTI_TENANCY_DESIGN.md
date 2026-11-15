@@ -2984,3 +2984,26 @@ contrast adjustment, not real optics; they find logic failures, not
 image-quality ones. Still one real clip, with a table measured by the same
 hand that wrote the detector.
 
+---
+
+## 42. Numbered target sheets: identity from the markers (2026-11-14)
+
+**What:** step 2 of the live-shot-detection plan. Every printed sheet used to
+carry the same four corner markers (ids 0-3), so software could tell sheets
+apart only by guessing -- by the holes on them, or by where they sat in the
+picture -- and the November 13 duplicates came from those guesses failing.
+Sheet N (1-11) now uses ids 4N..4N+3 and prints N large at the top right.
+
+**Why markers, not the felt-pen number:** reading handwriting through a
+spotting scope is unreliable; the markers are read in every frame anyway.
+The pen number stays as the human check on the stills.
+
+**Why 1-11:** the marker set in use (4x4, 50 ids) has room for exactly 11 more
+sheets of four. A larger set would allow more but would change how the
+original sheets are decoded, which the November 13 benchmark guards.
+
+**Behaviour:** a numbered view is used only with at least 3 of its markers;
+holes already on a sheet when it is first seen are recorded, not called;
+hole lists can be saved and restored across a restart. Unnumbered sheets keep
+the 2026-11-13 behaviour exactly.
+

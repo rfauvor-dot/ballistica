@@ -153,12 +153,12 @@ def test_shot_carries_its_stills(session):
     sheet = shot.sheet_image()
     assert sheet.shape[:2] == (1100, 850)
     assert (sheet != shot.rect).any()             # the ring was drawn on a copy, not on the stored image
-    assert set(shot.as_dict()) == {"sheet_track", "t_first", "t_call", "x", "y", "off_camera_s", "n"}
+    assert set(shot.as_dict()) == {"sheet_track", "sheet_number", "t_first", "t_call", "x", "y", "off_camera_s", "n"}
 
 
 # ==================================================== known gaps (must fail)
 
-@pytest.mark.xfail(strict=True, reason="plan step 2 (sheet identity): sheets carry no identity of their own, "
+@pytest.mark.xfail(strict=True, reason="UNNUMBERED sheets only (numbered sheets fix this, see below): they carry no identity, "
                                        "so a second sheet with a hole near where the first sheet's hole is "
                                        "gets taken for the first sheet, and its shot is never called")
 def test_a_different_sheet_with_a_hole_in_a_similar_place_is_a_different_sheet(session):
@@ -170,7 +170,7 @@ def test_a_different_sheet_with_a_hole_in_a_similar_place_is_a_different_sheet(s
     assert len({s.sheet_track for s in session.called}) == 2
 
 
-@pytest.mark.xfail(strict=True, reason="plan step 2 (sheet identity): blank sheets are indistinguishable")
+@pytest.mark.xfail(strict=True, reason="UNNUMBERED sheets only (numbered sheets fix this, see below): blank ones are indistinguishable")
 def test_blank_sheet_keeps_its_identity_when_the_camera_is_re_aimed(session):
     session.show([], 3)
     session.show([], 3, **SWUNG)
@@ -193,7 +193,7 @@ def test_a_hole_a_quarter_inch_from_an_old_one_is_called(session):
     assert len(session.called) == 3
 
 
-@pytest.mark.xfail(strict=True, reason="plan step 3: when a sheet's only hole is swallowed by a touching one "
+@pytest.mark.xfail(strict=True, reason="UNNUMBERED sheets (numbered ones fix this, see below): when a sheet's only hole is swallowed by a touching one "
                                        "the sheet stops being recognised, a new empty sheet is started every "
                                        "frame, and later shots never accumulate enough frames to be called")
 def test_sheet_is_not_lost_when_its_only_hole_gets_a_touching_neighbour(session):
@@ -205,7 +205,7 @@ def test_sheet_is_not_lost_when_its_only_hole_gets_a_touching_neighbour(session)
     assert any(_near(s, B) for s in later)
 
 
-@pytest.mark.xfail(strict=True, reason="plan steps 2+3: a tight cluster hides enough known holes that the "
+@pytest.mark.xfail(strict=True, reason="UNNUMBERED sheets (numbered ones fix this, see below): a tight cluster hides enough known holes that the "
                                        "sheet isn't recognised after a camera move, and its other holes are "
                                        "called again")
 def test_tight_group_plus_a_camera_move_makes_no_duplicates(session):
@@ -236,6 +236,96 @@ def test_hole_on_the_printed_ring_is_found_at_full_contrast(session):
 def test_printed_scale_bar_is_not_called_as_a_shot(session):
     session.show([A, B, C], 6, contrast=1.0, **TILTED)
     assert not [s for s in session.called if s.y_in < -4.0]
+
+
+# ============================================================ numbered sheets
+
+def _shows(session, number, holes, frames=4, **view):
+    return session.show(holes, frames, number=number, **view)
+
+
+def test_numbered_sheet_shots_carry_the_sheet_number(session):
+    _shows(session, 3, [], 3)
+    _shows(session, 3, [A], 4)
+    shot, = session.called
+    assert shot.sheet_number == 3 and _near(shot, A)
+    assert session.tracker.track_summary() == [{"id": 1, "holes": 1, "frames": 7, "number": 3}]
+
+
+def test_blank_numbered_sheet_keeps_its_identity_when_the_camera_is_re_aimed(session):
+    _shows(session, 2, [], 3)
+    _shows(session, 2, [], 3, **SWUNG)
+    _shows(session, 2, [A], 5, **TILTED)
+    assert len(session.tracker.tracks) == 1 and len(session.called) == 1
+
+
+def test_two_numbered_sheets_with_holes_in_similar_places_stay_separate(session):
+    _shows(session, 1, [], 2)
+    _shows(session, 1, [A], 4)
+    session.look_away(4)
+    _shows(session, 2, [], 3, **SWUNG)
+    _shows(session, 2, [(A[0] + 0.15, A[1] - 0.1)], 6, **SWUNG)
+    session.look_away(3)
+    _shows(session, 1, [A], 5, **MOVED)              # back to sheet 1: its hole is not called again
+    assert [s.sheet_number for s in session.called] == [1, 2]
+    holes = session.tracker.sheet_holes()
+    assert sorted(holes) == [1, 2] and len(holes[1]) == 1 and len(holes[2]) == 1
+
+
+def test_numbered_sheet_tight_group_plus_a_camera_move_makes_no_duplicates(session):
+    _shows(session, 4, [], 2)
+    _shows(session, 4, [A, B, C], 4)
+    cluster = [A, B, C, (A[0] + 0.18, A[1]), (B[0] + 0.18, B[1])]
+    _shows(session, 4, cluster, 4)
+    _shows(session, 4, cluster, 6, **SWUNG)
+    assert len(session.called) <= 3      # the touching pair is still missed (step 3), but nothing repeats
+    assert len(session.tracker.tracks) == 1
+
+
+def test_numbered_sheet_is_not_lost_when_its_only_hole_gets_a_touching_neighbour(session):
+    _shows(session, 5, [], 2)
+    _shows(session, 5, [A], 4)
+    pair = [A, (A[0] + 0.18, A[1])]
+    _shows(session, 5, pair, 4)
+    later = _shows(session, 5, pair + [B], 6)
+    assert len(session.tracker.tracks) == 1
+    assert len(later) == 1 and _near(later[0], B)
+
+
+def test_holes_already_on_a_numbered_sheet_when_first_seen_are_not_shots(session):
+    _shows(session, 6, [A, B], 5)                    # recording started after two shots
+    assert session.called == []
+    assert len(session.tracker.sheet_holes()[6]) == 2
+    new = _shows(session, 6, [A, B, C], 5)
+    assert len(new) == 1 and _near(new[0], C)
+
+
+def test_saved_holes_survive_a_restart():
+    first = Session(ShotTracker())
+    first.show([], 2, number=7)
+    first.show([A], 4, number=7)
+    saved = first.tracker.sheet_holes()
+    assert len(first.called) == 1
+    second = Session(ShotTracker(known_holes=saved))          # app restarted
+    second.show([A], 2, number=7)
+    second.show([A], 4, number=7, **SWUNG)
+    assert second.called == []
+    new = second.show([A, B], 5, number=7)
+    assert len(new) == 1 and _near(new[0], B) and new[0].sheet_number == 7
+
+
+def test_numbered_sheet_needs_three_markers(session):
+    _shows(session, 8, [], 2)
+    _shows(session, 8, [A], 5, offset_px=(900, 180))     # right-hand markers cut off: only two visible
+    assert session.called == []
+
+
+def test_unnumbered_view_is_never_matched_to_a_numbered_sheet(session):
+    _shows(session, 9, [], 2)
+    _shows(session, 9, [A], 4)
+    session.show([], 2)                               # an unnumbered printout...
+    session.show([A], 5)                              # ...with a hole in the same place
+    assert [s.sheet_number for s in session.called] == [9, None]
 
 
 # =================================================================== scoring

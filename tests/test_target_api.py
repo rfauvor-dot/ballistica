@@ -125,3 +125,16 @@ def test_group_endpoint_bounds_its_input(client, signed_in):
     assert client.post("/v2/target/group", json={"holes": [[0, 0]] * 201, "distance_yd": 36}).status_code == 422
     assert client.post("/v2/target/group", json={"holes": [[0, 0]], "distance_yd": -1}).status_code == 422
     assert client.post("/v2/target/group", json={"holes": [], "distance_yd": 36}).json()["count"] == 0
+
+
+def test_numbered_target_sheet_pdf():
+    from fastapi.testclient import TestClient
+    import ballistica.api as api_module
+    client = TestClient(api_module.app)
+    r = client.get("/target-sheet.pdf?number=4")
+    assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    assert "ballistica-target-sheet-4.pdf" in r.headers["content-disposition"]
+    assert r.content != client.get("/target-sheet.pdf").content
+    assert client.get("/target-sheet.pdf?number=12").status_code == 422
+    assert client.get("/target-sheet.pdf?number=0").status_code == 422
+

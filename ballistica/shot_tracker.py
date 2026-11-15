@@ -12,29 +12,30 @@ would.
         for shot in tracker.process_frame(frame, t):
             ...                             # shot.x_in, shot.y_in, shot.sheet_image()
 
-This is the 2026-11-13 prototype (tools/live_shot_replay.py) moved into the
-package unchanged in behaviour, so that the replay tool, the benchmark
-(tools/shot_benchmark.py), the tests and later a live feed all run the same
-code. On the November 13 range video it reproduces the prototype's 17 shots
-exactly. It is the BASELINE the planned improvements are measured against,
-not the finished detector.
+Two kinds of sheet:
+  - NUMBERED sheets (printed with a number 1-11, each with its own corner
+    markers; see target.render_sheet). Identity comes from the markers in
+    every frame, so a bump, a swing away and back, or a restart (pass the
+    saved hole lists back in as `known_holes`) can never make an old hole
+    look new. A numbered view is only used with at least three of its corner
+    markers in sight, and holes already on a sheet the first time it is seen
+    are taken as already there, not called as shots.
+  - UNNUMBERED sheets (the original printout, all with the same four
+    markers). Handled exactly as the 2026-11-13 prototype did, which is what
+    the November 13 benchmark checks: a sheet is recognised by the holes
+    already on it (one is enough), or -- while still blank -- by where it sits
+    in the picture.
 
 Known limits, each pinned by a test in tests/test_shot_tracker.py marked as an
 expected failure until the step that fixes it:
-  - Sheet identity. Every printed sheet carries the same four markers, so a
-    sheet is recognised by the holes already on it (one is enough), or -- while
-    it is still blank -- by where it sits in the picture. So a blank sheet
-    gets a new identity whenever the camera is re-aimed, and two different
-    sheets with a hole in a similar place are taken for the same sheet.
+  - Unnumbered sheets: a blank one gets a new identity whenever the camera is
+    re-aimed, and two with a hole in a similar place are taken for one sheet.
   - Tight groups. Touching holes merge into one blob too big to count as a
-    hole, and both vanish. If that hides enough of a sheet's known holes the
-    sheet stops being recognised: a new, empty sheet is started and the holes
-    still visible are called again. This produces duplicates WITHOUT the
-    camera moving, and the November 13 video never exercised it.
+    hole, and both vanish. On an unnumbered sheet that can hide enough known
+    holes that the sheet stops being recognised and its other holes are
+    called again (numbered sheets are immune to that part).
   - Close holes. A new hole within `tol_known_in` of an old one is taken for
     the old one.
-  - It re-finds every hole in every frame rather than asking what changed
-    since the last shot.
   - Printed features. At the flat contrast of the November 13 footage the
     light-gray ring and crosshair stay under the darkness threshold. In a
     crisp, well-exposed view they do not: the crosshair is called as a shot at
@@ -72,12 +73,13 @@ class TrackerConfig:
     pattern_min_fraction: float = 0.7  # share of a sheet's holes that must be visible to recognise it
     position_match_markers: float = 3.0  # image-position fallback, in marker widths
     long_gap_s: float = 20.0      # a hole first seen after the sheet was out of view this long is flagged
+    min_markers_numbered: int = 3  # a numbered sheet is only used with this many of its markers in view
 
 
 @dataclass
 class Shot:
     n: int                 # 1-based order in which this tracker called it
-    sheet_track: int       # the tracker's internal sheet id (NOT the number written on the sheet)
+    sheet_track: int       # the tracker's internal sheet id
     t_first: float         # when the hole was first seen, seconds
     t_call: float          # when it was confirmed and reported
     x_in: float            # right of the crosshair
@@ -86,6 +88,7 @@ class Shot:
     rect: np.ndarray = field(repr=False)    # flattened sheet at first sighting
     frame: np.ndarray = field(repr=False)   # camera frame at first sighting
     ppi: float = field(default=100.0, repr=False)
+    sheet_number: int | None = None   # printed sheet number (None: an unnumbered sheet)
 
     def sheet_image(self) -> np.ndarray:
         """The flattened sheet with this hole ringed in red."""
@@ -97,8 +100,9 @@ class Shot:
 
     def as_dict(self) -> dict:
         """The summary.json record (same keys the prototype wrote)."""
-        return {"sheet_track": self.sheet_track, "t_first": self.t_first, "t_call": self.t_call,
-                "x": self.x_in, "y": self.y_in, "off_camera_s": self.off_camera_s, "n": self.n}
+        return {"sheet_track": self.sheet_track, "sheet_number": self.sheet_number, "t_first": self.t_first,
+                "t_call": self.t_call, "x": self.x_in, "y": self.y_in, "off_camera_s": self.off_camera_s,
+                "n": self.n}
 
 
 def _marker_detector() -> "cv2.aruco.ArucoDetector":
@@ -117,7 +121,11 @@ def _marker_detector() -> "cv2.aruco.ArucoDetector":
 
 
 class ShotTracker:
-    def __init__(self, config: TrackerConfig | None = None) -> None:
+    def __init__(self, config: TrackerConfig | None = None,
+                 known_holes: dict[int, list[tuple[float, float]]] | None = None) -> None:
+        """known_holes: {sheet number: [(x_in, y_in), ...]} -- holes already on
+        numbered sheets, e.g. what sheet_holes() returned before a restart.
+        They are never called as shots."""
         self.config = c = config or TrackerConfig()
         ppi = c.ppi
         self._detector = _marker_detector()
@@ -135,6 +143,9 @@ class ShotTracker:
         self._morph = max(3, int(25 * ppi / 200))
 
         self.tracks: list[dict] = []       # one per sheet the tracker believes it has seen
+        for number, holes in (known_holes or {}).items():
+            track = self._new_track(org=None, t=None, number=int(number))
+            track["holes"] = [dict(x=float(x), y=float(y), first=None, obs=[]) for x, y in holes]
         self.shots: list[Shot] = []        # every shot called so far, in order
         self.frames_processed = 0
         self.sheet_frames_used = 0
@@ -155,6 +166,8 @@ class ShotTracker:
         for sheet in sheets:
             good = ((sheet["found"] >= 3 and sheet["rms"] < c.max_rms_3_markers_in)
                     or (sheet["found"] == 2 and sheet["rms"] < c.max_rms_2_markers_in))
+            if sheet["number"] is not None and sheet["found"] < c.min_markers_numbered:
+                good = False
             if not good:
                 self.sheet_frames_gated += 1
                 continue
@@ -163,7 +176,7 @@ class ShotTracker:
                 self.sheet_frames_gated += 1
                 continue
             track = self._pick_track(sheet, dots, t)
-            track["gap"] = t - track["last_t"]
+            track["gap"] = t - track["last_t"] if track["last_t"] is not None else 0.0
             track["last_t"] = t
             track["seen_frames"] += 1
             new_shots.extend(self._update_track(track, dots, t, rect, frame_bgr))
@@ -176,29 +189,55 @@ class ShotTracker:
         return new_shots
 
     def track_summary(self) -> list[dict]:
-        return [{"id": tr["id"], "holes": len(tr["holes"]), "frames": tr["seen_frames"]} for tr in self.tracks]
+        out = []
+        for tr in self.tracks:
+            row = {"id": tr["id"], "holes": len(tr["holes"]), "frames": tr["seen_frames"]}
+            if tr["number"] is not None:
+                row["number"] = tr["number"]
+            out.append(row)
+        return out
+
+    def sheet_holes(self) -> dict[int, list[tuple[float, float]]]:
+        """Every hole on every NUMBERED sheet seen so far, including holes that
+        were already there when the sheet was first seen -- the list to save,
+        and to pass back as `known_holes` after a restart."""
+        return {tr["number"]: [(round(h["x"], 3), round(h["y"], 3)) for h in tr["holes"]]
+                for tr in self.tracks if tr["number"] is not None}
+
+    def _new_track(self, org, t, number: int | None = None) -> dict:
+        track = dict(id=len(self.tracks) + 1, number=number, org=org, holes=[], cands=[], seen_frames=0,
+                     last_t=t, adopted=0)
+        self.tracks.append(track)
+        return track
 
     # ------------------------------------------------------ sheet finding
     def _sheets_in(self, gray: np.ndarray) -> list[dict]:
-        """Every sheet visible in the frame: its image-to-inches transform and
-        how well the markers fit it. Markers are grouped into sheets by where
-        each one says the sheet's corner is, since all sheets share marker ids."""
+        """Every sheet visible in the frame: its printed number (None if
+        unnumbered), its image-to-inches transform and how well the markers
+        fit it. Markers are grouped by sheet number, then -- since every copy
+        of a sheet shares its marker ids -- by where each one says the sheet's
+        corner is."""
         O = self._origins
         corners, ids, _ = self._detector.detectMarkers(gray)
         if ids is None:
             return []
         votes = []
         for corner, marker_id in zip(corners, ids.ravel().tolist()):
-            if marker_id not in O:
+            layout = target.marker_layout(marker_id)
+            if layout is None:
                 continue
+            number, corner_index = layout
             corner = corner.reshape(4, 2)
             s = float(np.mean([np.linalg.norm(corner[k] - corner[(k + 1) % 4]) for k in range(4)]))
             ctr = corner.mean(0)
-            ox, oy = O[marker_id]
-            votes.append(dict(id=marker_id, c=corner, s=s, org=(ctr[0] - (ox + 0.5) * s, ctr[1] - (oy + 0.5) * s)))
+            ox, oy = O[corner_index]
+            votes.append(dict(id=corner_index, number=number, c=corner, s=s,
+                              org=(ctr[0] - (ox + 0.5) * s, ctr[1] - (oy + 0.5) * s)))
         clusters: list[list[dict]] = []
         for v in sorted(votes, key=lambda v: v["org"][0]):
             for cl in clusters:
+                if cl[0]["number"] != v["number"]:
+                    continue
                 m = cl[0]
                 if abs(v["org"][0] - m["org"][0]) < 1.3 * m["s"] and abs(v["org"][1] - m["org"][1]) < 1.3 * m["s"]:
                     cl.append(v)
@@ -229,7 +268,7 @@ class ShotTracker:
             proj = cv2.perspectiveTransform(src.reshape(-1, 1, 2), Hm).reshape(-1, 2)
             rms = float(np.sqrt(((proj - dst) ** 2).sum(1).mean()))
             sheets.append(dict(
-                Hm=Hm, rms=rms, found=len(by_id),
+                Hm=Hm, rms=rms, found=len(by_id), number=cl[0]["number"],
                 org=(float(np.mean([v["org"][0] for v in cl])), float(np.mean([v["org"][1] for v in cl]))),
                 s=float(np.mean([v["s"] for v in cl])),
             ))
@@ -258,15 +297,24 @@ class ShotTracker:
         """Which known sheet this view is. 1) a track whose confirmed holes
         are mostly visible here IS this sheet (works wherever the camera
         points); 2) else follow image position to a track with too few holes
-        to contradict it; 3) else a new sheet."""
+        to contradict it; 3) else a new sheet. A NUMBERED sheet is simply the
+        track with that number -- none of the guessing applies, and an
+        unnumbered view is never matched to a numbered sheet."""
         c = self.config
+        if sheet["number"] is not None:
+            for tr in self.tracks:
+                if tr["number"] == sheet["number"]:
+                    tr["org"] = sheet["org"]
+                    return tr
+            return self._new_track(sheet["org"], t, sheet["number"])
+        unnumbered = [tr for tr in self.tracks if tr["number"] is None]
 
         def hits(tr):
             return sum(1 for h in tr["holes"]
                        if any(math.dist((h["x"], h["y"]), d) < c.pattern_match_in for d in dots))
 
         best, best_fraction = None, 0.0
-        for tr in self.tracks:
+        for tr in unnumbered:
             n = len(tr["holes"])
             if n == 0:
                 continue
@@ -276,15 +324,14 @@ class ShotTracker:
                 best, best_fraction = tr, fraction
         if best is None:
             near, near_d = None, 1e9
-            for tr in self.tracks:
+            for tr in unnumbered:
                 d = math.hypot(sheet["org"][0] - tr["org"][0], sheet["org"][1] - tr["org"][1]) / sheet["s"]
                 if d < c.position_match_markers and d < near_d:
                     near, near_d = tr, d
             if near is not None and (len(near["holes"]) == 0 or hits(near) >= 0.5 * len(near["holes"])):
                 best = near
         if best is None:
-            best = dict(id=len(self.tracks) + 1, org=sheet["org"], holes=[], cands=[], seen_frames=0, last_t=t)
-            self.tracks.append(best)
+            best = self._new_track(sheet["org"], t)
         best["org"] = sheet["org"]
         return best
 
@@ -303,7 +350,11 @@ class ShotTracker:
                     hit = ci
                     break
             if hit is None:
-                tr["cands"].append(dict(x=d[0], y=d[1], first=t, seen=1, miss=0, pts=[d],
+                # On a numbered sheet, a hole already there the first time the
+                # sheet is seen is not a new shot (recording started late, or
+                # a shot landed while the app was closed).
+                already_there = tr["number"] is not None and tr["seen_frames"] <= 1
+                tr["cands"].append(dict(x=d[0], y=d[1], first=t, seen=1, miss=0, pts=[d], already=already_there,
                                         rect=rect.copy(), frame=frame, gap=tr.get("gap", 0)))
                 seen.add(len(tr["cands"]) - 1)
             else:
@@ -320,11 +371,14 @@ class ShotTracker:
                 cand["miss"] += 1
             if cand["seen"] >= c.n_confirm:
                 tr["holes"].append(dict(x=cand["x"], y=cand["y"], first=cand["first"], obs=list(cand["pts"])))
+                if cand["already"]:
+                    tr["adopted"] += 1
+                    continue
                 shot = Shot(
                     n=len(self.shots) + 1, sheet_track=tr["id"], t_first=cand["first"], t_call=t,
                     x_in=cand["x"], y_in=cand["y"],
                     off_camera_s=round(cand["gap"], 1) if cand["gap"] > c.long_gap_s else 0,
-                    rect=cand["rect"], frame=cand["frame"], ppi=c.ppi,
+                    rect=cand["rect"], frame=cand["frame"], ppi=c.ppi, sheet_number=tr["number"],
                 )
                 self.shots.append(shot)
                 new_shots.append(shot)

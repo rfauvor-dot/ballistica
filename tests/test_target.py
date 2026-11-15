@@ -321,3 +321,47 @@ def test_a_darkened_ring_arc_that_pokes_past_the_dilated_mask_is_still_rejected(
     r = target.analyze_photo(photo, 36, BULLET)
     assert len(r.holes) == 1, r.warnings
     assert _match(r.holes, truth, 0.05) < 0.05
+
+
+# --------------------------------------------------------- numbered sheets
+
+@pytest.mark.parametrize("number", [1, 6, 11])
+def test_numbered_sheet_is_read_with_its_number(number):
+    img = cv2.cvtColor(target.render_sheet(200, number), cv2.COLOR_GRAY2BGR)
+    r = target.analyze_photo(img, 100)
+    assert (r.mode, r.markers_found, r.sheet_number, r.holes) == ("sheet", 4, number, [])
+
+
+def test_unnumbered_sheet_reads_as_no_number():
+    r = target.analyze_photo(cv2.cvtColor(target.render_sheet(200), cv2.COLOR_GRAY2BGR), 100)
+    assert r.mode == "sheet" and r.sheet_number is None
+
+
+def test_each_number_has_its_own_markers():
+    seen = set()
+    for number in [None] + list(range(1, target.MAX_SHEET_NUMBER + 1)):
+        for corner in range(4):
+            marker_id = 4 * (number or 0) + corner
+            assert target.marker_layout(marker_id) == (number, corner)
+            assert marker_id not in seen
+            seen.add(marker_id)
+    assert target.marker_layout(4 * (target.MAX_SHEET_NUMBER + 1)) is None
+
+
+@pytest.mark.parametrize("bad", [0, 12, -1])
+def test_out_of_range_sheet_number_is_refused(bad):
+    with pytest.raises(ValueError):
+        target.render_sheet(100, bad)
+
+
+def test_printed_number_stays_out_of_the_shot_area():
+    dpi = 100
+    plain, numbered = target.render_sheet(dpi), target.render_sheet(dpi, 11)
+    rows, cols = np.nonzero(plain != numbered)
+    number_ink = (cols >= 4.9 * dpi) & (cols <= 6.9 * dpi)
+    assert number_ink.any()
+    assert rows[number_ink].max() < 1.6 * dpi          # the number sits in the title band
+    # Every other difference is a corner marker.
+    others = ~number_ink
+    assert ((rows[others] < 1.6 * dpi) | (rows[others] >= 9.4 * dpi)).all()
+
