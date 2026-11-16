@@ -17,7 +17,7 @@
   const PASSES = 3;              // timed passes over the stretch, per mode, after an untimed warm-up pass
   const LIVE_FPS = 2;            // what live detection samples at
   // Shown on the page, so a result can be tied to the version that produced it.
-  const TEST_VERSION = "Test version 2 (patch search, 2026-11-15)";
+  const TEST_VERSION = "Test version 3 (patch search + faster flattening, 2026-11-15)";
 
   let cv = null, detector = null, manifest = null, spot = [], stretch = [];
 

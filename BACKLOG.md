@@ -999,6 +999,15 @@ browser: corner squares 656 -> 216 ms a frame, whole frame 921 -> 482 ms
 (1.9x). Flattening the sheet and finding holes (~250 ms there) is now the
 largest cost. Phone numbers not yet measured with it.
 
+**Faster flattening, 2026-11-15:** the median blur runs only over the area a
+hole can be in (plus its reach), and the "inside the picture" area is drawn
+from the picture's outline instead of warping a whole-frame mask. Same answers
+on all 33 sample frames; flatten step 218 -> 189 ms on the PC browser (-14%).
+Rejected: flattening the grey picture instead of the colour one -- 1-grey-level
+differences split two touching holes into two spots on the 12-hole frame. The
+median blur is now most of what's left; the real saving there is step 3
+(compare with the sheet before the shot), which replaces it.
+
 **Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match

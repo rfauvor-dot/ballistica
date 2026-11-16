@@ -54,7 +54,7 @@ def test_scripts_are_addressed_by_content_so_phones_cannot_run_stale_copies():
         digest = hashlib.sha256(open(os.path.join(SPEEDTEST, name), "rb").read()).hexdigest()[:12]
         assert f'src="/speedtest/{name}?v={digest}"' in html, name
         assert client.get(f"/speedtest/{name}?v={digest}").status_code == 200
-    assert "Test version 2" in open(os.path.join(SPEEDTEST, "page.js"), encoding="utf-8").read()
+    assert "Test version 3" in open(os.path.join(SPEEDTEST, "page.js"), encoding="utf-8").read()
 
 
 def test_page_files_are_served():

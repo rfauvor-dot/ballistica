@@ -35,6 +35,19 @@
  * `fullSearchEvery` frames anyway, so a newly hung sheet is noticed within a
  * few seconds. A square found in a patch has exactly the corners a full search
  * gives it (checked: 0.00 px apart); what is then done with them is unchanged.
+ *
+ * FASTER FLATTENING (2026-11-15). Two shortcuts in finding the holes, checked
+ * against the Python results on all the sample frames:
+ *   - the median blur (the paper's local brightness) runs only over the area a
+ *     hole can be in, plus the blur's own reach on every side -- identical
+ *     results inside that area;
+ *   - "which part of the flattened sheet is inside the picture" is drawn as the
+ *     picture's outline mapped onto the sheet, not by warping a whole-frame mask
+ *     (the two can disagree on single pixels along that edge).
+ * Tried and REJECTED: flattening the grey picture instead of the colour one
+ * (half the warp time). Pixels come out up to 1 grey level different, and on
+ * the 12-hole sample frame that broke the thin neck between two touching
+ * holes, turning one spot into two.
  */
 (function (root) {
   "use strict";
@@ -91,6 +104,15 @@
         this.mask.roi(new cv.Rect(xa, ya, xb - xa, yb - ya)).setTo(new cv.Scalar(0));
       }
       this.maskCount = cv.countNonZero(this.mask);
+      // The median blur only has to be right inside the mask's bounding box; it
+      // looks blurK/2 pixels out, so give it that much more on every side and
+      // the values inside the box are exactly what a whole-sheet blur gives.
+      const r = (this.blurK - 1) / 2;
+      const bx0 = Math.max(0, x0 - r), by0 = Math.max(0, y0 - r);
+      this.blurRect = new cv.Rect(bx0, by0, Math.min(this.W, x1 + r) - bx0, Math.min(this.H, y1 + r) - by0);
+      this.boxRect = new cv.Rect(x0 - bx0, y0 - by0, x1 - x0, y1 - y0);   // the mask's box, inside blurRect
+      this.boxOrigin = [x0, y0];
+      this.boxMask = this.mask.roi(new cv.Rect(x0, y0, x1 - x0, y1 - y0)).clone();
       this.kernel = cv.Mat.ones(this.morph, this.morph, cv.CV_8U);
       this.resetTracking();
     }
@@ -132,7 +154,6 @@
         this.patchMisses = 0;
       }
       const sheets = this._sheetsFrom(markers);
-      gray.delete();
       const t1 = performance.now();
       const out = [];
       for (const sheet of sheets) {
@@ -140,7 +161,7 @@
         if (sheet.number !== null && sheet.found < this.c.minMarkersNumbered) good = false;
         const entry = { number: sheet.number, markers: sheet.found, rms: sheet.rms, used: false };
         if (good) {
-          const r = this._dotsOf(rgba, sheet.Hm);
+          const r = this._dotsOf(rgba, gray.cols, gray.rows, sheet.Hm);
           entry.cover = r.cover;
           if (r.cover >= this.c.minCover) { entry.used = true; entry.dots = r.dots; }
         }
@@ -148,6 +169,7 @@
       }
       // Where each sheet's squares should be next frame: found ones where they
       // were, missing ones where this frame's fit puts them.
+      gray.delete();
       if (!keepFollowed) this.followed = sheets.map((sh, k) => ({ squares: this._expectedSquares(sh), used: out[k].used }));
       const t2 = performance.now();
       return { sheets: out, search, ms: { markers: t1 - t0, flatten: t2 - t1 } };
@@ -274,27 +296,41 @@
       return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], h[8]]];
     }
 
-    _dotsOf(rgba, Hm) {
+    /** Flatten the sheet from the colour frame and find the dark dots on it.
+     *  -> {cover, dots: [[x_in, y_in]]}. Same steps as shot_tracker._dots_of. */
+    _dotsOf(rgba, frameW, frameH, Hm) {
       const cv = this.cv, ppi = this.c.ppi, W = this.W, H = this.H;
-      const M = cv.matFromArray(3, 3, cv.CV_64F, [
-        ppi * Hm[0][0], ppi * Hm[0][1], ppi * Hm[0][2],
-        ppi * Hm[1][0], ppi * Hm[1][1], ppi * Hm[1][2],
-        Hm[2][0], Hm[2][1], Hm[2][2]]);
-      const size = new cv.Size(W, H);
-      const rect = new cv.Mat();
-      cv.warpPerspective(rgba, rect, M, size, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
-      const g = new cv.Mat(), med = new cv.Mat(), diff = new cv.Mat();
+      const Mv = [[ppi * Hm[0][0], ppi * Hm[0][1], ppi * Hm[0][2]],
+                  [ppi * Hm[1][0], ppi * Hm[1][1], ppi * Hm[1][2]], Hm[2].slice()];
+      const M = cv.matFromArray(3, 3, cv.CV_64F, Mv.flat());
+      const rect = new cv.Mat(), g = new cv.Mat();
+      cv.warpPerspective(rgba, rect, M, new cv.Size(W, H), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255, 255, 255, 255));
       cv.cvtColor(rect, g, cv.COLOR_RGBA2GRAY);
-      cv.medianBlur(g, med, this.blurK);
-      cv.subtract(med, g, diff);
-      const full = new cv.Mat(rgba.rows, rgba.cols, cv.CV_8UC1, new cv.Scalar(255));
-      const inView = new cv.Mat(), valid = new cv.Mat();
-      cv.warpPerspective(full, inView, M, size, cv.INTER_NEAREST, cv.BORDER_CONSTANT, new cv.Scalar(0));
-      cv.erode(inView, valid, this.kernel);
+
+      // Paper brightness (median) and darkness below it, inside the mask's box only.
+      const gBlur = g.roi(this.blurRect), med = new cv.Mat();
+      cv.medianBlur(gBlur, med, this.blurK);
+      const medBox = med.roi(this.boxRect), gBox = gBlur.roi(this.boxRect), diff = new cv.Mat();
+      cv.subtract(medBox, gBox, diff);
+
+      // Inside the picture: the frame's outline mapped onto the sheet (pixel
+      // centres -0.5 .. size-0.5, as nearest-neighbour warping counts them),
+      // drawn over the whole sheet and shrunk exactly as Python's erode does
+      // (the sheet's own edges are not "outside"), then cut to the box.
+      const shift = 4, k = 1 << shift, ox = this.boxOrigin[0], oy = this.boxOrigin[1];
+      const outline = [[-0.5, -0.5], [frameW - 0.5, -0.5], [frameW - 0.5, frameH - 0.5], [-0.5, frameH - 0.5]]
+        .map((pt) => applyH(Mv, pt)).map(([x, y]) => [Math.round(x * k), Math.round(y * k)]);
+      const inView = new cv.Mat(H, W, cv.CV_8UC1, new cv.Scalar(0));
+      const poly = cv.matFromArray(4, 1, cv.CV_32SC2, outline.flat()), polys = new cv.MatVector();
+      polys.push_back(poly);
+      cv.fillPoly(inView, polys, new cv.Scalar(255), cv.LINE_8, shift);
+      const validFull = new cv.Mat();
+      cv.erode(inView, validFull, this.kernel);
+      const valid = validFull.roi(new cv.Rect(ox, oy, this.boxRect.width, this.boxRect.height));
       const validInMask = new cv.Mat();
-      cv.bitwise_and(valid, this.mask, validInMask);
+      cv.bitwise_and(valid, this.boxMask, validInMask);
       const cover = cv.countNonZero(validInMask) / this.maskCount;
-      // bw = (diff > threshold) & mask & valid
+
       const dark = new cv.Mat(), bw = new cv.Mat();
       cv.threshold(diff, dark, this.c.darknessThreshold, 255, cv.THRESH_BINARY);
       cv.bitwise_and(dark, validInMask, bw);
@@ -304,10 +340,10 @@
       for (let i = 1; i < n; i++) {
         const area = stats.intAt(i, cv.CC_STAT_AREA);
         if (area > this.areaLo && area < this.areaHi) {
-          dots.push([(cent.doubleAt(i, 0) - this.aim[0]) / ppi, (this.aim[1] - cent.doubleAt(i, 1)) / ppi]);
+          dots.push([(cent.doubleAt(i, 0) + ox - this.aim[0]) / ppi, (this.aim[1] - (cent.doubleAt(i, 1) + oy)) / ppi]);
         }
       }
-      for (const m of [M, rect, g, med, diff, full, inView, valid, validInMask, dark, bw, labels, stats, cent]) m.delete();
+      for (const m of [M, rect, g, gBlur, med, medBox, gBox, diff, inView, poly, polys, validFull, valid, validInMask, dark, bw, labels, stats, cent]) m.delete();
       return { cover, dots };
     }
   }
