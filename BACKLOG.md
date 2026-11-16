@@ -1008,6 +1008,12 @@ differences split two touching holes into two spots on the 12-hole frame. The
 median blur is now most of what's left; the real saving there is step 3
 (compare with the sheet before the shot), which replaces it.
 
+**Speed test results with patch search (Rick, 2026-11-16):** S25, test
+version 2 (patch search, before the faster flattening): 139 ms a frame = 7.2
+frames/s live, against 2 needed (3.6x); full search 293 ms = 3.4 frames/s
+(patch 2.1x faster); all 33 frames match. Galaxy Tab, version 2: 334 ms = 3.0
+frames/s. Version 3 numbers on both devices still to come.
+
 **Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
