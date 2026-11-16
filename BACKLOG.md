@@ -1012,7 +1012,9 @@ median blur is now most of what's left; the real saving there is step 3
 version 2 (patch search, before the faster flattening): 139 ms a frame = 7.2
 frames/s live, against 2 needed (3.6x); full search 293 ms = 3.4 frames/s
 (patch 2.1x faster); all 33 frames match. Galaxy Tab, version 2: 334 ms = 3.0
-frames/s. Version 3 numbers on both devices still to come.
+frames/s. S25, version 3 (faster flattening too): 126 ms a frame = 7.9
+frames/s live (~4x what's needed); full search 276 ms; all 33 frames match.
+Galaxy Tab version 3 still to come.
 
 **Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
