@@ -266,6 +266,25 @@ lenses' actual authority to resolve.
 
 ---
 
+## Range rig link held in one server process -- NEW (2026-11-16)
+
+**What:** The equipment check's link between the camera phone and the
+bench device (ballistica/rig.py) lives in the server's memory: which phone
+checked in when, and the one open request for frames. That is only right
+while the app runs as a single process -- true today on Render, and the
+same assumption the rate limiter's in-memory counts already make. With two
+or more processes (or instances), a phone's check-in and the voice turn
+asking for a look can land on different ones, and the check reports the
+camera as not connected or not answering. A deploy or restart mid-check
+has the same effect for that one check (it says so; nothing is lost).
+
+**Next step:** if the app ever runs as more than one process, move the link
+to a shared store (Supabase table or Redis) along with the rate limits.
+
+**Owning lens:** Build.
+
+---
+
 ## Reliability Under Real Range Conditions
 
 **Status (corrected 2026-09-24):** Largely verified in the field. This entry

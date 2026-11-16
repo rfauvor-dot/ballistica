@@ -50,6 +50,8 @@ Commands (voice-style phrasing is fine, punctuation is ignored):
                                                 "average", "discard that", "end calibration"
   status                                    -- show active rifle/load/atmosphere/wind
   wind check / check wind / what's my wind  -- wind alone, not the full status dump
+  equipment check                           -- preflight: camera framing and focus (through the
+                                                camera phone), the link, which rifle and ammunition
   list rifles / list loads
   help
   quit
@@ -414,6 +416,28 @@ _MAX_FAILED_ATTEMPTS = 3
 # longer than this is treated as abandoned and cleared before the
 # current utterance is processed, rather than silently absorbing it.
 _SESSION_STALE_SECONDS = 300
+
+# Equipment check (2026-11-16): "Ballistica, equipment check" -- a preflight
+# checklist at the range. See _start_equipment_check().
+_EQUIPMENT_CHECK_RE = re.compile(r"\bequipment\s*check\b|\bpre-?\s*flight\b|\bgear\s*check\b")
+# Getting out of it: a cancel word on its own, or "stop the (equipment) check".
+_EQUIPMENT_STOP_RE = re.compile(
+    r"^(?:cancel|never ?mind|stop|abort|forget it|quit|exit)\b[\s.!,]*(?:the )?(?:equipment )?(?:check)?[\s.!]*$"
+    r"|\b(?:stop|cancel|end|abort|quit)\b.*\bcheck\b"
+)
+# During focus coaching: move on without a sharper picture.
+_FOCUS_SKIP_RE = re.compile(r"\b(?:good enough|skip|move on|leave it|that'?s (?:fine|good|okay)|it'?s (?:fine|good)|"
+                            r"next|carry on|forget (?:the )?focus)\b")
+_FOCUS_MAX_TRIES = 8
+_FOCUS_CHANGE = 0.02   # rig.FOCUS_CHANGE: a smaller change in blur is within the frame-to-frame wander
+
+
+def _spoken_join(items: list[str], last_word: str = "and") -> str:
+    """'a', 'a and b', 'a, b and c' -- for speech."""
+    items = list(items)
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + f" {last_word} " + items[-1]
 
 # How many recent user/assistant exchanges the open-ended conversational
 # path (extract_intent's "converse" result) carries forward as context --
@@ -795,6 +819,12 @@ class BallisticaCLI:
         # averages about to be written, held until the shooter says yes.
         self._pending_session_save: list[dict] | None = None
         self._pending_session_save_at: float = 0.0
+        # The equipment check in progress (a JSON-safe dict, see
+        # _start_equipment_check), or None.
+        self._equipment_check: dict | None = None
+        # The camera phone link (rig.CameraLink), set per request by api.py;
+        # None when there is no link at all (the command-line app).
+        self._camera = None
 
     # ------------------------------------------------------------------
     # Conversation state that outlives one request.
@@ -821,12 +851,14 @@ class BallisticaCLI:
         "_pending_setup_kind", "_pending_setup_text", "_pending_setup_at",
         "_chat_history", "_session_log",
         "_pending_session_save", "_pending_session_save_at",
+        "_equipment_check",
     })
     _REQUEST_ONLY_ATTRS = frozenset({
         "store",                   # rebuilt per request from the database
         "_session_mode",           # sent by the frontend on every request
         "_last_reply_is_readout",  # describes this turn's reply only
         "_last_tool_name",         # describes this turn's routing only
+        "_camera",                 # the camera phone link, set per request by api.py
     })
 
     def to_state(self) -> dict:
@@ -866,6 +898,7 @@ class BallisticaCLI:
             ),
             "atmosphere": dataclasses.asdict(self.atmosphere),
             "wind": dataclasses.asdict(self.wind),
+            "equipment_check": self._equipment_check,
         }
 
     def load_state(self, state: dict) -> None:
@@ -904,6 +937,7 @@ class BallisticaCLI:
         pending = state.get("pending_session_save")
         self._pending_session_save = pending["entries"] if pending else None
         self._pending_session_save_at = pending["at"] if pending else 0.0
+        self._equipment_check = state.get("equipment_check") or None
         if state.get("atmosphere"):
             self.atmosphere = AtmosphereConditions(**state["atmosphere"])
         if state.get("wind"):
@@ -947,6 +981,8 @@ class BallisticaCLI:
             self._pending_setup_text = ""
         if self._pending_session_save is not None and now - self._pending_session_save_at > _SESSION_STALE_SECONDS:
             self._pending_session_save = None
+        if self._equipment_check is not None and now - self._equipment_check["at"] > _SESSION_STALE_SECONDS:
+            self._equipment_check = None
         if self._session_log is not None and now - self._session_log.last_activity > _SESSION_LOG_STALE_SECONDS:
             self._session_log = None
         # Readings held awaiting a rifle/load answer follow the short
@@ -1028,6 +1064,20 @@ class BallisticaCLI:
 
         self._expire_stale_sessions()
 
+        # Equipment check: starting it drops whatever else was half-asked;
+        # while it runs, every turn is an answer to it (it asks which rifle,
+        # and "I'm shooting the Tikka" must not be heard as "shoot" -- the
+        # top-level switch check below would), until it finishes or is
+        # stopped.
+        if _EQUIPMENT_CHECK_RE.search(low) and not re.search(r"\b(?:stop|cancel|end|abort)\b", low):
+            self._last_tool_name = "equipment_check"
+            self._clear_pending_for_new_task()
+            return self._start_equipment_check()
+        if self._equipment_check is not None:
+            self._equipment_check["at"] = time.time()
+            self._last_tool_name = "equipment_check_turn"
+            return self._handle_equipment_check_turn(t)
+
         # Top-level intent switching (2026-09-05, deployed to main
         # 2026-09-06 after being confirmed live-broken again in
         # production -- this fix existed on an in-progress branch but
@@ -1064,14 +1114,7 @@ class BallisticaCLI:
         )
         if (self._setup is not None or self._calibration is not None or any_pending_confirm) \
                 and self._requests_different_top_level_task(low):
-            self._setup = None
-            self._calibration = None
-            self._pending_delete = None
-            self._pending_rifle_switch = None
-            self._pending_load_switch = None
-            self._pending_calibration_start = False
-            self._pending_setup_kind = None
-            self._pending_session_save = None
+            self._clear_pending_for_new_task()
         # A guided load/rifle setup interview is modal: once it's running,
         # every utterance is directed at it (a field value, a correction,
         # or a way out) until it's confirmed or cancelled -- including
@@ -2682,6 +2725,239 @@ class BallisticaCLI:
                 f"{self.atmosphere.pressure_inhg:.2f} inches of mercury, "
                 f"{self.atmosphere.humidity_pct:.0f} percent humidity, "
                 f"{self.atmosphere.altitude_ft:.0f} feet.")
+
+    def _clear_pending_for_new_task(self) -> None:
+        """Drop every half-finished conversation (setup, calibration, the
+        equipment check, and every yes/no or which-one question) -- a new
+        top-level task was asked for."""
+        self._setup = None
+        self._calibration = None
+        self._pending_delete = None
+        self._pending_rifle_switch = None
+        self._pending_load_switch = None
+        self._pending_calibration_start = False
+        self._pending_setup_kind = None
+        self._pending_session_save = None
+        self._equipment_check = None
+
+    # ------------------------------------------------------------------
+    # Equipment check (2026-11-16): "Ballistica, equipment check". A
+    # preflight checklist, in order:
+    #   1. through the camera phone: the framing (a sheet, its number, all
+    #      four corner squares in view and clear of the edge, big enough,
+    #      one sheet) and the sharpness -- and if the picture is soft,
+    #      coaching the focus: turn the knob, say "check focus", hear
+    #      "better", "softer" or "about the same";
+    #   2. that the phone and the bench device are connected;
+    #   3. which rifle, 4. which ammunition (both made the active ones);
+    #   5. "All set", or what still needs fixing.
+    # Problems are collected rather than stopping the check, so one pass
+    # gives the whole list. The camera's view comes through rig.CameraLink
+    # (self._camera): a few frames' result, never video.
+
+    def _start_equipment_check(self) -> str:
+        # issues: problems found along the way; framing_issues: what the
+        # LATEST look through the camera found wrong with the framing (a
+        # soft picture can hide a corner square, so a sharper look replaces
+        # them).
+        ec = {"step": None, "issues": [], "framing_issues": [], "link_note": "", "sharp_verdict": None,
+              "focus_last": None, "focus_tries": 0, "asks": 0, "at": time.time()}
+        parts = ["Equipment check."] + self._equipment_camera_check(ec)
+        if ec["step"] == "focus":
+            self._equipment_check = ec
+            return " ".join(parts)
+        return " ".join(parts + [p for p in (ec["link_note"], self._equipment_ask_rifle(ec)) if p])
+
+    def _equipment_camera_check(self, ec: dict) -> list[str]:
+        link = self._camera
+        if link is None:
+            ec["issues"].append("there's no camera link from here")
+            return ["I can't reach a camera from here, so I'll skip the framing and focus."]
+        status = link.status()
+        if not status["connected"]:
+            ec["issues"].append("the camera phone isn't connected: on the phone, open Range camera and tap Start camera")
+            return ["I'm not hearing from the camera phone, so I can't check the framing or focus yet."]
+        ec["link_note"] = ("The camera's running on this device." if status["same_device"]
+                           else "Phone and tablet are connected.")
+        result = link.look()
+        if result is None:
+            ec["issues"].append("the camera phone didn't send a picture")
+            return ["The camera phone is checking in but didn't send me a picture in time."]
+        return self._equipment_framing_report(ec, result)
+
+    def _equipment_framing_report(self, ec: dict, r: dict) -> list[str]:
+        issues = ec["framing_issues"] = []
+        if not r.get("corners_found"):
+            issues.append("the camera doesn't see a target sheet")
+            return ["The camera doesn't see a target sheet. Aim it at a Ballistica sheet with all four black corner "
+                    "squares in view."]
+        number = r.get("sheet_number")
+        sheet = f"sheet {number}" if number is not None else "a sheet with no number"
+        missing = r.get("corners_missing") or []
+        out = []
+        if not missing:
+            out.append(f"I see {sheet}, all four corners.")
+        else:
+            plural = len(missing) > 1
+            out.append(f"I see {sheet}, but not the {_spoken_join(missing)} corner square{'s' if plural else ''}.")
+            issues.append(f"the {_spoken_join(missing)} corner square{'s are' if plural else ' is'} out of view")
+        if number is None:
+            out.append("It has no number, so I can't tell it from other sheets -- print a numbered one.")
+            issues.append("the sheet has no number")
+        near = r.get("corners_near_edge") or []
+        if near:
+            squares = "corner squares are" if len(near) > 1 else "corner square is"
+            out.append(f"The {_spoken_join(near)} {squares} right at the edge of the picture -- leave a little room.")
+            issues.append(f"the {_spoken_join(near)} {squares} at the edge of the picture")
+        if r.get("detail") == "too small":
+            out.append("The sheet's small in the picture -- zoom in.")
+            issues.append("the sheet is too small in the picture")
+        if r.get("other_sheets"):
+            out.append("Another sheet's in view too -- zoom so only one is.")
+            issues.append("another sheet is in view")
+        sharp = r.get("sharpness")
+        if not sharp:
+            out.append("I couldn't read the corner squares' edges well enough to judge the focus.")
+            return out
+        ec["sharp_verdict"] = sharp["verdict"]
+        if sharp["verdict"] == "good":
+            out.append("The picture's sharp.")
+            return out
+        ec["step"], ec["focus_last"], ec["focus_tries"] = "focus", sharp["blur_ratio"], 0
+        out.append(f"The picture's {sharp['verdict']}. Let's fix the focus: turn the spotting scope's focus a little, "
+                   "either way, then say check focus. Or say good enough to move on.")
+        return out
+
+    def _equipment_framing_issues_of(self, r: dict) -> list[str]:
+        scratch = {"framing_issues": [], "issues": []}
+        self._equipment_framing_report(scratch, r)
+        return scratch["framing_issues"]
+
+    def _handle_equipment_check_turn(self, text: str) -> str:
+        ec = self._equipment_check
+        low = text.lower().strip()
+        if _EQUIPMENT_STOP_RE.search(low):
+            self._equipment_check = None
+            return "Okay, stopped the equipment check."
+        if ec["step"] == "focus":
+            return self._equipment_focus_turn(ec, low)
+        if ec["step"] == "rifle":
+            return self._equipment_rifle_turn(ec, text)
+        if ec["step"] == "load":
+            return self._equipment_load_turn(ec, text)
+        self._equipment_check = None
+        return "Equipment check's done."
+
+    def _equipment_focus_turn(self, ec: dict, low: str) -> str:
+        if _FOCUS_SKIP_RE.search(low):
+            if ec["sharp_verdict"] != "good":
+                ec["issues"].append(f"the picture is still {ec['sharp_verdict']}")
+            return self._equipment_after_focus(ec, "Okay, leaving the focus there.")
+        link = self._camera
+        if link is None or not link.status()["connected"]:
+            ec["issues"].append("the camera phone dropped out during the focus check")
+            return self._equipment_after_focus(ec, "I've lost the camera phone, so I'll leave the focus.")
+        ec["focus_tries"] += 1
+        result = link.look()
+        sharp = (result or {}).get("sharpness")
+        if not sharp:
+            if ec["focus_tries"] >= _FOCUS_MAX_TRIES:
+                ec["issues"].append("I couldn't judge the focus")
+                return self._equipment_after_focus(ec, "I still can't get a clear look, so I'll leave the focus.")
+            return ("I didn't get a clear look at the corner squares. Check the sheet's in view, then say check "
+                    "focus -- or good enough to move on.")
+        ratio, verdict = sharp["blur_ratio"], sharp["verdict"]
+        change = ratio - ec["focus_last"]
+        ec["focus_last"], ec["sharp_verdict"] = ratio, verdict
+        if verdict == "good":
+            # The framing as this sharper look sees it (blur can hide a corner square).
+            ec["framing_issues"] = self._equipment_framing_issues_of(result)
+            still = ec["framing_issues"]
+            return self._equipment_after_focus(
+                ec, "That's sharp now." + (f" But {_spoken_join(still)}." if still else ""))
+        if ec["focus_tries"] >= _FOCUS_MAX_TRIES:
+            ec["issues"].append(f"the picture is still {verdict}")
+            return self._equipment_after_focus(ec, f"Still {verdict}, but I'll leave it there for now.")
+        if change < -_FOCUS_CHANGE:
+            return ("Better" + (", close now" if verdict == "a little soft" else "") +
+                    ". Keep turning the same way, a little more, then say check focus.")
+        if change > _FOCUS_CHANGE:
+            return "That's softer. Turn it back the other way, past where you started, then say check focus."
+        return "About the same. Turn it a bit further, then say check focus."
+
+    def _equipment_after_focus(self, ec: dict, said: str) -> str:
+        ec["step"] = None
+        return " ".join(p for p in (said, ec["link_note"], self._equipment_ask_rifle(ec)) if p)
+
+    def _equipment_choose(self, names: list[str], text: str) -> str | None:
+        """_resolve_pending_choice, plus one more try for a name word that
+        speech-to-text split in two ("the hand load" for "Handload ..."): a
+        name word of 5+ letters found in the answer with its spaces taken
+        out, when exactly one name has such a word."""
+        chosen = self._resolve_pending_choice(names, text)
+        if chosen is not None:
+            return chosen
+        squashed = re.sub(r"[^a-z0-9]", "", text.lower())
+        hits = [n for n in names
+                if any(len(w) >= 5 and not any(ch.isdigit() for ch in w) and w in squashed
+                       for w in re.findall(r"[a-z0-9]+", n.lower()))]
+        return hits[0] if len(hits) == 1 else None
+
+    def _equipment_ask_rifle(self, ec: dict) -> str:
+        names = list(self.store.rifles.keys())
+        if not names:
+            ec["issues"].append("no rifle is saved yet: say new rifle to add one")
+            return self._equipment_finish(ec)
+        ec["step"], ec["asks"] = "rifle", 0
+        self._equipment_check = ec
+        return f"Which rifle are you shooting -- {_spoken_join(names, 'or')}?"
+
+    def _equipment_rifle_turn(self, ec: dict, text: str) -> str:
+        names = list(self.store.rifles.keys())
+        chosen = self._equipment_choose(names, text)
+        if chosen is None:
+            ec["asks"] += 1
+            if ec["asks"] >= 2:
+                ec["issues"].append("I didn't get which rifle")
+                return self._equipment_finish(ec)
+            return f"Didn't catch which rifle -- {_spoken_join(names, 'or')}?"
+        if self.store.active_rifle_name != chosen:
+            self.store.active_rifle_name = chosen
+            self.store.save()
+            self._forget_chat_history()
+        return f"The {chosen}. " + self._equipment_ask_load(ec)
+
+    def _equipment_ask_load(self, ec: dict) -> str:
+        rifle = self.store.get_active_rifle()
+        names = list(rifle.loads.keys())
+        if not names:
+            ec["issues"].append(f"no ammunition is saved for the {rifle.name}: say new load to add it")
+            return self._equipment_finish(ec)
+        ec["step"], ec["asks"] = "load", 0
+        return f"And which ammunition -- {_spoken_join(names, 'or')}?"
+
+    def _equipment_load_turn(self, ec: dict, text: str) -> str:
+        rifle = self.store.get_active_rifle()
+        names = list(rifle.loads.keys())
+        chosen = self._equipment_choose(names, text)
+        if chosen is None:
+            ec["asks"] += 1
+            if ec["asks"] >= 2:
+                ec["issues"].append("I didn't get which ammunition")
+                return self._equipment_finish(ec)
+            return f"Didn't catch which ammunition -- {_spoken_join(names, 'or')}?"
+        if rifle.active_load_name != chosen:
+            rifle.active_load_name = chosen
+            self.store.save()
+            self._forget_chat_history()
+        return f"The {chosen}. " + self._equipment_finish(ec)
+
+    def _equipment_finish(self, ec: dict) -> str:
+        self._equipment_check = None
+        issues = ec["framing_issues"] + ec["issues"]
+        if not issues:
+            return "All set."
+        return f"Still needs fixing: {_spoken_join(issues)}."
 
     def _status(self) -> str:
         try:

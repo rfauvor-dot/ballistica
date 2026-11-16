@@ -245,6 +245,41 @@ sentence, Session Mode won't treat "chrono" or "again" as the
 calibration/repeat commands — the bare commands ("start calibration",
 "repeat elevation") still work exactly as before.
 
+## 9b. Equipment check (preflight at the range — added 2026-11-16)
+
+Say **"Ballistica, equipment check"** (also "preflight" or "gear check").
+She goes down the list, collects anything wrong rather than stopping, and
+ends with **"All set."** or **"Still needs fixing: ..."**:
+
+1. **Camera framing**, through the camera phone on the scope: which sheet
+   she sees and its number, all four corner squares, none right at the
+   edge, big enough, only one sheet in view.
+2. **Sharpness.** If the picture is soft (or a little soft) she coaches the
+   focus: turn the scope's focus a little, say **"check focus"**, and she
+   answers *"Better, keep turning the same way"*, *"That's softer, turn it
+   back the other way"*, or *"About the same, turn it a bit further"*, until
+   it's sharp. **"Good enough"** moves on (the softness goes on the list).
+3. **Phone and tablet connected** (or "the camera's running on this
+   device" when it is).
+4. **Which rifle**, then 5. **which ammunition** — your answers become the
+   active rifle and load.
+
+"Stop" or "cancel" ends the check. Answers like "I'm shooting the Tikka"
+work during the check (normally "shooting" would be taken as a request for
+a solution).
+
+**For the camera parts**, the phone on the scope has to be signed in with
+the range camera on (Range camera panel → Start camera). While it's on it
+checks in with the server every 3 seconds (every second during a check)
+and shows "Linked" under the picture; when the check wants a look it sends
+three frames. Nothing is streamed or stored. Without a connected camera
+phone, the check still does the rifle and ammunition and lists the camera
+as needing fixing.
+
+The sharpness bars come from one clip (November 13) and synthetic tests;
+they're a first judgment until there's ground-tripod footage. The Check
+framing button now reports sharpness too.
+
 ## 10. Status, listing, help
 
 | Say | What happens |

@@ -17,6 +17,20 @@ the path to distance and wind reading. Details, test results and the on-phone
 plan are in the entry "Video-to-shot-table" below (now: **live** shot
 detection). Sequencing: this goes ahead of every other camera item in this file.
 
+**Equipment check, built 2026-11-16** (Rick's ask): "Ballistica, equipment
+check" walks a preflight list -- camera framing (sheet number, four
+corners, edge room, size, one sheet) and sharpness through the camera
+phone, with spoken focus coaching when soft ("better / softer / about the
+same"); phone and tablet connected; which rifle; which ammunition; then
+"All set" or what still needs fixing. Also the first piece of the
+phone<->tablet link: while the range camera is on, the phone checks in
+with the server and sends a 3-frame burst when the check asks (rig.py; one
+server process, see RISK_REGISTER.md). Not yet tried at the range with a
+real voice and two devices. Sharpness bars are a first judgment from the
+November 13 clip and synthetic blur; revisit with ground-tripod footage.
+The link is request/answer only -- live shot calls from the phone to the
+tablet still need their own path.
+
 ---
 
 ## App icon to match the male/female visual direction

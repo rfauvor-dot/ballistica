@@ -59,6 +59,9 @@ def _populate(cli):
     cli._session_log.unassigned = [1162.0]
     cli._pending_session_save = [{"rifle": "A", "load": "C", "avg": 1150.0, "n": 3, "spread": 9.0}]
     cli._pending_session_save_at = now
+    cli._equipment_check = {"step": "focus", "issues": [], "framing_issues": ["another sheet is in view"],
+                            "link_note": "Phone and tablet are connected.", "sharp_verdict": "soft",
+                            "focus_last": 0.3, "focus_tries": 1, "asks": 0, "at": now}
 
 
 def test_fully_populated_state_round_trips(tmp_path):

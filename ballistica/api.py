@@ -66,7 +66,7 @@ from .reporting import report_for_point
 from .supabase_auth import verify_token
 from .supabase_store import SupabaseProfileStore, supabase_http
 from . import target as target_photo
-from .shot_tracker import check_framing
+from . import rig
 from .trajectory import TrajectorySolver, WindCondition
 from .waiver import (
     WAIVER_ACKNOWLEDGMENT_TEXT, WAIVER_SECTIONS, WAIVER_TEXT_SHA256, WAIVER_TITLE, WAIVER_VERSION,
@@ -518,6 +518,11 @@ class VoiceQueryIn(BaseModel):
                      "log_session_observation tool, so narration about which rifle/load is being shot "
                      "and chronograph readings gets logged instead of misrouted. Session Mode itself "
                      "is a frontend concept -- this flag is the only way the backend learns of it.",
+    )
+    device_id: str | None = Field(
+        None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
+        description="A random id this browser keeps for itself (2026-11-16). Lets the equipment check tell "
+                    "whether the camera phone is this same device or another one.",
     )
 
 
@@ -1352,6 +1357,7 @@ def v2_voice_query(
     cli = BallisticaCLI(user_store)
     _hydrate_cli(cli, user_store.get_conversation_state())
     cli._session_mode = payload.session_mode
+    cli._camera = rig.CameraLink(rig.relay, user_store.user_id, payload.device_id)
 
     # Wraps only handle() itself, not the hydrate/dehydrate Supabase
     # round trips around it (2026-09-18, added per Rick's own "is there
@@ -1428,7 +1434,7 @@ def v2_voice_query(
         cli._setup is not None or cli._calibration is not None or cli._pending_delete is not None
         or cli._pending_calibration_start or cli._pending_setup_kind is not None
         or cli._pending_rifle_switch is not None or cli._pending_load_switch is not None
-        or cli._pending_session_save is not None
+        or cli._pending_session_save is not None or cli._equipment_check is not None
         or (cli._last_tool_name == "converse" and "?" in reply)
     )
     return VoiceQueryOut(
@@ -1757,7 +1763,62 @@ async def v2_target_framing(
         img = target_photo.decode_image(raw)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return await run_in_threadpool(check_framing, img)
+    return await run_in_threadpool(rig.frame_check, [img])
+
+
+# ---------------------------------------------------------------- range rig link
+# The camera phone on the spotting scope and the device at the bench, linked
+# through this server for the voice equipment check (see rig.py). The phone
+# checks in while its range camera is on; when a check wants a look, the
+# phone sends a short burst of frames. Nothing is stored.
+
+class RigCheckinIn(BaseModel):
+    device_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@app.post("/v2/rig/camera/checkin")
+@limiter.limit("90/minute")
+def v2_rig_camera_checkin(request: Request, body: RigCheckinIn,
+                          auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """The camera phone saying it's still here. Returns {check_request: id or
+    null (send frames for it), next_checkin_ms}."""
+    return rig.relay.camera_checkin(auth[0], body.device_id)
+
+
+_RIG_MAX_FRAMES = 4
+
+
+@app.post("/v2/rig/camera/frames")
+@limiter.limit("60/minute")
+async def v2_rig_camera_frames(
+    request: Request,
+    device_id: str = Form(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+    request_id: str = Form(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+    images: list[UploadFile] = File(...),
+    auth: tuple[str, str] = Depends(_verify_bearer),
+) -> dict:
+    """The camera phone's answer to a check request: a few frames taken a
+    moment apart. Runs the framing + sharpness check and hands the result to
+    the waiting voice turn. 409 if that request is no longer open."""
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > _TARGET_MAX_UPLOAD_BYTES + 100_000:
+        raise HTTPException(status_code=413, detail="Pictures too large (max 12 MB in all).")
+    if not images or len(images) > _RIG_MAX_FRAMES:
+        raise HTTPException(status_code=422, detail=f"Send 1 to {_RIG_MAX_FRAMES} frames.")
+    frames, total = [], 0
+    for image in images:
+        raw = await image.read(_TARGET_MAX_UPLOAD_BYTES + 1)
+        total += len(raw)
+        if total > _TARGET_MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Pictures too large (max 12 MB in all).")
+        try:
+            frames.append(target_photo.decode_image(raw))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    result = await run_in_threadpool(rig.frame_check, frames)
+    if not rig.relay.deliver(auth[0], device_id, request_id, result):
+        raise HTTPException(status_code=409, detail="That check is no longer waiting.")
+    return result
 
 
 class TargetGroupIn(BaseModel):

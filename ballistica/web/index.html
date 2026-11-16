@@ -550,6 +550,7 @@
 
       <video id="rcVideo" autoplay playsinline muted style="width:100%; margin-top:10px; border-radius:8px; background:#000; display:none;"></video>
       <div id="rcInfo" style="font-size:13px; color:var(--muted); margin-top:6px; min-height:16px;"></div>
+      <div id="rcLink" style="font-size:13px; color:var(--muted); margin-top:2px;"></div>
       <div id="rcZoomWrap" style="display:none; margin-top:8px;">
         <label for="rcZoom" style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase;">Camera zoom</label>
         <input id="rcZoom" type="range" style="width:100%; min-height:auto;">
@@ -2145,7 +2146,9 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
       // session_mode is the only way the backend learns Session Mode is
       // on -- it's what turns on the session tracker (logging rifle/load
       // context and chronograph readings from narration) for this turn.
-      body: JSON.stringify({ text: heardText, session_mode: sessionModeEnabled }),
+      // device_id: lets the equipment check tell whether the camera phone
+      // is this same device or another one (rig link, 2026-11-16).
+      body: JSON.stringify({ text: heardText, session_mode: sessionModeEnabled, device_id: ballisticaDeviceId() }),
     });
     const queryRefusal = await readBudgetRefusal(queryRes);
     if (queryRefusal) {
@@ -3526,7 +3529,93 @@ async function rcStopCamera() {
   rcEl('rcStartBtn').disabled = false; rcEl('rcStopCamBtn').disabled = true; rcEl('rcRecBtn').disabled = true;
   rcEl('rcFrameBtn').disabled = true; rcEl('rcFrameResult').textContent = '';
   rcEl('rcZoomWrap').style.display = 'none'; rcEl('rcInfo').textContent = '';
+  rigStopLink();
 }
+
+// Range rig link (2026-11-16). While this device's range camera is on, it
+// checks in with the server every few seconds, so the device at the bench
+// knows the camera phone is connected. When the voice equipment check
+// ("Ballistica, equipment check") wants a look, the check-in reply carries a
+// request and this sends three frames a moment apart: the first at full
+// resolution (the framing check's size bars are in camera pixels), the
+// other two at most 1920 wide (they only feed the sharpness reading, which
+// doesn't depend on resolution). Nothing is streamed or stored.
+const rigLink = { timer: null, busy: false };
+
+function ballisticaDeviceId() {
+  try {
+    let id = localStorage.getItem('ballisticaDeviceId');
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36))
+        .replace(/[^A-Za-z0-9_-]/g, '');
+      localStorage.setItem('ballisticaDeviceId', id);
+    }
+    return id;
+  } catch (e) {
+    // Storage blocked (private window): an id for this page load only.
+    window.ballisticaPageDeviceId = window.ballisticaPageDeviceId || ('p' + Math.random().toString(36).slice(2, 14));
+    return window.ballisticaPageDeviceId;
+  }
+}
+
+function rigSetLinkNote(text) { rcEl('rcLink').textContent = text; }
+
+function rigGrabJpeg(maxWidth) {
+  const video = rcEl('rcVideo');
+  if (!video.videoWidth) return Promise.resolve(null);
+  const k = maxWidth ? Math.min(1, maxWidth / video.videoWidth) : 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(video.videoWidth * k); canvas.height = Math.round(video.videoHeight * k);
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+}
+
+async function rigSendFrames(requestId, token) {
+  rigLink.busy = true;
+  try {
+    const fd = new FormData();
+    fd.append('device_id', ballisticaDeviceId()); fd.append('request_id', requestId);
+    for (let i = 0; i < 3; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 150));
+      const blob = await rigGrabJpeg(i ? 1920 : 0);
+      if (blob) fd.append('images', blob, `frame${i}.jpg`);
+    }
+    rigSetLinkNote('Linked -- sending a look for the equipment check...');
+    await fetch('/v2/rig/camera/frames', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+  } catch (e) { /* the voice check reports the camera didn't answer */ }
+  finally { rigLink.busy = false; }
+}
+
+async function rigCheckin() {
+  rigLink.timer = null;
+  if (!rc.stream) return;
+  let next = 3000;
+  try {
+    const token = await getValidAccessToken();
+    if (!token) {
+      rigSetLinkNote('Link: sign in to connect this camera.');
+    } else {
+      const res = await fetch('/v2/rig/camera/checkin', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ device_id: ballisticaDeviceId() }),
+      });
+      if (res.ok) {
+        const r = await res.json();
+        next = r.next_checkin_ms || next;
+        if (!rigLink.busy) rigSetLinkNote('Linked: say "Ballistica, equipment check" on the bench device.');
+        if (r.check_request && !rigLink.busy) rigSendFrames(r.check_request, token);
+      } else {
+        rigSetLinkNote(`Link: the server said ${res.status}.`);
+      }
+    }
+  } catch (e) {
+    rigSetLinkNote('Link: no connection.');
+  }
+  if (rc.stream && !rigLink.timer) rigLink.timer = setTimeout(rigCheckin, next);
+}
+
+function rigStartLink() { clearTimeout(rigLink.timer); rigLink.timer = setTimeout(rigCheckin, 0); }
+function rigStopLink() { clearTimeout(rigLink.timer); rigLink.timer = null; rigSetLinkNote(''); }
 
 rcEl('rcStartBtn').addEventListener('click', async () => {
   const err = rcEl('rcError'); hide(err);
@@ -3541,6 +3630,7 @@ rcEl('rcStartBtn').addEventListener('click', async () => {
     rcInfo(); rcSetupZoom(); await rcFillCameras();
     rcEl('rcStartBtn').disabled = true; rcEl('rcStopCamBtn').disabled = false; rcEl('rcRecBtn').disabled = false;
     rcEl('rcFrameBtn').disabled = false;
+    rigStartLink();
   } catch (e) {
     flash(err, 'Could not start the camera -- ' + (e.message || e.name || 'permission denied?'));
   }
