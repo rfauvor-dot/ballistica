@@ -941,15 +941,23 @@ with the plan: a bang is only "look now", never a shot. Not done: feeding
 bangs into the tracker.
 
 **Range hardware (Rick, 2026-11-15):** a Samsung Galaxy Tab 11+ 5G at the
-range, with its own cell signal. Plan the framing check and live detection
-around its camera, microphone and performance. Open question for Rick:
-does the tablet itself look through the spotting scope, or does the S25 stay
-on the scope and send pictures to the tablet? A tablet's own camera cannot
-resolve .22-.30 holes at 100 yd without the scope. Its own signal makes the
-server option (frames to the Ballistica server) usable at the range; its
-speed and microphone are unmeasured.
+range, with its own cell signal. **Decided 2026-11-15: the S25 stays on the
+spotting scope as the camera (and its microphone hears the shots, in the same
+recording as the picture, so the timing lines up); the tablet is the screen
+and the voice at the bench.** Plan for the live loop that follows from it:
+the phone joins the tablet's own Wi-Fi hotspot, so it gets the tablet's 5G
+connection with no cell signal of its own needed; the phone's page sends
+frames (and bang times) to the Ballistica server, which runs the tracker; the
+tablet's page shows the flattened sheet with each new hole ringed and speaks
+the calls. Nothing new has to run on either device beyond a web page, and the
+detector stays the tested Python code. Costs to check before relying on it:
+upload over the tablet's 5G (~3-4 Mbit/s for 1080p at 2 frames/s, less if
+the phone sends only the sheet), and server CPU (~0.3 s per frame on the PC,
+so over half a core per shooter while live -- part of the deferred hosting
+decision). Running the detector on the tablet itself stays the later option;
+its speed is unmeasured.
 
-**Status: top priority. Steps 1-2 done, step 4 started, framing check done; not yet running live.**
+**Status: top priority. Steps 1-2 done, step 4 started, framing check done, range hardware decided; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

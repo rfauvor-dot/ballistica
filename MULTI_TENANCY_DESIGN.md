@@ -3025,7 +3025,9 @@ ring-down hides a second shot a second later. Many other bangs (225 in 22
 minutes) -- which is why a bang is only ever a hint to look, and a shot is
 called only from a new hole.
 
-**Range hardware:** Rick will use a Samsung Galaxy Tab 11+ 5G at the range
-(own cell signal). Whether it or the S25 looks through the spotting scope is
-still open.
+**Range hardware (decided same day):** the S25 stays on the spotting scope as
+camera and microphone; a Samsung Galaxy Tab 11+ 5G at the bench is the screen
+and voice, and its hotspot carries the phone's connection. First live version:
+phone sends frames to the server over the tablet's 5G, server runs the
+tracker, tablet shows and speaks the calls.
 
