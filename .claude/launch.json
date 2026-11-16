@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "uvicorn", "ballistica.api:app", "--port", "8420"],
       "port": 8420
+    },
+    {
+      "name": "browser-replay",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["tools/browser_replay.py", "serve", "bench_out/browser-replay-1113", "--port", "8431"],
+      "port": 8431
     }
   ]
 }

@@ -6,7 +6,7 @@
  * Covers only the per-frame image work -- find the sheet's corner markers, flatten
  * the sheet, find the dark dots on it -- which is nearly all of the cost. The
  * frame-to-frame bookkeeping (which dots are new, when to call a shot) is a few
- * comparisons per frame and is not ported yet.
+ * comparisons per frame and is in shot_caller.js.
  *
  * Every step, constant and rounding follows the Python line for line, so the
  * speed measured is for work that gives the same answer; the page checks that
@@ -34,7 +34,13 @@
  * count -- and every
  * `fullSearchEvery` frames anyway, so a newly hung sheet is noticed within a
  * few seconds. A square found in a patch has exactly the corners a full search
- * gives it (checked: 0.00 px apart); what is then done with them is unchanged.
+ * gives it (checked: 0.00 px apart), and on the 33 sample frames the answers
+ * are identical. Over the WHOLE November 13 video (2026-11-16) they are not
+ * always: on some frames a patch finds a square the full search missed, or
+ * misses one it found, so the sheet is fitted from 3 squares instead of 2 or 4
+ * (or the reverse) and the holes move by up to ~0.25 in on that frame. Not
+ * consistently worse -- sometimes the patch fit is the closer one -- and the
+ * shots called were within 0.1 in of the full-search Python tracker's.
  *
  * FASTER FLATTENING (2026-11-15). Two shortcuts in finding the holes, checked
  * against the Python results on all the sample frames:
@@ -126,6 +132,7 @@
     }
 
     /** One RGBA frame (cv.Mat) -> {sheets: [...], search: "full"|"patch", ms: {markers, flatten}}.
+     *  The `used` sheets are the views shot_caller.js takes: {number, org, s, dots}.
      *  options.track: use the patch search between consecutive frames of one feed. */
     process(rgba, options) {
       const cv = this.cv, track = !!(options && options.track);
@@ -159,7 +166,7 @@
       for (const sheet of sheets) {
         let good = (sheet.found >= 3 && sheet.rms < this.c.maxRms3) || (sheet.found === 2 && sheet.rms < this.c.maxRms2);
         if (sheet.number !== null && sheet.found < this.c.minMarkersNumbered) good = false;
-        const entry = { number: sheet.number, markers: sheet.found, rms: sheet.rms, used: false };
+        const entry = { number: sheet.number, markers: sheet.found, rms: sheet.rms, used: false, org: sheet.org, s: sheet.s };
         if (good) {
           const r = this._dotsOf(rgba, gray.cols, gray.rows, sheet.Hm);
           entry.cover = r.cover;
@@ -278,7 +285,12 @@
           const p = applyH(Hm, src[i]);
           sq += Math.pow(p[0] - dst[i][0], 2) + Math.pow(p[1] - dst[i][1], 2);
         }
-        sheets.push({ Hm, rms: Math.sqrt(sq / src.length), found: byId.size, number: cl[0].number,
+        // Where the sheet sits in the picture and how big its squares are, averaged
+        // over every square in the cluster (shot_caller.js uses these to tell
+        // unnumbered sheets apart).
+        const org = [cl.reduce((a, v) => a + v.org[0], 0) / cl.length, cl.reduce((a, v) => a + v.org[1], 0) / cl.length];
+        const s = cl.reduce((a, v) => a + v.s, 0) / cl.length;
+        sheets.push({ Hm, rms: Math.sqrt(sq / src.length), found: byId.size, number: cl[0].number, org, s,
                       markers: [...byId.values()].map((v) => ({ id: v.markerId, c: v.c })) });
       }
       return sheets;

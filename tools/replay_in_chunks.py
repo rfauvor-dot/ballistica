@@ -8,12 +8,16 @@ cut off.
 
     python tools/replay_in_chunks.py VIDEO OUTDIR [--chunk-s 60] [--pause-s 15] [--threads 2]
                                      [--fps 2] [--scale 1.0] [--ppi 100] [--n-confirm 3] [--restart]
+                                     [--record-views]
 
 Run the same command again to resume. OUTDIR holds:
     progress.json   where it has got to (updated after every chunk; human-readable)
     progress.pkl    the detector's memory at that point (what a resume loads)
     shotNNN_*.jpg   the stills for each shot called so far
     summary.json    written only when the whole video is done
+    views.jsonl     with --record-views: one line per frame, {"t", "views"} -- the
+                    usable sheet views the shot calling saw (ShotTracker.process_views),
+                    so the calling logic can be replayed without the video
 """
 from __future__ import annotations
 
@@ -69,6 +73,7 @@ def main() -> int:
     ap.add_argument("--ppi", type=float, default=100.0)
     ap.add_argument("--n-confirm", type=int, default=3)
     ap.add_argument("--restart", action="store_true", help="ignore saved progress and start over")
+    ap.add_argument("--record-views", action="store_true", help="also write views.jsonl (see above)")
     args = ap.parse_args()
 
     _limit_threads(args.threads)
@@ -82,6 +87,8 @@ def main() -> int:
     os.makedirs(args.out_dir, exist_ok=True)
     pkl_path = os.path.join(args.out_dir, "progress.pkl")
     json_path = os.path.join(args.out_dir, "progress.json")
+    views_path = os.path.join(args.out_dir, "views.jsonl")
+    views_buffer: list[str] = []
     settings = dict(video=os.path.abspath(args.video), fps=args.fps, scale=args.scale, ppi=args.ppi, n_confirm=args.n_confirm)
 
     tracker = ShotTracker(TrackerConfig(ppi=args.ppi, n_confirm=args.n_confirm))
@@ -108,11 +115,25 @@ def main() -> int:
     frames_per_chunk = max(step, int(round(args.chunk_s * video_fps)))
     if next_idx:
         cap.set(cv2.CAP_PROP_POS_FRAMES, next_idx)
+    if args.record_views:
+        # Keep only what the saved progress covers (a run cut off between
+        # writing views and saving progress would otherwise repeat frames).
+        kept = []
+        if next_idx and os.path.exists(views_path):
+            with open(views_path, encoding="utf-8") as fh:
+                kept = [line for line in fh if json.loads(line)["t"] < next_idx / video_fps]
+        _write_atomic(views_path, "".join(kept).encode())
     idx = next_idx
     wall0 = time.time()
     finished = False
 
     def save_progress(done: bool) -> None:
+        if views_buffer:
+            with open(views_path, "a", encoding="utf-8") as fh:
+                fh.write("".join(views_buffer))
+                fh.flush()
+                os.fsync(fh.fileno())
+            views_buffer.clear()
         state = {k: v for k, v in tracker.__dict__.items() if k != "_detector"}
         _write_atomic(pkl_path, pickle.dumps(dict(
             settings=settings, tracker=state, next_idx=idx, decode=decode, video_fps=video_fps,
@@ -142,7 +163,13 @@ def main() -> int:
                 break
             if args.scale != 1.0:
                 frame = cv2.resize(frame, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_AREA)
-            for shot in tracker.process_frame(frame, t):
+            new_shots = tracker.process_frame(frame, t)
+            if args.record_views:
+                views_buffer.append(json.dumps({"t": t, "views": [
+                    {"number": v["number"], "org": [round(float(v["org"][0]), 3), round(float(v["org"][1]), 3)],
+                     "s": round(float(v["s"]), 3), "dots": [[round(float(x), 5), round(float(y), 5)] for x, y in v["dots"]]}
+                    for v in tracker.last_views]}) + "\n")
+            for shot in new_shots:
                 sheet = cv2.resize(shot.sheet_image(), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
                 cv2.imwrite(os.path.join(args.out_dir, "shot%03d_sheet.jpg" % shot.n), sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 cv2.imwrite(os.path.join(args.out_dir, "shot%03d_frame.jpg" % shot.n), shot.frame, [cv2.IMWRITE_JPEG_QUALITY, 85])

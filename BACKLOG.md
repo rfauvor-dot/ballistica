@@ -1030,7 +1030,34 @@ frames/s. S25, version 3 (faster flattening too): 126 ms a frame = 7.9
 frames/s live (~4x what's needed); full search 276 ms; all 33 frames match.
 Galaxy Tab version 3 still to come.
 
-**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided; not yet running live.**
+**Browser shot calling, built 2026-11-16** (`web/speedtest/shot_caller.js`):
+the frame-to-frame part of the tracker (which dots are new holes, when to
+call a shot, which unnumbered sheet a view is) ported line for line, so the
+browser now does the whole job: `detector.js` -> views -> `shot_caller.js` ->
+shots. Python's `ShotTracker.process_frame` was split so the same calling
+(`process_views`) can be fed recorded views. Checks:
+- Logic, exact (in CI, `tests/test_shot_caller.py`): fed the views the Python
+  replay recorded from the whole November 13 video
+  (`data/shot_benchmark/*.views.jsonl.gz`, from `tools/replay_in_chunks.py
+  --record-views`), the browser caller calls the same 17 shots, same times,
+  same places, same score; also identical on 300 random view streams.
+- End to end (`tools/browser_replay.py`, PC Chrome, patch search on, all 2703
+  frames saved as JPEG): 16 of 17 matched, 1 missed, 0 late, 0 duplicates,
+  0 false calls; position error mean 0.026 in, max 0.054 in; called a median
+  1.0 s after first seen. Python run on the SAME JPEGs: 16 matched, 1 missed, but 1
+  duplicate and 4 false calls -- JPEG compression alone pushes borderline
+  frames over (it explains ~950 of the 1084 frames where the browser saw
+  different holes from Python on the decoded video). Browser vs Python on the
+  same JPEGs: different holes on 133 of 2703 frames, 132 of them patch-search
+  frames (a patch finds one corner square more or fewer than a full search,
+  so the fit and the holes move by up to ~0.25 in on that frame). The missed
+  shot is the known close-holes limit on a knife edge: the new hole was 0.29
+  in from where the browser had put an older hole (limit 0.30), 0.31 in from
+  where Python had -- step 3 is the real fix.
+- Speed: 414 ms a frame on the PC browser over the whole video, 33.6% of
+  frames needing a full search (the 10-second stretch measured 3 of 21).
+
+**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided, shot calling ported to the browser; not yet running live. Next: step 3 (compare with the sheet before the shot, for close/touching holes), feed bangs into the tracker, the phone<->tablet link.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

@@ -85,8 +85,8 @@ class Shot:
     x_in: float            # right of the crosshair
     y_in: float            # above the crosshair
     off_camera_s: float    # >0 if the sheet had been out of view that long just before; else 0
-    rect: np.ndarray = field(repr=False)    # flattened sheet at first sighting
-    frame: np.ndarray = field(repr=False)   # camera frame at first sighting
+    rect: np.ndarray | None = field(repr=False)    # flattened sheet at first sighting (None: fed views only)
+    frame: np.ndarray | None = field(repr=False)   # camera frame at first sighting (None: fed views only)
     ppi: float = field(default=100.0, repr=False)
     sheet_number: int | None = None   # printed sheet number (None: an unnumbered sheet)
 
@@ -143,10 +143,13 @@ class ShotTracker:
         self._morph = max(3, int(25 * ppi / 200))
 
         self.tracks: list[dict] = []       # one per sheet the tracker believes it has seen
-        for number, holes in (known_holes or {}).items():
+        # In sheet-number order, whatever order the dict has (the browser port
+        # does the same: JavaScript always lists number keys in ascending order).
+        for number, holes in sorted((known_holes or {}).items(), key=lambda kv: int(kv[0])):
             track = self._new_track(org=None, t=None, number=int(number))
             track["holes"] = [dict(x=float(x), y=float(y), first=None, obs=[]) for x, y in holes]
         self.shots: list[Shot] = []        # every shot called so far, in order
+        self.last_views: list[dict] = []   # the usable sheet views of the last frame (see process_views)
         self.frames_processed = 0
         self.sheet_frames_used = 0
         self.sheet_frames_gated = 0
@@ -158,11 +161,11 @@ class ShotTracker:
         """Process one camera frame taken at time `t` (seconds). Returns the
         shots this frame confirmed -- usually none."""
         c = self.config
-        new_shots: list[Shot] = []
         t_a = time.time()
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         sheets = self._sheets_in(gray)
         t_b = time.time()
+        views = []
         for sheet in sheets:
             good = ((sheet["found"] >= 3 and sheet["rms"] < c.max_rms_3_markers_in)
                     or (sheet["found"] == 2 and sheet["rms"] < c.max_rms_2_markers_in))
@@ -175,17 +178,35 @@ class ShotTracker:
             if cover < c.min_cover:
                 self.sheet_frames_gated += 1
                 continue
-            track = self._pick_track(sheet, dots, t)
-            track["gap"] = t - track["last_t"] if track["last_t"] is not None else 0.0
-            track["last_t"] = t
-            track["seen_frames"] += 1
-            new_shots.extend(self._update_track(track, dots, t, rect, frame_bgr))
-            self.sheet_frames_used += 1
+            views.append(dict(number=sheet["number"], org=sheet["org"], s=sheet["s"], dots=dots, rect=rect))
+        self.last_views = [{k: v for k, v in view.items() if k != "rect"} for view in views]
+        new_shots = self.process_views(views, t, frame_bgr)
         t_c = time.time()
-        self.frames_processed += 1
         self.timing["markers"].append(t_b - t_a)
         self.timing["rectify"].append(t_c - t_b)
         self.timing["total"].append(t_c - t_a)
+        return new_shots
+
+    def process_views(self, views: list[dict], t: float, frame_bgr: np.ndarray | None = None) -> list[Shot]:
+        """The frame-to-frame bookkeeping alone: which dots are new, when a
+        shot is called. `views` are the usable sheet views of one frame, in the
+        order found: dicts with number (None if unnumbered), org (the sheet's
+        top-left in the picture, pixels), s (corner-square size, pixels), dots
+        ([(x_in, y_in)]) and optionally rect (the flattened sheet). process_frame
+        calls this; it can also be fed recorded views (tools/replay_in_chunks.py
+        --record-views),
+        which is how the browser port (web/speedtest/shot_caller.js) is checked
+        against it."""
+        new_shots: list[Shot] = []
+        for view in views:
+            dots = [tuple(d) for d in view["dots"]]
+            track = self._pick_track(view, dots, t)
+            track["gap"] = t - track["last_t"] if track["last_t"] is not None else 0.0
+            track["last_t"] = t
+            track["seen_frames"] += 1
+            new_shots.extend(self._update_track(track, dots, t, view.get("rect"), frame_bgr))
+            self.sheet_frames_used += 1
+        self.frames_processed += 1
         return new_shots
 
     def track_summary(self) -> list[dict]:
@@ -336,7 +357,8 @@ class ShotTracker:
         return best
 
     # ---------------------------------------------------------- new holes
-    def _update_track(self, tr: dict, dots: list, t: float, rect: np.ndarray, frame: np.ndarray) -> list[Shot]:
+    def _update_track(self, tr: dict, dots: list, t: float, rect: np.ndarray | None,
+                      frame: np.ndarray | None) -> list[Shot]:
         c = self.config
         seen: set[int] = set()
         for d in dots:
@@ -355,7 +377,8 @@ class ShotTracker:
                 # a shot landed while the app was closed).
                 already_there = tr["number"] is not None and tr["seen_frames"] <= 1
                 tr["cands"].append(dict(x=d[0], y=d[1], first=t, seen=1, miss=0, pts=[d], already=already_there,
-                                        rect=rect.copy(), frame=frame, gap=tr.get("gap", 0)))
+                                        rect=None if rect is None else rect.copy(), frame=frame,
+                                        gap=tr.get("gap", 0)))
                 seen.add(len(tr["cands"]) - 1)
             else:
                 cand = tr["cands"][hit]
