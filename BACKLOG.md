@@ -970,7 +970,36 @@ PC's browser (in the background, so slow) about 0.85 s a frame, most of it
 finding the corner squares on the full 1080x1920 frame; the S25 and the tab
 are what count. Not ported yet: the frame-to-frame shot calling.
 
-**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, range hardware decided; not yet running live.**
+**Speed test results (Rick, 2026-11-15), full corner-square search on every frame:**
+S25 268 ms per frame = 3.7 frames/s ("just fast enough", against 2 needed);
+Galaxy Tab 667 ms = 1.5 frames/s (not fast enough).
+
+**Decided 2026-11-15 (supersedes the server-first plan above): the S25 on the
+scope runs the detection itself, in its browser; the tablet is the display
+and voice.** So the browser detector (`ballistica/web/speedtest/detector.js`)
+becomes the production path, not just a measurement: it needs the
+frame-to-frame shot calling ported next, and its own replay benchmark so it is
+held to the same standard as the Python tracker. The server is no longer in
+the live loop -- no upload cost, and it works with no signal at all -- but
+the phone and tablet still need a link between them (likely over the
+tablet's hotspot).
+
+**Patch search, built 2026-11-15** (`detector.js`, `track: true`): after the
+first frame, the corner squares are searched only in small patches where each
+sheet's four squares should be (found ones where they were, missed ones where
+the last fit puts them), with a full search on the first frame, after two
+patch searches in a row lose a sheet that was in use, and every 10 frames
+(5 s). One lost frame is usually a shot's blurred jolt frame (the picture
+moved at most 23 px between frames on November 13, against a ~57 px margin),
+so the same patches are kept for one more frame. On the 10-second November 13
+stretch: 3 full searches in 21 frames, and all 21 frames give the same answer
+as the server's detector (plus the 12 single frames). A square found in a
+patch has exactly the corners a full search gives (0.00 px apart). On the PC
+browser: corner squares 656 -> 216 ms a frame, whole frame 921 -> 482 ms
+(1.9x). Flattening the sheet and finding holes (~250 ms there) is now the
+largest cost. Phone numbers not yet measured with it.
+
+**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

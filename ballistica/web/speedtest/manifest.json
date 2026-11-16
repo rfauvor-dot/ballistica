@@ -434,5 +434,565 @@
     }
    ]
   }
+ ],
+ "sequence": [
+  {
+   "file": "frames/seq000.jpg",
+   "video_s": 374.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0562,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -2.373,
+       -4.305
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0338,
+     "used": false,
+     "cover": 0.8293
+    }
+   ]
+  },
+  {
+   "file": "frames/seq001.jpg",
+   "video_s": 375.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.049,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0431,
+     "used": false,
+     "cover": 0.8281
+    }
+   ]
+  },
+  {
+   "file": "frames/seq002.jpg",
+   "video_s": 375.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0339,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0325,
+     "used": false,
+     "cover": 0.83
+    }
+   ]
+  },
+  {
+   "file": "frames/seq003.jpg",
+   "video_s": 376.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0366,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0919,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq004.jpg",
+   "video_s": 376.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0448,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.1165,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq005.jpg",
+   "video_s": 377.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0285,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0472,
+     "used": false,
+     "cover": 0.8307
+    }
+   ]
+  },
+  {
+   "file": "frames/seq006.jpg",
+   "video_s": 377.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0491,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0836,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq007.jpg",
+   "video_s": 378.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": []
+  },
+  {
+   "file": "frames/seq008.jpg",
+   "video_s": 378.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0508,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.709,
+       1.018
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0771,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq009.jpg",
+   "video_s": 379.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0776,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.549,
+       0.831
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.04,
+     "used": true,
+     "cover": 0.9073,
+     "dots": [
+      [
+       -1.119,
+       -2.596
+      ],
+      [
+       -0.903,
+       0.156
+      ],
+      [
+       -0.842,
+       0.783
+      ],
+      [
+       -0.108,
+       1.25
+      ],
+      [
+       1.374,
+       1.047
+      ],
+      [
+       2.044,
+       0.921
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "file": "frames/seq010.jpg",
+   "video_s": 379.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": []
+  },
+  {
+   "file": "frames/seq011.jpg",
+   "video_s": 380.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0533,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.701,
+       1.038
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0361,
+     "used": false,
+     "cover": 0.8749
+    }
+   ]
+  },
+  {
+   "file": "frames/seq012.jpg",
+   "video_s": 380.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0465,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.671,
+       0.99
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.1074,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq013.jpg",
+   "video_s": 381.37,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0534,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.708,
+       1.007
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.1095,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq014.jpg",
+   "video_s": 381.87,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.045,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.696,
+       1.002
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0388,
+     "used": true,
+     "cover": 0.9022,
+     "dots": [
+      [
+       -1.104,
+       -2.606
+      ],
+      [
+       -0.885,
+       0.144
+      ],
+      [
+       -0.829,
+       0.776
+      ],
+      [
+       -0.097,
+       1.242
+      ],
+      [
+       1.384,
+       1.046
+      ],
+      [
+       2.049,
+       0.92
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "file": "frames/seq015.jpg",
+   "video_s": 382.36,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0503,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.678,
+       1.029
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0392,
+     "used": false,
+     "cover": 0.8818
+    }
+   ]
+  },
+  {
+   "file": "frames/seq016.jpg",
+   "video_s": 382.86,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0397,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.665,
+       0.975
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.1366,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq017.jpg",
+   "video_s": 383.36,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0408,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.696,
+       0.991
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0729,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq018.jpg",
+   "video_s": 383.86,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.037,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.696,
+       1.009
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.086,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq019.jpg",
+   "video_s": 384.36,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0621,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.672,
+       0.996
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0991,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/seq020.jpg",
+   "video_s": 384.86,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.039,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.632,
+       1.149
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0423,
+     "used": false,
+     "cover": 0.8773
+    }
+   ]
+  }
  ]
 }

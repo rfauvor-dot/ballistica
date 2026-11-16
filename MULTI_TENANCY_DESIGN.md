@@ -3031,3 +3031,22 @@ and voice, and its hotspot carries the phone's connection. First live version:
 phone sends frames to the server over the tablet's 5G, server runs the
 tracker, tablet shows and speaks the calls.
 
+---
+
+## 44. Detection runs on the phone; faster corner-square search (2026-11-15)
+
+**What:** Rick ran `/speed-test` on both devices: the S25 did 3.7 frames a
+second (268 ms each), the Galaxy Tab 1.5 (667 ms); live detection needs 2. So
+the S25 on the scope runs the detector itself in its browser, and the tablet
+is only the display and voice. This replaces the "phone sends frames to the
+server" plan from #43: no upload cost, no dependence on signal.
+
+**Consequence:** the browser detector becomes the production detector. It has
+to be held to the same standard as the Python tracker -- shot calling ported,
+and a replay benchmark of its own.
+
+**Faster search:** most of each frame's time is finding the corner squares
+across the whole picture. Once the sheet is found, the next frame searches
+only small patches around where each square just was, with a full search on
+the first frame, whenever the patches lose the sheet, and every few seconds.
+

@@ -12,8 +12,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 
 import cv2
+import pytest
 from fastapi.testclient import TestClient
 
 import ballistica.api as api_module
@@ -60,9 +63,10 @@ def test_main_app_page_is_unchanged_by_the_speed_test_policy():
 
 def test_expected_results_still_match_the_python_detector():
     m = _manifest()
+    assert len(m["sequence"]) == 21              # the 10-second stretch the patch search is timed on
     tracker = ShotTracker()
     c = tracker.config
-    for f in m["frames"]:
+    for f in m["frames"] + m["sequence"]:
         frame = cv2.imread(os.path.join(SPEEDTEST, f["file"]))
         assert frame.shape[:2] == (f["height"], f["width"])
         used = []
@@ -74,4 +78,39 @@ def test_expected_results_still_match_the_python_detector():
                 if cover >= c.min_cover:
                     used.append(sorted([round(x, 3), round(y, 3)] for x, y in dots))
         expected = [s["dots"] for s in f["sheets"] if s["used"]]
-        assert used == expected, f["file"]
+        assert sorted(used) == sorted(expected), f["file"]
+
+
+_NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_detector_helpers_in_node():
+    """The parts of detector.js that don't need OpenCV, run under Node."""
+    script = r"""
+const D = require(process.argv[1]);
+const out = {};
+const v = (dots) => ({ used: true, dots });
+// Sheet views are paired by content, whatever order each detector lists them in.
+out.reordered = D.compareWithExpected([v([[1, 1]]), v([[2, 2], [3, 3]])], [v([[2, 2], [3, 3]]), v([[1, 1]])]).ok;
+out.moved = D.compareWithExpected([v([[1, 1]])], [v([[1.1, 1]])]).ok;
+out.extra = D.compareWithExpected([v([[1, 1], [2, 2]])], [v([[1, 1]])]).ok;
+out.missingView = D.compareWithExpected([], [v([])]).ok;
+out.layout = [D.markerLayout(0), D.markerLayout(7), D.markerLayout(47), D.markerLayout(48)];
+const H = [[1.2, 0.1, -30], [-0.05, 0.9, 12], [0.0003, -0.0002, 1.1]], I = D.invert3(H);
+const p = D.applyH(I, D.applyH(H, [123, 456]));
+out.roundTrip = [Math.abs(p[0] - 123) < 1e-9, Math.abs(p[1] - 456) < 1e-9];
+const S = D.similarityFit([[0, 0], [2, 0], [2, 2], [0, 2]], [[1, 1], [1, 2], [0, 2], [0, 1]]);
+out.similarity = D.applyH(S, [2, 2]).map((x) => +x.toFixed(9));
+console.log(JSON.stringify(out));
+"""
+    res = subprocess.run([_NODE, "-e", script, os.path.join(SPEEDTEST, "detector.js")],
+                         capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+    assert out["reordered"] is True and out["moved"] is False and out["extra"] is False
+    assert out["missingView"] is False
+    assert out["layout"] == [{"number": None, "corner": 0}, {"number": 1, "corner": 3},
+                             {"number": 11, "corner": 3}, None]
+    assert out["roundTrip"] == [True, True]
+    assert out["similarity"] == [0, 2]

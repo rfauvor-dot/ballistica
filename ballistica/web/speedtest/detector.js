@@ -17,6 +17,24 @@
  * fit error), so this can only move a borderline two-marker view across the line.
  *
  * Needs OpenCV.js with the aruco module (4.10 from jsdelivr has it).
+ *
+ * PATCH SEARCH (2026-11-15). Finding the corner squares in the whole frame is
+ * most of the cost (on Rick's S25 the full per-frame time was 268 ms). From one
+ * frame to the next the camera barely moves, so with `track: true` a frame is
+ * searched only in small patches where each sheet's four corner squares should
+ * be: where a square was found last frame, or -- for a square that was missed
+ * -- where last frame's fit of the sheet puts it. Every sheet seen is
+ * followed, not just one. It falls back to a full search on the first frame,
+ * when the patches have not found 3+ squares of a sheet that was being USED
+ * for `maxPatchMisses` frames running -- one miss is usually a frame blurred by
+ * the jolt of a shot, where a full search finds nothing either (measured on
+ * the November 13 stretch: the picture moved at most 23 px between frames,
+ * against a patch margin of ~57 px), so the same patches are kept and tried
+ * again; a half-visible neighbouring sheet flickering in and out doesn't
+ * count -- and every
+ * `fullSearchEvery` frames anyway, so a newly hung sheet is noticed within a
+ * few seconds. A square found in a patch has exactly the corners a full search
+ * gives it (checked: 0.00 px apart); what is then done with them is unchanged.
  */
 (function (root) {
   "use strict";
@@ -29,6 +47,13 @@
   const CONFIG = {
     ppi: 100.0, darknessThreshold: 45, minCover: 0.9,
     maxRms3: 0.12, maxRms2: 0.05, minMarkersNumbered: 3,
+    // Patch search: each patch is the square's last position grown by this many
+    // square-widths on every side. At 2 frames a second a steady tripod moves the
+    // picture by a few pixels; one width (~55-100 px) is a wide margin.
+    patchMargin: 1.0,
+    fullSearchEvery: 10,          // frames; at 2 frames a second, every 5 s
+    minPatchMarkers: 3,
+    maxPatchMisses: 2,            // patch searches in a row that lose the sheet before a full search
   };
 
   function markerLayout(id) {
@@ -67,15 +92,46 @@
       }
       this.maskCount = cv.countNonZero(this.mask);
       this.kernel = cv.Mat.ones(this.morph, this.morph, cv.CV_8U);
+      this.resetTracking();
     }
 
-    /** One RGBA frame (cv.Mat) -> {sheets: [...], ms: {markers, flatten}} */
-    process(rgba) {
-      const cv = this.cv;
+    /** Forget where the squares were: the next frame gets a full search. */
+    resetTracking() {
+      this.followed = [];           // per sheet seen last frame: {squares: [{id, c}] x4, used}
+      this.sinceFull = 0;
+      this.patchMisses = 0;
+      this.stats = { frames: 0, fullSearches: 0, patchSearches: 0, patchFallbacks: 0, patchMissesKept: 0 };
+    }
+
+    /** One RGBA frame (cv.Mat) -> {sheets: [...], search: "full"|"patch", ms: {markers, flatten}}.
+     *  options.track: use the patch search between consecutive frames of one feed. */
+    process(rgba, options) {
+      const cv = this.cv, track = !!(options && options.track);
       const t0 = performance.now();
       const gray = new cv.Mat();
       cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
-      const sheets = this._sheetsIn(gray);
+      let markers = null, search = "full", keepFollowed = false;
+      this.stats.frames += 1;
+      if (track && this.followed.some((f) => f.used) && this.sinceFull < this.c.fullSearchEvery) {
+        const found = this._detectInPatches(gray);
+        this.stats.patchSearches += 1;
+        if (found.everySheetKept) {
+          markers = found.markers; search = "patch"; this.sinceFull += 1; this.patchMisses = 0;
+        } else if (this.patchMisses + 1 < this.c.maxPatchMisses) {
+          // Probably a blurred frame: accept what the patches found, keep looking in the same places next frame.
+          markers = found.markers; search = "patch"; this.sinceFull += 1; this.patchMisses += 1;
+          keepFollowed = true; this.stats.patchMissesKept += 1;
+        } else {
+          this.stats.patchFallbacks += 1;    // lost the sheet: search the whole frame
+        }
+      }
+      if (markers === null) {
+        markers = this._detectAll(gray);
+        this.stats.fullSearches += 1;
+        this.sinceFull = 0;
+        this.patchMisses = 0;
+      }
+      const sheets = this._sheetsFrom(markers);
       gray.delete();
       const t1 = performance.now();
       const out = [];
@@ -90,30 +146,85 @@
         }
         out.push(entry);
       }
+      // Where each sheet's squares should be next frame: found ones where they
+      // were, missing ones where this frame's fit puts them.
+      if (!keepFollowed) this.followed = sheets.map((sh, k) => ({ squares: this._expectedSquares(sh), used: out[k].used }));
       const t2 = performance.now();
-      return { sheets: out, ms: { markers: t1 - t0, flatten: t2 - t1 } };
+      return { sheets: out, search, ms: { markers: t1 - t0, flatten: t2 - t1 } };
     }
 
-    _sheetsIn(gray) {
+    /** Every marker in the frame: [{id, c: [[x,y] x4]}], in detection order. */
+    _detectAll(gray) {
       const cv = this.cv;
       const corners = new cv.MatVector(), ids = new cv.Mat(), rejected = new cv.MatVector();
       this.detector.detectMarkers(gray, corners, ids, rejected);
-      const votes = [];
       // OpenCV.js returns the ids as ONE ROW (1 x n), where Python gets a column.
       const idList = ids.empty() ? [] : Array.from(ids.data32S);
-      for (let k = 0; k < idList.length; k++) {
-        const layout = markerLayout(idList[k]);
-        if (!layout) continue;
+      const out = idList.map((id, k) => {
         const d = corners.get(k).data32F;
-        const c = [[d[0], d[1]], [d[2], d[3]], [d[4], d[5]], [d[6], d[7]]];
+        return { id, c: [[d[0], d[1]], [d[2], d[3]], [d[4], d[5]], [d[6], d[7]]] };
+      });
+      corners.delete(); ids.delete(); rejected.delete();
+      return out;
+    }
+
+    /** The 4 squares of a sheet, in frame pixels: found ones as found, the rest
+     *  projected from the sheet's fit. */
+    _expectedSquares(sheet) {
+      const inv = invert3(sheet.Hm);
+      const base = sheet.number ? 4 * sheet.number : 0;
+      return MARKER_ORIGINS.map(([ox, oy], corner) => {
+        const id = base + corner;
+        const seen = sheet.markers.find((m) => m.id === id);
+        if (seen) return { id, c: seen.c };
+        return { id, c: [[ox, oy], [ox + 1, oy], [ox + 1, oy + 1], [ox, oy + 1]].map((pt) => applyH(inv, pt)), predicted: true };
+      });
+    }
+
+    /** Search small patches where the followed sheets' squares should be.
+     *  -> {markers: [{id, c}], everySheetKept: bool} (frame coordinates). */
+    _detectInPatches(gray) {
+      const out = [];
+      let everySheetKept = true;
+      const sameMarker = (a, b) => a.id === b.id &&
+        Math.hypot(a.c[0][0] - b.c[0][0], a.c[0][1] - b.c[0][1]) < 0.5 * side(a.c);
+      for (const sheet of this.followed) {
+        let kept = 0;
+        for (const want of sheet.squares) {
+          const xs = want.c.map((q) => q[0]), ys = want.c.map((q) => q[1]);
+          const pad = this.c.patchMargin * side(want.c);
+          const x0 = Math.max(0, Math.floor(Math.min(...xs) - pad)), y0 = Math.max(0, Math.floor(Math.min(...ys) - pad));
+          const x1 = Math.min(gray.cols, Math.ceil(Math.max(...xs) + pad)), y1 = Math.min(gray.rows, Math.ceil(Math.max(...ys) + pad));
+          if (x1 - x0 < 16 || y1 - y0 < 16) continue;           // off the edge of the picture
+          const patch = gray.roi(new this.cv.Rect(x0, y0, x1 - x0, y1 - y0));
+          let hit = false;
+          for (const m of this._detectAll(patch)) {
+            const g = { id: m.id, c: m.c.map(([x, y]) => [x + x0, y + y0]) };
+            if (g.id === want.id) hit = true;
+            if (!out.some((o) => sameMarker(o, g))) out.push(g);   // neighbouring patches overlap
+          }
+          patch.delete();
+          if (hit) kept += 1;
+        }
+        if (sheet.used && kept < this.c.minPatchMarkers) everySheetKept = false;
+      }
+      return { markers: out, everySheetKept };
+    }
+
+    _sheetsFrom(markers) {
+      const votes = [];
+      for (const m of markers) {
+        const layout = markerLayout(m.id);
+        if (!layout) continue;
+        const c = m.c;
         let s = 0;
         for (let j = 0; j < 4; j++) s += Math.hypot(c[j][0] - c[(j + 1) % 4][0], c[j][1] - c[(j + 1) % 4][1]);
         s /= 4;
         const cx = (c[0][0] + c[1][0] + c[2][0] + c[3][0]) / 4, cy = (c[0][1] + c[1][1] + c[2][1] + c[3][1]) / 4;
         const [ox, oy] = MARKER_ORIGINS[layout.corner];
-        votes.push({ id: layout.corner, number: layout.number, c, s, org: [cx - (ox + 0.5) * s, cy - (oy + 0.5) * s] });
+        votes.push({ id: layout.corner, markerId: m.id, number: layout.number, c, s,
+                     org: [cx - (ox + 0.5) * s, cy - (oy + 0.5) * s] });
       }
-      corners.delete(); ids.delete(); rejected.delete();
 
       votes.sort((a, b) => a.org[0] - b.org[0]);   // stable, like Python's sorted()
       const clusters = [];
@@ -145,7 +256,8 @@
           const p = applyH(Hm, src[i]);
           sq += Math.pow(p[0] - dst[i][0], 2) + Math.pow(p[1] - dst[i][1], 2);
         }
-        sheets.push({ Hm, rms: Math.sqrt(sq / src.length), found: byId.size, number: cl[0].number });
+        sheets.push({ Hm, rms: Math.sqrt(sq / src.length), found: byId.size, number: cl[0].number,
+                      markers: [...byId.values()].map((v) => ({ id: v.markerId, c: v.c })) });
       }
       return sheets;
     }
@@ -200,6 +312,19 @@
     }
   }
 
+  function side(c) {
+    return Math.max(Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]), Math.hypot(c[3][0] - c[0][0], c[3][1] - c[0][1]));
+  }
+
+  function invert3(m) {
+    const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2];
+    const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+    const det = a * A + b * B + c * C;
+    return [[A / det, -(b * i - c * h) / det, (b * f - c * e) / det],
+            [B / det, (a * i - c * g) / det, -(a * f - c * d) / det],
+            [C / det, -(a * h - b * g) / det, (a * e - b * d) / det]];
+  }
+
   function applyH(H, p) {
     const w = H[2][0] * p[0] + H[2][1] * p[1] + H[2][2];
     return [(H[0][0] * p[0] + H[0][1] * p[1] + H[0][2]) / w, (H[1][0] * p[0] + H[1][1] * p[1] + H[1][2]) / w];
@@ -221,28 +346,46 @@
     return [[a, -b, dx - (a * sx - b * sy)], [b, a, dy - (b * sx + a * sy)], [0, 0, 1]];
   }
 
-  /** Does a browser result match the Python result for the same frame? */
+  /** Does a browser result match the Python result for the same frame? The
+   *  used sheet views are paired by content, not by order (the two detectors
+   *  can list two views of a frame in a different order). */
   function compareWithExpected(got, expected, tolIn) {
     tolIn = tolIn || 0.05;
     const used = (list) => list.filter((s) => s.used);
     const g = used(got), e = used(expected);
     if (g.length !== e.length) return { ok: false, why: `used ${g.length} sheet view(s), expected ${e.length}` };
-    for (let k = 0; k < e.length; k++) {
-      const gd = g[k].dots, ed = e[k].dots;
-      if (gd.length !== ed.length) return { ok: false, why: `${gd.length} dots, expected ${ed.length}` };
-      const left = gd.slice();
-      for (const [x, y] of ed) {
-        let best = -1, bestD = Infinity;
-        left.forEach(([gx, gy], i) => { const d = Math.hypot(gx - x, gy - y); if (d < bestD) { bestD = d; best = i; } });
-        if (bestD > tolIn) return { ok: false, why: `a dot is ${bestD.toFixed(3)} in from where Python put it` };
-        left.splice(best, 1);
+    const left = g.slice();
+    let firstProblem = null;
+    for (const ev of e) {
+      const k = left.findIndex((gv) => dotsMatch(gv.dots, ev.dots, tolIn).ok);
+      if (k < 0) {
+        firstProblem = firstProblem || closest(left, ev.dots, tolIn);
+        continue;
       }
+      left.splice(k, 1);
     }
-    const n = e.length ? e[0].dots.length : 0;
-    return { ok: true, why: e.length ? `${n} hole${n === 1 ? "" : "s"} on the sheet` : "no usable view of a sheet" };
+    if (left.length) return { ok: false, why: firstProblem || "a sheet view differs" };
+    const n = e.reduce((a, v) => a + v.dots.length, 0);
+    return { ok: true, why: e.length ? `${n} hole${n === 1 ? "" : "s"} found` + (e.length > 1 ? ` on ${e.length} sheet views` : "") : "no usable view of a sheet" };
   }
 
-  const api = { FrameDetector, markerLayout, similarityFit, compareWithExpected, CONFIG };
+  function dotsMatch(gd, ed, tolIn) {
+    if (gd.length !== ed.length) return { ok: false, why: `${gd.length} holes, expected ${ed.length}` };
+    const left = gd.slice();
+    for (const [x, y] of ed) {
+      let best = -1, bestD = Infinity;
+      left.forEach(([gx, gy], i) => { const d = Math.hypot(gx - x, gy - y); if (d < bestD) { bestD = d; best = i; } });
+      if (bestD > tolIn) return { ok: false, why: `a hole is ${bestD.toFixed(3)} in from where the server put it` };
+      left.splice(best, 1);
+    }
+    return { ok: true };
+  }
+
+  function closest(views, ed, tolIn) {
+    return views.map((gv) => dotsMatch(gv.dots, ed, tolIn).why).find(Boolean);
+  }
+
+  const api = { FrameDetector, markerLayout, similarityFit, compareWithExpected, invert3, applyH, CONFIG };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BallisticaFrameDetector = api;
 })(typeof window !== "undefined" ? window : globalThis);

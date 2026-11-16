@@ -31,7 +31,7 @@
 <body>
 <main>
   <h1>Ballistica speed test</h1>
-  <p class="muted">Can this phone or tablet run the shot detector itself, without the server? This runs the detector on 12 frames from the November 13 range video, right here on this device, and times it. Nothing is uploaded. The first run downloads the detector (about 13 MB).</p>
+  <p class="muted">Can this phone or tablet run the shot detector itself, without the server? This runs the detector right here on this device on frames from the November 13 range video -- 12 single frames, and a 10-second stretch the way live detection would see it -- and times it. Nothing is uploaded. The first run downloads the detector (about 13 MB).</p>
 
   <button id="runBtn" disabled>Loading detector...</button>
   <progress id="progress" value="0" max="1" hidden></progress>
@@ -40,7 +40,7 @@
   <div id="results" hidden>
     <div class="card">
       <div class="row">
-        <div><div class="label">Per frame</div><div class="big" id="avgMs">-</div></div>
+        <div><div class="label">Per frame (live)</div><div class="big" id="avgMs">-</div></div>
         <div><div class="label">Frames per second</div><div class="big" id="fps">-</div></div>
       </div>
       <p id="verdict" style="margin:10px 0 0;"></p>
