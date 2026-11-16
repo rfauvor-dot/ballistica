@@ -453,7 +453,12 @@ for the range. As of this cutover, it requires signing in first.
   `/target-sheet.pdf?number=3`. Each number has its own corner squares and
   prints the number large at the top right, so Ballistica knows which sheet
   is which (the result says "Sheet 3 found"). Give every sheet on the range
-  a different number; sheets printed without a number still work. Ballistica reports offsets
+  a different number; sheets printed without a number still work.
+- **Check framing (range camera panel).** With the camera running, tap
+  **Check framing** and Ballistica looks at one frame: which sheet it sees,
+  whether all four corner squares are in view and clear of the edge, whether
+  the sheet is big enough in the picture, and whether another sheet is in
+  view. Needs a connection; nothing is stored. It doesn't judge focus yet. Ballistica reports offsets
   neutrally and does **not** tell you which way to turn a knob: which
   direction moves the impact is for you to confirm at the line.
   **Known limits:** holes that overlap by more than half can hide each

@@ -3007,3 +3007,25 @@ holes already on a sheet when it is first seen are recorded, not called;
 hole lists can be saved and restored across a restart. Unnumbered sheets keep
 the 2026-11-13 behaviour exactly.
 
+---
+
+## 43. Framing check, and a first test of hearing shots (2026-11-15)
+
+**Framing check:** the range camera can send one frame to
+`POST /v2/target/framing` and get back, in sentences, whether the live tracker
+could work with that view. Built so the next range clip is usable rather than
+discovering at home that a corner was out of frame.
+
+**Hearing shots (step 4, first part):** `ballistica/shot_sound.py`. On the
+November 13 video's sound, 15 of 17 known shots had a clear bang. Two design
+findings from real audio: the phone's microphone stretches a shot's onset to
+30-40 ms, so the jump test looks back ~50 ms; and the background level is a
+low percentile of the last second, not the median, or a shot's half-second
+ring-down hides a second shot a second later. Many other bangs (225 in 22
+minutes) -- which is why a bang is only ever a hint to look, and a shot is
+called only from a new hole.
+
+**Range hardware:** Rick will use a Samsung Galaxy Tab 11+ 5G at the range
+(own cell signal). Whether it or the S25 looks through the spotting scope is
+still open.
+

@@ -386,3 +386,92 @@ class ShotTracker:
                 keep.append(cand)
         tr["cands"] = keep
         return new_shots
+
+
+# ------------------------------------------------------------ framing check
+# Before a session: is the camera set up so the live tracker can work? One
+# frame in, plain answers out. Uses the same marker settings as the tracker,
+# so "found" here means the tracker will find it too.
+
+_CORNER_NAMES = {0: "top-left", 1: "top-right", 2: "bottom-left", 3: "bottom-right"}
+# Corner-square size in the picture, in pixels (average side). One real data
+# point so far: the November 13 footage had about 55 px and worked, but only
+# with the loosened video settings. Revisit once ground-tripod clips exist.
+FRAMING_MARKER_PX_LOW = 45
+FRAMING_MARKER_PX_GOOD = 70
+# A corner square closer than this share of the frame's shorter side to the
+# edge is "near the edge": a small bump can push it out of the picture.
+FRAMING_EDGE_MARGIN = 0.03
+
+
+def check_framing(frame_bgr: np.ndarray) -> dict:
+    """What a camera frame looks like to the live tracker. Returns a dict:
+    ok (bool), sheet_number (int or None), corners_found / corners_missing /
+    corners_near_edge (sheet-corner names), marker_px (float or None), detail
+    ("good" | "workable" | "too small" | None), other_sheets (int: other target
+    sheets visible), and messages: plain sentences, the first being the
+    verdict. Doesn't judge focus or exposure -- there is no real ground-tripod
+    footage yet to set a bar from."""
+    h, w = frame_bgr.shape[:2]
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY) if frame_bgr.ndim == 3 else frame_bgr
+    corners, ids, _ = _marker_detector().detectMarkers(gray)
+    groups: dict[int | None, dict[int, np.ndarray]] = {}
+    for corner, marker_id in zip(corners if ids is not None else [], ids.ravel().tolist() if ids is not None else []):
+        layout = target.marker_layout(marker_id)
+        if layout is not None:
+            groups.setdefault(layout[0], {}).setdefault(layout[1], corner.reshape(4, 2))
+    result = dict(ok=False, sheet_number=None, corners_found=[], corners_missing=list(_CORNER_NAMES.values()),
+                  corners_near_edge=[], marker_px=None, detail=None, other_sheets=0, messages=[])
+    if not groups:
+        result["messages"] = ["No target sheet found. Point the camera at a Ballistica sheet with all four "
+                              "black corner squares in view."]
+        return result
+    number = max(groups, key=lambda n: (len(groups[n]), n is not None))
+    found = groups[number]
+    sides = [float(np.mean([np.linalg.norm(c[k] - c[(k + 1) % 4]) for k in range(4)])) for c in found.values()]
+    marker_px = float(np.mean(sides))
+    margin = FRAMING_EDGE_MARGIN * min(w, h)
+    near = [_CORNER_NAMES[k] for k, c in sorted(found.items())
+            if c[:, 0].min() < margin or c[:, 1].min() < margin or c[:, 0].max() > w - margin or c[:, 1].max() > h - margin]
+    detail = ("good" if marker_px >= FRAMING_MARKER_PX_GOOD
+              else "workable" if marker_px >= FRAMING_MARKER_PX_LOW else "too small")
+    result.update(
+        sheet_number=number, corners_found=[_CORNER_NAMES[k] for k in sorted(found)],
+        corners_missing=[name for k, name in _CORNER_NAMES.items() if k not in found],
+        corners_near_edge=near, marker_px=round(marker_px, 1), detail=detail,
+        # A single stray square is usually a misread, not another sheet.
+        other_sheets=sum(1 for n, g in groups.items() if n != number and len(g) >= 2),
+    )
+
+    name = f"Sheet {number}" if number is not None else "An unnumbered sheet"
+    problems: list[str] = []
+    if result["corners_missing"]:
+        problems.append(f"Can't see the {_join(result['corners_missing'])} corner square"
+                        f"{'s' if len(result['corners_missing']) > 1 else ''} -- adjust so all four are in view.")
+    if near:
+        problems.append(f"The {_join(near)} corner square{'s are' if len(near) > 1 else ' is'} right at the edge of "
+                        f"the picture -- leave a little room so a bump doesn't push "
+                        f"{'them' if len(near) > 1 else 'it'} out.")
+    if detail == "too small":
+        problems.append(f"The sheet is small in the picture (corner squares about {marker_px:.0f} pixels) -- zoom in "
+                        "or use higher quality.")
+    if result["other_sheets"]:
+        problems.append("Another target sheet is in view too -- zoom so only one sheet is in the picture.")
+    if number is None:
+        problems.append("This sheet has no number, so the camera can't tell it from other sheets -- print a "
+                        "numbered sheet.")
+    result["ok"] = not problems
+    if result["ok"]:
+        size_note = (" Corner squares are a good size." if detail == "good"
+                     else f" Corner squares are about {marker_px:.0f} pixels: workable, zooming in a little "
+                          "more would help.")
+        result["messages"] = [f"{name} found, all 4 corners in view. Good to go.{size_note}"]
+    else:
+        seen = "all 4 corners" if len(found) == 4 else f"{len(found)} of 4 corners"
+        result["messages"] = [f"{name} found, {seen} in view. Not ready yet."] + problems
+    return result
+
+
+def _join(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+

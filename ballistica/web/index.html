@@ -541,7 +541,7 @@
         <div class="field w-lg"><label for="rcCamSel">Camera</label>
           <select id="rcCamSel"><option value="">Back camera (default)</option></select></div>
       </div>
-      <label style="display:block; margin:8px 0; font-size:14px;"><input id="rcAudio" type="checkbox" checked style="min-height:auto; width:auto; margin-right:6px;"> Record sound (your voice)</label>
+      <label style="display:block; margin:8px 0; font-size:14px;"><input id="rcAudio" type="checkbox" checked style="min-height:auto; width:auto; margin-right:6px;"> Record sound (your voice and the shots)</label>
       <div class="rifle-actions">
         <button id="rcStartBtn" type="button" class="primary">Start camera</button>
         <button id="rcStopCamBtn" type="button" disabled>Stop camera</button>
@@ -554,6 +554,8 @@
         <label for="rcZoom" style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase;">Camera zoom</label>
         <input id="rcZoom" type="range" style="width:100%; min-height:auto;">
       </div>
+      <button id="rcFrameBtn" type="button" style="margin-top:8px;" disabled>Check framing</button>
+      <div id="rcFrameResult" style="font-size:14px; margin-top:6px;"></div>
 
       <button id="rcRecBtn" type="button" class="primary big" disabled>Start recording</button>
       <div id="rcTimer" style="font-size:20px; font-weight:700; text-align:center; margin:6px 0;">00:00</div>
@@ -3522,6 +3524,7 @@ async function rcStopCamera() {
   rc.stream = null;
   const v = rcEl('rcVideo'); v.srcObject = null; v.style.display = 'none';
   rcEl('rcStartBtn').disabled = false; rcEl('rcStopCamBtn').disabled = true; rcEl('rcRecBtn').disabled = true;
+  rcEl('rcFrameBtn').disabled = true; rcEl('rcFrameResult').textContent = '';
   rcEl('rcZoomWrap').style.display = 'none'; rcEl('rcInfo').textContent = '';
 }
 
@@ -3537,6 +3540,7 @@ rcEl('rcStartBtn').addEventListener('click', async () => {
     try { await v.play(); } catch (e) { /* autoplay is already requested */ }
     rcInfo(); rcSetupZoom(); await rcFillCameras();
     rcEl('rcStartBtn').disabled = true; rcEl('rcStopCamBtn').disabled = false; rcEl('rcRecBtn').disabled = false;
+    rcEl('rcFrameBtn').disabled = false;
   } catch (e) {
     flash(err, 'Could not start the camera -- ' + (e.message || e.name || 'permission denied?'));
   }
@@ -3600,6 +3604,40 @@ rcEl('rcRecBtn').addEventListener('click', () => {
   rc.timer = setInterval(() => { rcEl('rcTimer').textContent = rcFmt((performance.now() - rc.startedAt) / 1000); }, 250);
   rcEl('rcRecBtn').textContent = 'Stop and save';
   rcEl('rcRecBtn').classList.remove('primary');
+});
+
+// Framing check (2026-11-15): one frame to the server, which says whether the
+// live shot tracker could work with this view -- sheet number, all four
+// corners in view and clear of the edge, big enough, one sheet only. Needs a
+// connection; nothing is stored.
+rcEl('rcFrameBtn').addEventListener('click', async () => {
+  const out = rcEl('rcFrameResult'), btn = rcEl('rcFrameBtn'), video = rcEl('rcVideo');
+  if (!video.videoWidth) { out.textContent = 'The camera picture isn\'t ready yet -- try again in a second.'; return; }
+  btn.disabled = true; out.textContent = 'Checking...';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    const token = await getValidAccessToken();
+    if (!token) throw new Error('Sign in again first.');
+    const fd = new FormData(); fd.append('image', blob, 'frame.jpg');
+    let res;
+    try {
+      res = await fetch('/v2/target/framing', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+    } catch (e) {
+      throw new Error('No connection -- the framing check needs a signal.');
+    }
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof r.detail === 'string' ? r.detail : `HTTP ${res.status}`);
+    out.innerHTML = r.messages.map((m, i) => i === 0
+      ? `<strong style="color:${r.ok ? '#2a6b2a' : 'var(--error-text)'};">${escapeHtml(m)}</strong>`
+      : `<div>${escapeHtml(m)}</div>`).join('');
+  } catch (e) {
+    out.textContent = 'Framing check failed -- ' + e.message;
+  } finally {
+    btn.disabled = !rc.stream;
+  }
 });
 
 rcEl('rcStampBtn').addEventListener('click', () => {

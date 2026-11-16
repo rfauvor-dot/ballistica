@@ -65,6 +65,7 @@ from .reporting import report_for_point
 from .supabase_auth import verify_token
 from .supabase_store import SupabaseProfileStore, supabase_http
 from . import target as target_photo
+from .shot_tracker import check_framing
 from .trajectory import TrajectorySolver, WindCondition
 from .waiver import (
     WAIVER_ACKNOWLEDGMENT_TEXT, WAIVER_SECTIONS, WAIVER_TEXT_SHA256, WAIVER_TITLE, WAIVER_VERSION,
@@ -1693,6 +1694,27 @@ async def v2_target_analyze(
         "overlay_jpeg_b64": base64.b64encode(result.overlay_jpeg).decode("ascii") if result.overlay_jpeg else None,
         "overlay_ppi": result.overlay_ppi,
     }
+
+
+@app.post("/v2/target/framing")
+@limiter.limit("30/minute")
+async def v2_target_framing(
+    request: Request, image: UploadFile = File(...), auth: tuple[str, str] = Depends(_verify_bearer),
+) -> dict:
+    """One frame from the range camera: is the sheet set up so the live shot
+    tracker can work (sheet number, all four corners in view and clear of the
+    edge, big enough, only one sheet)? CPU only, nothing stored."""
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > _TARGET_MAX_UPLOAD_BYTES + 100_000:
+        raise HTTPException(status_code=413, detail="Picture too large (max 12 MB).")
+    raw = await image.read(_TARGET_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > _TARGET_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Picture too large (max 12 MB).")
+    try:
+        img = target_photo.decode_image(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return await run_in_threadpool(check_framing, img)
 
 
 class TargetGroupIn(BaseModel):

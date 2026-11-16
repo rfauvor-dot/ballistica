@@ -915,7 +915,41 @@ before (the November 13 benchmark is unchanged). Not done: storing the hole
 lists anywhere (step 7), and a way to number an already-printed sheet by
 voice or tap.
 
-**Status: top priority. Steps 1-2 of 8 done; not yet running live.**
+**Framing check, done 2026-11-15.** "Check framing" button in the range
+camera panel: one frame goes to `POST /v2/target/framing`
+(`shot_tracker.check_framing`), which answers in plain sentences -- sheet
+number, which corner squares are missing or right at the edge, whether the
+sheet is too small in the picture, whether another sheet is in view, and
+whether it's an unnumbered sheet. Uses the tracker's own video marker
+settings. Size bar from the one real data point (November 13: ~55 px corner
+squares worked); focus and exposure are NOT judged yet. Needs a signal.
+
+**Step 4, first part, done 2026-11-15: hearing shots.** `ballistica/shot_sound.py`
+finds bangs in the camera's sound (causal, pure numpy);
+`tools/shot_sound_test.py` checks it against a video with known shots. On the
+November 13 video: a bang found for 15 of the 17 known shots, 0.3-1.6 s
+before the hole was first seen on camera. The two misses: one shot rose more
+slowly over loud background (probably talking); one hole was itself detected
+11 s late, so which bang fired it can't be told. Through the phone's
+microphone a shot climbs ~30 dB in 30-40 ms and holds near -10 dBFS for about
+half a second (the phone evens out loud sound), so the detector compares
+with the level ~50 ms earlier, not a few ms. 225 other bangs in 22 minutes,
+69 as loud as Rick's quietest shot -- but that recording mixes other
+shooters, Rick's own off-camera shots at sheets 2 and 3, and the camera
+sitting on the shooting table, so they can't be told apart yet. Consistent
+with the plan: a bang is only "look now", never a shot. Not done: feeding
+bangs into the tracker.
+
+**Range hardware (Rick, 2026-11-15):** a Samsung Galaxy Tab 11+ 5G at the
+range, with its own cell signal. Plan the framing check and live detection
+around its camera, microphone and performance. Open question for Rick:
+does the tablet itself look through the spotting scope, or does the S25 stay
+on the scope and send pictures to the tablet? A tablet's own camera cannot
+resolve .22-.30 holes at 100 yd without the scope. Its own signal makes the
+server option (frames to the Ballistica server) usable at the range; its
+speed and microphone are unmeasured.
+
+**Status: top priority. Steps 1-2 done, step 4 started, framing check done; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.
