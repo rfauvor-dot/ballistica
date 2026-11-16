@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ballistica speed test</title>
+<style>
+  :root { --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6a6862; --line: #dcd9d2; --accent: #c4581e; --good: #2a6b2a; --bad: #a3241b; --card: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161614; --fg: #ecebe7; --muted: #a29f97; --line: #34322e; --accent: #e07a3e; --good: #6cc06c; --bad: #ef7b72; --card: #201f1c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  button { width: 100%; min-height: 56px; font: 600 18px system-ui, sans-serif; border: 0; border-radius: 10px; background: var(--accent); color: #fff; margin: 8px 0 14px; }
+  button:disabled { opacity: .5; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  .label { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+  .ok { color: var(--good); font-weight: 600; } .no { color: var(--bad); font-weight: 600; }
+  progress { width: 100%; height: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ballistica speed test</h1>
+  <p class="muted">Can this phone or tablet run the shot detector itself, without the server? This runs the detector on 12 frames from the November 13 range video, right here on this device, and times it. Nothing is uploaded. The first run downloads the detector (about 13 MB).</p>
+
+  <button id="runBtn" disabled>Loading detector...</button>
+  <progress id="progress" value="0" max="1" hidden></progress>
+  <div id="status" class="muted"></div>
+
+  <div id="results" hidden>
+    <div class="card">
+      <div class="row">
+        <div><div class="label">Per frame</div><div class="big" id="avgMs">-</div></div>
+        <div><div class="label">Frames per second</div><div class="big" id="fps">-</div></div>
+      </div>
+      <p id="verdict" style="margin:10px 0 0;"></p>
+    </div>
+    <div class="card">
+      <div class="label">Details</div>
+      <table id="detail"></table>
+    </div>
+    <div class="card">
+      <div class="label">Same answer as the server?</div>
+      <p id="parity" style="margin:6px 0;"></p>
+      <table id="parityTable"></table>
+    </div>
+    <div class="card">
+      <div class="label">This device</div>
+      <p id="device" class="muted" style="margin:6px 0 0;"></p>
+    </div>
+  </div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js"
+        integrity="sha384-16eddoZUbhJFP+dmyqNO/+vH8UdDOg8MJo+zi1NSy2clHxpKiQaoSQWtQnPHzYvc" crossorigin="anonymous"></script>
+<script src="/speedtest/detector.js"></script>
+<script src="/speedtest/page.js"></script>
+</body>
+</html>

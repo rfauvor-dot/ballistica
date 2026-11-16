@@ -458,7 +458,12 @@ for the range. As of this cutover, it requires signing in first.
   **Check framing** and Ballistica looks at one frame: which sheet it sees,
   whether all four corner squares are in view and clear of the edge, whether
   the sheet is big enough in the picture, and whether another sheet is in
-  view. Needs a connection; nothing is stored. It doesn't judge focus yet. Ballistica reports offsets
+  view. Needs a connection; nothing is stored. It doesn't judge focus yet.
+- **Speed test (`/speed-test`).** Open it on a phone or tablet and tap
+  **Run speed test**: it runs the shot detector on that device on 12 sample
+  frames and shows the time per frame and frames per second (live detection
+  needs 2), plus whether its answers match the server's. No sign-in, nothing
+  uploaded; the first run downloads about 13 MB. Ballistica reports offsets
   neutrally and does **not** tell you which way to turn a knob: which
   direction moves the impact is for you to confirm at the line.
   **Known limits:** holes that overlap by more than half can hide each

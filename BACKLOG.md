@@ -957,7 +957,20 @@ so over half a core per shooter while live -- part of the deferred hosting
 decision). Running the detector on the tablet itself stays the later option;
 its speed is unmeasured.
 
-**Status: top priority. Steps 1-2 done, step 4 started, framing check done, range hardware decided; not yet running live.**
+**On-device speed test, built 2026-11-15:** `/speed-test`
+(https://ballistica.onrender.com/speed-test). A browser version of the
+detector's per-frame work (`ballistica/web/speedtest/detector.js`, OpenCV.js
+5.0 from jsdelivr, pinned by integrity hash) timed on 12 frames from the
+November 13 video; the page also checks its answers against the Python
+detector's (`manifest.json`, built by `scripts/build_speed_test_frames.py`)
+and matched on all 12. **Correction:** the standard OpenCV.js build DOES
+include the marker detector (`cv.aruco_ArucoDetector`); the earlier note
+here that it needed a custom build was wrong. It runs on one core. On the
+PC's browser (in the background, so slow) about 0.85 s a frame, most of it
+finding the corner squares on the full 1080x1920 frame; the S25 and the tab
+are what count. Not ported yet: the frame-to-frame shot calling.
+
+**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, range hardware decided; not yet running live.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

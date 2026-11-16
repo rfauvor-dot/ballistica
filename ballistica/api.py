@@ -204,6 +204,10 @@ app.mount("/audio", StaticFiles(directory=_WEB_DIR / "audio"), name="audio")
 # Static marketing/branding assets (the corner thumbnail, etc.) -- same
 # unauthenticated, non-personalized static-file pattern as /icons and /audio.
 app.mount("/images", StaticFiles(directory=_WEB_DIR / "images"), name="images")
+# On-device speed test (2026-11-15): the browser port of the shot detector,
+# its page script, and sample frames from the November 13 range video (target
+# sheets on the backer only). Static and public, like /icons.
+app.mount("/speedtest", StaticFiles(directory=_WEB_DIR / "speedtest"), name="speedtest")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -257,6 +261,35 @@ def web_ui():
             "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache",
             "Content-Security-Policy": csp, "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+# OpenCV.js for the speed test, loaded by the browser straight from the CDN,
+# pinned to one exact file by an integrity hash in speedtest/index.html.
+_OPENCV_JS_ORIGIN = "https://cdn.jsdelivr.net"
+
+
+@app.get("/speed-test", response_class=HTMLResponse, include_in_schema=False)
+def speed_test_page():
+    """Times the shot detector running in this browser, on sample frames --
+    to tell whether a phone or tablet can run it without the server. Public:
+    no sign-in, nothing uploaded. Its own security policy: unlike "/", it has
+    to load OpenCV.js from the CDN and let it compile WebAssembly."""
+    csp = "; ".join([
+        "default-src 'self'",
+        f"script-src 'self' {_OPENCV_JS_ORIGIN} 'wasm-unsafe-eval' 'unsafe-eval'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+    ])
+    return HTMLResponse(
+        content=(_WEB_DIR / "speedtest" / "index.html").read_text(encoding="utf-8"),
+        headers={"Content-Security-Policy": csp, "X-Content-Type-Options": "nosniff",
+                 "Cache-Control": "no-cache"},
     )
 
 

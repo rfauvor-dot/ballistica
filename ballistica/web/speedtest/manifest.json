@@ -1,0 +1,438 @@
+{
+ "source": "20261113_104737.mp4",
+ "opencv_python": "5.0.0",
+ "settings": {
+  "ppi": 100.0,
+  "darkness_threshold": 45,
+  "max_rms_3_markers_in": 0.12,
+  "max_rms_2_markers_in": 0.05,
+  "min_cover": 0.9,
+  "min_markers_numbered": 3
+ },
+ "frames": [
+  {
+   "file": "frames/f0020.jpg",
+   "video_s": 20.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.1039,
+     "used": true,
+     "cover": 1.0,
+     "dots": []
+    }
+   ]
+  },
+  {
+   "file": "frames/f0075.jpg",
+   "video_s": 75.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0381,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -3.739,
+       -0.486
+      ],
+      [
+       -1.184,
+       -2.58
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0372,
+     "used": false,
+     "cover": 0.3317
+    }
+   ]
+  },
+  {
+   "file": "frames/f0135.jpg",
+   "video_s": 135.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0388,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -3.731,
+       -0.369
+      ],
+      [
+       -1.154,
+       -2.522
+      ],
+      [
+       1.364,
+       1.12
+      ],
+      [
+       2.026,
+       0.995
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0406,
+     "used": false,
+     "cover": 0.271
+    }
+   ]
+  },
+  {
+   "file": "frames/f0210.jpg",
+   "video_s": 210.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0325,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -3.76,
+       -0.467
+      ],
+      [
+       -1.178,
+       -2.58
+      ],
+      [
+       1.358,
+       1.065
+      ],
+      [
+       2.031,
+       0.943
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.04,
+     "used": false,
+     "cover": 0.6842
+    }
+   ]
+  },
+  {
+   "file": "frames/f0300.jpg",
+   "video_s": 300.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0468,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -3.77,
+       -0.447
+      ],
+      [
+       -1.183,
+       -2.592
+      ],
+      [
+       -0.957,
+       0.156
+      ],
+      [
+       1.333,
+       1.043
+      ],
+      [
+       2.004,
+       0.913
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0508,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/f0380.jpg",
+   "video_s": 380.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0479,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.682,
+       0.988
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0524,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/f0430.jpg",
+   "video_s": 430.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0486,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.671,
+       0.981
+      ],
+      [
+       -0.056,
+       1.037
+      ],
+      [
+       0.363,
+       0.547
+      ],
+      [
+       0.371,
+       0.969
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.1022,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/f0560.jpg",
+   "video_s": 560.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0429,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -0.703,
+       0.99
+      ],
+      [
+       -0.092,
+       1.049
+      ],
+      [
+       0.325,
+       0.559
+      ],
+      [
+       0.336,
+       0.981
+      ],
+      [
+       0.69,
+       2.086
+      ]
+     ]
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0969,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/f0760.jpg",
+   "video_s": 760.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.103,
+     "used": false
+    },
+    {
+     "number": null,
+     "markers": 2,
+     "rms": 0.0527,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/f1000.jpg",
+   "video_s": 1000.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 3,
+     "rms": 0.0741,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -3.732,
+       -0.407
+      ],
+      [
+       -1.245,
+       -2.508
+      ],
+      [
+       -1.075,
+       0.326
+      ],
+      [
+       -1.028,
+       0.963
+      ],
+      [
+       -0.313,
+       1.475
+      ],
+      [
+       1.165,
+       1.329
+      ],
+      [
+       1.847,
+       1.229
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "file": "frames/f1290.jpg",
+   "video_s": 1290.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.1488,
+     "used": false
+    }
+   ]
+  },
+  {
+   "file": "frames/f1340.jpg",
+   "video_s": 1340.0,
+   "width": 1080,
+   "height": 1920,
+   "sheets": [
+    {
+     "number": null,
+     "markers": 4,
+     "rms": 0.0494,
+     "used": true,
+     "cover": 1.0,
+     "dots": [
+      [
+       -3.771,
+       -0.471
+      ],
+      [
+       -1.192,
+       -2.591
+      ],
+      [
+       -0.988,
+       0.186
+      ],
+      [
+       -0.919,
+       0.786
+      ],
+      [
+       -0.571,
+       -0.024
+      ],
+      [
+       -0.538,
+       0.389
+      ],
+      [
+       -0.172,
+       1.25
+      ],
+      [
+       0.039,
+       -0.298
+      ],
+      [
+       0.18,
+       -0.046
+      ],
+      [
+       0.36,
+       -0.454
+      ],
+      [
+       1.315,
+       1.049
+      ],
+      [
+       1.993,
+       0.93
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}
