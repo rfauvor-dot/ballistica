@@ -209,6 +209,7 @@ app.mount("/images", StaticFiles(directory=_WEB_DIR / "images"), name="images")
 # its page script, and sample frames from the November 13 range video (target
 # sheets on the backer only). Static and public, like /icons.
 app.mount("/speedtest", StaticFiles(directory=_WEB_DIR / "speedtest"), name="speedtest")
+app.mount("/live", StaticFiles(directory=_WEB_DIR / "live"), name="live")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -300,6 +301,39 @@ def speed_test_page():
         content=html,
         headers={"Content-Security-Policy": csp, "X-Content-Type-Options": "nosniff",
                  "Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/live-shots", response_class=HTMLResponse, include_in_schema=False)
+def live_shots_page():
+    """Live shot calling for the camera phone on the spotting scope
+    (2026-11-16): the phone's camera, the browser detector and shot calling
+    (speedtest/detector.js, shot_caller.js) running on the phone, each called
+    shot sent to the bench device to be spoken. Uses the sign-in the main app
+    saved on this phone. Its own security policy, like /speed-test: it loads
+    OpenCV.js from the CDN and compiles WebAssembly, which the main app's
+    policy doesn't allow."""
+    csp = "; ".join([
+        "default-src 'self'",
+        f"script-src 'self' {_OPENCV_JS_ORIGIN} 'wasm-unsafe-eval' 'unsafe-eval'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "media-src 'self' blob:",
+        f"connect-src 'self' {_SUPABASE_URL}".rstrip(),
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+    ])
+    html = (_WEB_DIR / "live" / "index.html").read_text(encoding="utf-8")
+    html = html.replace("__SUPABASE_URL__", _SUPABASE_URL).replace("__SUPABASE_ANON_KEY__", _SUPABASE_ANON_KEY)
+    for folder, name in (("speedtest", "detector.js"), ("speedtest", "shot_caller.js"), ("live", "live.js")):
+        digest = hashlib.sha256((_WEB_DIR / folder / name).read_bytes()).hexdigest()[:12]
+        html = html.replace(f'src="/{folder}/{name}"', f'src="/{folder}/{name}?v={digest}"')
+    return HTMLResponse(
+        content=html,
+        headers={"Content-Security-Policy": csp, "X-Content-Type-Options": "nosniff",
+                 "Cache-Control": "no-store"},
     )
 
 
@@ -1774,6 +1808,7 @@ async def v2_target_framing(
 
 class RigCheckinIn(BaseModel):
     device_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    calling: bool = False      # the live page (/live-shots) is calling shots on this phone
 
 
 @app.post("/v2/rig/camera/checkin")
@@ -1782,7 +1817,7 @@ def v2_rig_camera_checkin(request: Request, body: RigCheckinIn,
                           auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
     """The camera phone saying it's still here. Returns {check_request: id or
     null (send frames for it), next_checkin_ms}."""
-    return rig.relay.camera_checkin(auth[0], body.device_id)
+    return rig.relay.camera_checkin(auth[0], body.device_id, body.calling)
 
 
 _RIG_MAX_FRAMES = 4
@@ -1819,6 +1854,46 @@ async def v2_rig_camera_frames(
     if not rig.relay.deliver(auth[0], device_id, request_id, result):
         raise HTTPException(status_code=409, detail="That check is no longer waiting.")
     return result
+
+
+class RigShotIn(BaseModel):
+    n: int = Field(..., ge=1, le=100_000)
+    sheet_number: int | None = Field(None, ge=1, le=target_photo.MAX_SHEET_NUMBER)
+    x_in: float = Field(..., ge=-10, le=10)        # right of the crosshair
+    y_in: float = Field(..., ge=-10, le=10)        # above the crosshair
+    t_first: float = Field(..., ge=0, le=86_400)   # seconds since live calling started
+    t_call: float = Field(..., ge=0, le=86_400)
+    off_camera_s: float = Field(0, ge=0, le=86_400)
+
+
+class RigShotPostIn(BaseModel):
+    device_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    session_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    shot: RigShotIn
+
+
+@app.post("/v2/rig/shots")
+@limiter.limit("120/minute")
+def v2_rig_post_shot(request: Request, body: RigShotPostIn,
+                     auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """A shot the camera phone's live page called. Held in memory for the
+    bench device to pick up and speak; never stored. Re-posting the same
+    shot (same session and number) is harmless. Returns {seq}."""
+    return {"seq": rig.relay.post_shot(auth[0], body.device_id, body.session_id, body.shot.model_dump())}
+
+
+@app.get("/v2/rig/shots")
+@limiter.limit("120/minute")
+def v2_rig_get_shots(request: Request, after: int = Query(-1, ge=-1),
+                     auth: tuple[str, str] = Depends(_verify_bearer)) -> dict:
+    """For the bench device: shots called since sequence number `after`, each
+    with the sentence to say ("Shot 3, sheet 2: 1.2 inches high, 0.4 inches
+    left."), plus {last} to ask from next time and the camera phone's status.
+    after=-1 (the default) returns no shots, only where to start from."""
+    out = rig.relay.shots_since(auth[0], after)
+    status = rig.relay.camera_status(auth[0])
+    out["camera"] = {"connected": status["connected"], "calling": status["calling"]}
+    return out
 
 
 class TargetGroupIn(BaseModel):

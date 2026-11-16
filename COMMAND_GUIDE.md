@@ -280,6 +280,38 @@ The sharpness bars come from one clip (November 13) and synthetic tests;
 they're a first judgment until there's ground-tripod footage. The Check
 framing button now reports sharpness too.
 
+## 9c. Live shot calling (added 2026-11-16)
+
+The phone on the spotting scope watches the target sheet and calls each new
+shot; the tablet at the bench says it out loud: *"Shot 3, sheet 2: 1.2
+inches high, 0.4 inches left."* Offsets are from the sheet's crosshair; she
+never says which way to dial.
+
+1. **On the camera phone** (signed in to Ballistica on that phone): open
+   **ballistica.onrender.com/live-shots**, tap **Start camera**, frame the
+   sheet, then tap **Start calling shots**. Keep the page in front with the
+   screen on (it asks the phone to keep the screen awake).
+2. **On the tablet:** open the **Live shot calls** panel and tap **Listen
+   for shots**. It says whether the camera phone is connected and calling.
+
+The equipment check works with the live page open too (it uses the same
+link). Everything that looks at the picture runs on the phone; only the
+calls go to the server, and a call made with no signal is sent when the
+signal comes back. Nothing is recorded or stored.
+
+**Use numbered sheets.** Holes already on a numbered sheet when calling
+starts are taken as old, and the phone remembers every numbered sheet's
+holes, so a reload, a restart or re-hanging a sheet doesn't call them
+again. **New session** on the phone forgets them: tap it when you hang
+fresh sheets. A sheet without a number can't be told from another one, so
+every hole already on it is called as a shot when it first comes into view.
+
+**Known limits:** a new hole within about 0.3 in of an older one can be
+taken for the older one (called late or not at all), and holes that touch
+can merge; both are the next thing to fix. A hole is called after it has
+been seen in 3 frames, about 1.5 seconds. "Replay a video file" on the live
+page plays a range video through the same calling, for trying it at home.
+
 ## 10. Status, listing, help
 
 | Say | What happens |

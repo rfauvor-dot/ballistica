@@ -278,6 +278,13 @@ asking for a look can land on different ones, and the check reports the
 camera as not connected or not answering. A deploy or restart mid-check
 has the same effect for that one check (it says so; nothing is lost).
 
+**Update 2026-11-16, live shot calls:** the calls the camera phone's live
+page posts for the bench device to speak go through the same in-memory
+link (the last 200 per user). A restart or deploy during a session loses
+calls the bench device hasn't collected yet; the phone still shows every
+call it made, and keeps calling. With more than one process, the bench
+device would miss calls that landed on another one.
+
 **Next step:** if the app ever runs as more than one process, move the link
 to a shared store (Supabase table or Redis) along with the rate limits.
 

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ballistica-supabase-url" content="__SUPABASE_URL__">
+<meta name="ballistica-supabase-anon-key" content="__SUPABASE_ANON_KEY__">
+<title>Ballistica live shots</title>
+<style>
+  :root { --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6a6862; --line: #dcd9d2; --accent: #c4581e; --good: #2a6b2a; --bad: #a3241b; --card: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161614; --fg: #ecebe7; --muted: #a29f97; --line: #34322e; --accent: #e07a3e; --good: #6cc06c; --bad: #ef7b72; --card: #201f1c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+  h1 { font-size: 21px; margin: 0 0 4px; }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  button, select { font: 600 17px system-ui, sans-serif; border-radius: 10px; }
+  button { width: 100%; min-height: 54px; border: 0; background: var(--accent); color: #fff; margin: 6px 0; }
+  button.plain { background: transparent; color: var(--fg); border: 1px solid var(--line); min-height: 44px; font-weight: 500; font-size: 15px; }
+  button:disabled { opacity: .45; }
+  select { width: 100%; min-height: 44px; padding: 0 8px; background: var(--card); color: var(--fg); border: 1px solid var(--line); font-weight: 500; }
+  label.lbl { display: block; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+  video { width: 100%; border-radius: 8px; background: #000; margin-top: 8px; }
+  .status { font-size: 15px; margin: 6px 0; min-height: 22px; }
+  .ok { color: var(--good); font-weight: 600; } .no { color: var(--bad); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 10px; }
+  #shots div { padding: 6px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  #shots div:last-child { border-bottom: 0; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; min-width: 0; }
+  details { margin-top: 12px; } summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Live shot calling</h1>
+  <p class="muted">For the phone on the spotting scope. It watches the target sheet through the camera, works out each new hole on this phone, and sends the call to the tablet at the bench to be spoken. No video is uploaded or saved.</p>
+  <p id="signin" class="status"></p>
+
+  <label class="lbl" for="camSel">Camera</label>
+  <select id="camSel"><option value="">Back camera (default)</option></select>
+  <button id="camBtn" type="button" disabled>Loading the detector...</button>
+  <video id="video" autoplay playsinline muted hidden></video>
+  <div id="zoomWrap" hidden><label class="lbl" for="zoom">Camera zoom</label><input id="zoom" type="range" style="width:100%"></div>
+
+  <button id="callBtn" type="button" disabled>Start calling shots</button>
+  <div id="status" class="status"></div>
+  <div id="rate" class="muted"></div>
+  <div id="link" class="muted"></div>
+
+  <div class="card">
+    <strong>Shots called</strong> <span id="sessionNote" class="muted"></span>
+    <div id="shots" class="muted">None yet.</div>
+  </div>
+
+  <div class="row" style="margin-top:10px;">
+    <button id="newBtn" type="button" class="plain">New session</button>
+  </div>
+  <p class="muted">Keep this page in front with the screen on: the phone pauses it otherwise. Use numbered sheets: holes already on a numbered sheet are remembered across a restart and never called again. <b>New session</b> forgets them (do it when you hang fresh sheets).</p>
+
+  <details>
+    <summary>Replay a video file instead of the camera</summary>
+    <p class="muted" style="margin-top:6px;">Plays a range video from this phone through the same shot calling, in real time, and sends the calls to the tablet like a live session. For trying it out away from the range.</p>
+    <input id="fileIn" type="file" accept="video/*">
+  </details>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js"
+        integrity="sha384-16eddoZUbhJFP+dmyqNO/+vH8UdDOg8MJo+zi1NSy2clHxpKiQaoSQWtQnPHzYvc" crossorigin="anonymous"></script>
+<script src="/speedtest/detector.js"></script>
+<script src="/speedtest/shot_caller.js"></script>
+<script src="/live/live.js"></script>
+</body>
+</html>

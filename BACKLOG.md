@@ -1028,7 +1028,9 @@ frames/s live, against 2 needed (3.6x); full search 293 ms = 3.4 frames/s
 (patch 2.1x faster); all 33 frames match. Galaxy Tab, version 2: 334 ms = 3.0
 frames/s. S25, version 3 (faster flattening too): 126 ms a frame = 7.9
 frames/s live (~4x what's needed); full search 276 ms; all 33 frames match.
-Galaxy Tab version 3 still to come.
+Galaxy Tab, version 3: 307 ms a frame = 3.3 frames/s live (1.6x what's
+needed); all 33 frames match. From 667 ms / 1.5 frames/s with the first
+version, so the tab could now run detection itself too, with less to spare.
 
 **Browser shot calling, built 2026-11-16** (`web/speedtest/shot_caller.js`):
 the frame-to-frame part of the tracker (which dots are new holes, when to
@@ -1057,7 +1059,23 @@ shots. Python's `ShotTracker.process_frame` was split so the same calling
 - Speed: 414 ms a frame on the PC browser over the whole video, 33.6% of
   frames needing a full search (the 10-second stretch measured 3 of 21).
 
-**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided, shot calling ported to the browser; not yet running live. Next: step 3 (compare with the sheet before the shot, for close/touching holes), feed bangs into the tracker, the phone<->tablet link.**
+**Live calling page, built 2026-11-16** (`/live-shots`, `web/live/`): the
+camera phone runs camera -> `detector.js` -> `shot_caller.js` at 2 frames a
+second and posts each call (`POST /v2/rig/shots`); the bench device's "Live
+shot calls" panel collects them (`GET /v2/rig/shots?after=N`) and speaks the
+sentence the server builds (`rig.shot_sentence`). Uses the main app's saved
+sign-in and the same rig link (so the equipment check works with it open);
+remembers numbered sheets' holes across reloads; wake lock; calls made with
+no signal are queued. Own security policy like /speed-test (the main app's
+stays strict). Checked by playing an 85-s November 13 clip (360-445 s)
+through the page's "Replay a video file" option in desktop Chrome: all 5
+real shots called within 0.03 in of the hand-measured positions; 4 seen
+within 2.5 s of the table time, the 390 s shot 22 s late (0.29 in from an
+older hole); plus 2 calls for holes already on that unnumbered sheet when
+the clip starts. Not yet run on the S25 or with the tablet speaking: that
+is the range test (checklists for Nov 20 / Dec 4 / Dec 11).
+
+**Status: top priority. Steps 1-2 done, step 4 started, framing check and speed test done, detection on the phone decided, live calling page built (phone calls, tablet speaks); not yet tried at the range. Next: step 3 (compare with the sheet before the shot, for close/touching holes), feed bangs into the tracker.**
 Related: the target photo panel (see the zeroing walkthrough entry), and
 "Session Mode" shot logging, which could supply the shot order to match
 against detected holes.

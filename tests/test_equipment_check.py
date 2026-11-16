@@ -88,8 +88,8 @@ def test_a_check_request_reaches_the_phone_and_the_answer_reaches_the_voice_turn
     t.start()
     assert link.look() == answer
     t.join()
-    assert link.status() == {"connected": True, "device_id": "phone-1", "seen_s_ago": pytest.approx(0, abs=1),
-                             "same_device": False}
+    assert link.status() == {"connected": True, "calling": False, "device_id": "phone-1",
+                             "seen_s_ago": pytest.approx(0, abs=1), "same_device": False}
     assert rig.CameraLink(relay, "u", "phone-1").status()["same_device"] is True
 
 

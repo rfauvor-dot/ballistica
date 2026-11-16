@@ -20,6 +20,13 @@ Three parts:
     mid-check) would lose it -- the check then says the camera didn't answer.
     See RISK_REGISTER.md.
 
+  - LIVE SHOT CALLS (2026-11-16). The live page on the camera phone
+    (/live-shots) finds and calls shots itself, in its browser; each shot it
+    calls is posted here (POST /v2/rig/shots), and the bench device collects
+    new ones (GET /v2/rig/shots?after=N) and speaks them. Same in-memory
+    meeting point, so the same one-process caveat; only the last SHOTS_KEPT
+    shots are kept, and nothing is written to the database.
+
   - CameraLink: what the voice code (cli.py) uses -- one user's view of the
     link, so cli.py never touches the relay or HTTP directly, and tests can
     hand it a fake.
@@ -159,6 +166,9 @@ class _UserRig:
     request_at: float = 0.0
     last_request_at: float = 0.0
     results: dict = field(default_factory=dict)     # request_id -> (result, device_id)
+    calling: bool = False                           # the camera phone is calling shots live
+    shots: list = field(default_factory=list)       # the last SHOTS_KEPT shots called, oldest first
+    shot_seq: int = 0                               # number of the last shot posted (never reused)
 
 
 class RigRelay:
@@ -177,13 +187,13 @@ class RigRelay:
             rig = self._users[user_id] = _UserRig()
         return rig
 
-    def camera_checkin(self, user_id: str, device_id: str) -> dict:
-        """The camera phone saying "still here". Returns {check_request: id or
-        None, next_checkin_ms}."""
+    def camera_checkin(self, user_id: str, device_id: str, calling: bool = False) -> dict:
+        """The camera phone saying "still here" (and whether it is calling
+        shots live). Returns {check_request: id or None, next_checkin_ms}."""
         now = self._clock()
         with self._lock:
             rig = self._user(user_id)
-            rig.camera_device, rig.camera_seen = device_id, now
+            rig.camera_device, rig.camera_seen, rig.calling = device_id, now, bool(calling)
             if rig.request_id and now - rig.request_at > REQUEST_EXPIRE_S:
                 rig.request_id = None
             fast = now - rig.last_request_at < FAST_WINDOW_S
@@ -194,9 +204,11 @@ class RigRelay:
         with self._lock:
             rig = self._users.get(user_id)
             if rig is None or rig.camera_device is None:
-                return {"connected": False, "device_id": None, "seen_s_ago": None}
+                return {"connected": False, "calling": False, "device_id": None, "seen_s_ago": None}
             age = self._clock() - rig.camera_seen
-            return {"connected": age <= CAMERA_FRESH_S, "device_id": rig.camera_device, "seen_s_ago": round(age, 1)}
+            connected = age <= CAMERA_FRESH_S
+            return {"connected": connected, "calling": connected and rig.calling,
+                    "device_id": rig.camera_device, "seen_s_ago": round(age, 1)}
 
     def request_check(self, user_id: str) -> str:
         now = self._clock()
@@ -230,6 +242,62 @@ class RigRelay:
                         rig.request_id = None
                     return None
                 self._lock.wait(left)
+
+
+    # ------------------------------------------------------ live shot calls
+    def post_shot(self, user_id: str, device_id: str, session_id: str, shot: dict) -> int:
+        """A shot the camera phone called. A repeat of one already posted
+        (same session, same shot number -- the phone resends after a dropped
+        connection) is ignored. Returns its sequence number."""
+        with self._lock:
+            rig = self._user(user_id)
+            rig.camera_device, rig.camera_seen = device_id, self._clock()
+            for old in rig.shots:
+                if old["session_id"] == session_id and old["n"] == shot["n"]:
+                    return old["seq"]
+            rig.shot_seq += 1
+            entry = dict(shot, seq=rig.shot_seq, session_id=session_id, say=shot_sentence(shot))
+            rig.shots = (rig.shots + [entry])[-SHOTS_KEPT:]
+            return rig.shot_seq
+
+    def shots_since(self, user_id: str, after: int) -> dict:
+        """Shots posted after sequence number `after` (-1: none, just the
+        current number -- where a newly opened bench device starts from)."""
+        with self._lock:
+            rig = self._users.get(user_id)
+            last = rig.shot_seq if rig else 0
+            shots = [] if rig is None or after < 0 else [dict(s) for s in rig.shots if s["seq"] > after]
+            return {"shots": shots, "last": last}
+
+
+SHOTS_KEPT = 200
+
+
+def _inches(v: float) -> str:
+    v = abs(v)
+    return "less than a tenth of an inch" if v < 0.05 else f"{v:.1f} inch" + ("" if round(v, 1) == 1.0 else "es")
+
+
+def shot_sentence(shot: dict) -> str:
+    """What the bench device says for a shot: where the hole is from the
+    sheet's crosshair. Plain offsets only -- never which way to turn a knob."""
+    parts = [f"Shot {shot['n']}"]
+    if shot.get("sheet_number"):
+        parts.append(f"sheet {shot['sheet_number']}")
+    x, y = float(shot["x_in"]), float(shot["y_in"])
+    if abs(x) < 0.05 and abs(y) < 0.05:
+        where = "dead center"
+    else:
+        bits = []
+        if abs(y) >= 0.05:
+            bits.append(f"{_inches(y)} {'high' if y > 0 else 'low'}")
+        if abs(x) >= 0.05:
+            bits.append(f"{_inches(x)} {'right' if x > 0 else 'left'}")
+        where = ", ".join(bits)
+    sentence = ", ".join(parts) + ": " + where + "."
+    if shot.get("off_camera_s"):
+        sentence += " Found after the sheet was out of view, so it may be older."
+    return sentence
 
 
 relay = RigRelay()

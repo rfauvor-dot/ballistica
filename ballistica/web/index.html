@@ -577,6 +577,16 @@
     </div>
   </details>
 
+  <details id="liveCallsDetails">
+    <summary>Live shot calls (at the bench)</summary>
+    <div class="panel-body">
+      <p style="font-size:14px; color:var(--muted); margin:0 0 10px;">The phone on the spotting scope calls each shot itself; this device says them out loud. On the phone, open <strong>ballistica.onrender.com/live-shots</strong> (signed in to the same account), start its camera and tap <strong>Start calling shots</strong>. Then tap <strong>Listen for shots</strong> here and keep this page open.</p>
+      <button id="lcBtn" type="button" class="primary big">Listen for shots</button>
+      <div id="lcStatus" style="font-size:14px; margin-top:6px; min-height:18px;"></div>
+      <div id="lcShots" style="font-size:15px; margin-top:8px;"></div>
+    </div>
+  </details>
+
   </div> <!-- #appContent -->
 
   <div id="importPanel" style="display:none; max-width:640px; margin:24px auto;">
@@ -3729,6 +3739,68 @@ rcEl('rcFrameBtn').addEventListener('click', async () => {
     btn.disabled = !rc.stream;
   }
 });
+
+// Live shot calls, bench side (2026-11-16). The camera phone's live page
+// (/live-shots) calls shots on the phone and posts each one; this asks the
+// server for new ones every 1.5 s and speaks them, one after another. Starts
+// from "now": shots called before Listen was tapped aren't read out.
+const lc = { on: false, timer: null, after: -1, speaking: Promise.resolve(), shots: [] };
+
+function lcSetStatus(html) { document.getElementById('lcStatus').innerHTML = html; }
+
+function lcRender() {
+  document.getElementById('lcShots').innerHTML = lc.shots.slice(-30).reverse()
+    .map((s) => `<div style="padding:4px 0; border-bottom:1px solid var(--line);">${escapeHtml(s.say)}</div>`).join('');
+}
+
+async function lcPoll() {
+  lc.timer = null;
+  if (!lc.on) return;
+  try {
+    const token = await getValidAccessToken();
+    if (!token) {
+      lcSetStatus('Sign in again to hear shot calls.');
+    } else {
+      const res = await fetch(`/v2/rig/shots?after=${lc.after}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const r = await res.json();
+        const first = lc.after < 0;
+        lc.after = r.last;
+        if (!first) {
+          for (const shot of r.shots) {
+            lc.shots.push(shot);
+            lc.speaking = lc.speaking.then(() => speak(shot.say, CONVERSATIONAL_TTS_SPEED));
+          }
+          if (r.shots.length) lcRender();
+        }
+        lcSetStatus(r.camera.calling ? '<strong style="color:#2a6b2a;">Listening. The camera phone is calling shots.</strong>'
+          : r.camera.connected ? 'Listening. The camera phone is connected but not calling shots yet -- tap Start calling shots on it.'
+          : 'Listening, but the camera phone is not connected -- open /live-shots on it and start its camera.');
+      } else {
+        lcSetStatus(`The server said ${res.status}; still trying.`);
+      }
+    }
+  } catch (e) {
+    lcSetStatus('No connection -- still trying. Calls made meanwhile are read out when it comes back.');
+  }
+  if (lc.on && !lc.timer) lc.timer = setTimeout(lcPoll, 1500);
+}
+
+function lcStop() {
+  lc.on = false; clearTimeout(lc.timer); lc.timer = null;
+  document.getElementById('lcBtn').textContent = 'Listen for shots';
+  lcSetStatus('');
+}
+
+document.getElementById('lcBtn').addEventListener('click', () => {
+  if (lc.on) { lcStop(); return; }
+  lc.on = true; lc.after = -1;
+  document.getElementById('lcBtn').textContent = 'Stop listening';
+  lcSetStatus('Connecting...');
+  lcPoll();
+});
+// Closing the panel stops listening, so nothing talks from a panel you can't see.
+document.getElementById('liveCallsDetails').addEventListener('toggle', (e) => { if (!e.target.open) lcStop(); });
 
 rcEl('rcStampBtn').addEventListener('click', () => {
   const err = rcEl('rcError'); hide(err);
