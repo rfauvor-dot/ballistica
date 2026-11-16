@@ -20,6 +20,7 @@ Interactive docs at http://127.0.0.1:8000/docs once it's running.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -286,8 +287,17 @@ def speed_test_page():
         "form-action 'none'",
         "frame-ancestors 'none'",
     ])
+    # Each script's address carries a fingerprint of its contents, so a phone
+    # can never run a stale saved copy against a new page (found 2026-11-15: an
+    # S25 kept running the first version of the test after it was updated --
+    # the scripts are served with no cache instructions, and browsers then
+    # guess how long to keep them).
+    html = (_WEB_DIR / "speedtest" / "index.html").read_text(encoding="utf-8")
+    for name in ("detector.js", "page.js"):
+        digest = hashlib.sha256((_WEB_DIR / "speedtest" / name).read_bytes()).hexdigest()[:12]
+        html = html.replace(f'src="/speedtest/{name}"', f'src="/speedtest/{name}?v={digest}"')
     return HTMLResponse(
-        content=(_WEB_DIR / "speedtest" / "index.html").read_text(encoding="utf-8"),
+        content=html,
         headers={"Content-Security-Policy": csp, "X-Content-Type-Options": "nosniff",
                  "Cache-Control": "no-cache"},
     )

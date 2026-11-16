@@ -47,6 +47,16 @@ def test_opencv_is_pinned_by_integrity_hash():
     assert "@5.0.0-release.1/" in tag.group(1)          # an exact version, never "latest"
 
 
+def test_scripts_are_addressed_by_content_so_phones_cannot_run_stale_copies():
+    import hashlib
+    html = client.get("/speed-test").text
+    for name in ("detector.js", "page.js"):
+        digest = hashlib.sha256(open(os.path.join(SPEEDTEST, name), "rb").read()).hexdigest()[:12]
+        assert f'src="/speedtest/{name}?v={digest}"' in html, name
+        assert client.get(f"/speedtest/{name}?v={digest}").status_code == 200
+    assert "Test version 2" in open(os.path.join(SPEEDTEST, "page.js"), encoding="utf-8").read()
+
+
 def test_page_files_are_served():
     for path in ("/speedtest/detector.js", "/speedtest/page.js", "/speedtest/manifest.json"):
         assert client.get(path).status_code == 200, path

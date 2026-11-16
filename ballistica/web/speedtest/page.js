@@ -16,6 +16,8 @@
   const $ = (id) => document.getElementById(id);
   const PASSES = 3;              // timed passes over the stretch, per mode, after an untimed warm-up pass
   const LIVE_FPS = 2;            // what live detection samples at
+  // Shown on the page, so a result can be tied to the version that produced it.
+  const TEST_VERSION = "Test version 2 (patch search, 2026-11-15)";
 
   let cv = null, detector = null, manifest = null, spot = [], stretch = [];
 
@@ -31,13 +33,14 @@
 
   async function loadImages(list) {
     return Promise.all(list.map(async (f) => {
-      const blob = await (await fetch("/speedtest/" + f.file)).blob();
+      // no-cache: check with the server each time (an unchanged frame costs a quick "not modified").
+      const blob = await (await fetch("/speedtest/" + f.file, { cache: "no-cache" })).blob();
       return { info: f, bitmap: await createImageBitmap(blob) };
     }));
   }
 
   async function loadFrames() {
-    const res = await fetch("/speedtest/manifest.json");
+    const res = await fetch("/speedtest/manifest.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("couldn't load the sample frames list");
     manifest = await res.json();
     [spot, stretch] = await Promise.all([loadImages(manifest.frames), loadImages(manifest.sequence || [])]);
@@ -160,10 +163,10 @@
       `<tr><th colspan="3">10-second stretch, patch search</th></tr>` + stretchChecks.map((c) => line(c, c.search + " search")).join("");
 
     const cores = navigator.hardwareConcurrency ? `${navigator.hardwareConcurrency} processor cores reported. ` : "";
-    $("device").textContent = `${cores}The detector runs on one core here. ${navigator.userAgent}`;
+    $("device").textContent = `${TEST_VERSION}. ${cores}The detector runs on one core here. ${navigator.userAgent}`;
     $("results").hidden = false;
     window.speedTestResult = {
-      patch: { msPerFrame: patchMs, fps }, full: { msPerFrame: fullMs, fps: fullFps },
+      version: TEST_VERSION, patch: { msPerFrame: patchMs, fps }, full: { msPerFrame: fullMs, fps: fullFps },
       parity: { spot: `${spotGood}/${spotChecks.length}`, stretch: `${stretchGood}/${stretchChecks.length}` },
       searchStats, stages: { patch: Object.fromEntries(p.map(([n, v]) => [n, mean(v)])), full: Object.fromEntries(f.map(([n, v]) => [n, mean(v)])) },
       differences: spotChecks.concat(stretchChecks).filter((c) => !c.check.ok).map((c) => `${c.f.info.video_s}s: ${c.check.why}`),
@@ -173,6 +176,7 @@
   async function init() {
     const btn = $("runBtn");
     try {
+      $("version").textContent = TEST_VERSION;
       setStatus("Downloading the detector and sample frames...");
       const t0 = performance.now();
       [cv] = await Promise.all([loadOpenCV(), loadFrames()]);
