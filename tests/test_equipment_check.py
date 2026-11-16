@@ -154,8 +154,8 @@ def test_everything_good_ends_all_set_and_sets_the_rifle_and_ammunition(tmp_path
     first = _say(cli, "Ballistica, equipment check")
     assert "I see sheet 3, all four corners." in first and "The picture's sharp." in first
     assert "Phone and tablet are connected." in first
-    assert first.index("sharp") < first.index("connected") < first.index("Which rifle")
-    assert "Tikka T3x 6.5 Creedmoor or AR-15 20-inch Faxon" in first
+    assert first.index("sharp") < first.index("connected") < first.index("What caliber are you shooting?")
+    assert "Tikka" not in first                              # asked by caliber, not by reading a list
     second = _say(cli, "I'm shooting the Tikka")              # "shooting" must not end the check
     assert second.startswith("The Tikka T3x 6.5 Creedmoor.") and "which ammunition" in second
     assert store.active_rifle_name == "Tikka T3x 6.5 Creedmoor"
@@ -175,12 +175,12 @@ def test_soft_picture_is_coached_until_sharp(tmp_path):
     camera = FakeCamera([_look(8), _look(5), _look(7), _look(3.5), _look(0.5)])
     cli, _ = _cli(tmp_path, camera)
     first = _say(cli, "equipment check")
-    assert "The picture's soft." in first and "say check focus" in first and "Which rifle" not in first
+    assert "The picture's soft." in first and "say check focus" in first and "What caliber" not in first
     assert "Better." in _say(cli, "check focus")
     assert "softer" in _say(cli, "how's that").lower()
     assert "Better, close now." in _say(cli, "check focus")
     done = _say(cli, "check focus")
-    assert done.startswith("That's sharp now.") and "Which rifle" in done
+    assert done.startswith("That's sharp now.") and "What caliber" in done
     assert camera.taken == 5
     _say(cli, "the AR")
     assert _say(cli, "first one").endswith("All set.")
@@ -194,7 +194,8 @@ def test_a_corner_hidden_by_blur_is_not_left_on_the_list_once_sharp(tmp_path):
     assert "but not the" in first
     done = _say(cli, "check focus")
     assert done.startswith("That's sharp now.") and "But" not in done.split("Phone")[0]
-    _say(cli, "AR-15")
+    assert _say(cli, "AR-15") == "The AR-15 20-inch Faxon -- right?"
+    _say(cli, "yes")
     assert _say(cli, "the MatchKing").endswith("All set.")
 
 
@@ -202,7 +203,7 @@ def test_good_enough_moves_on_and_the_softness_is_listed_at_the_end(tmp_path):
     cli, _ = _cli(tmp_path, FakeCamera([_look(3)]))
     assert "The picture's a little soft." in _say(cli, "equipment check")
     moved = _say(cli, "that's good enough")
-    assert moved.startswith("Okay, leaving the focus there.") and "Which rifle" in moved
+    assert moved.startswith("Okay, leaving the focus there.") and "What caliber" in moved
     _say(cli, "the AR")
     assert _say(cli, "MatchKing").endswith("Still needs fixing: the picture is still a little soft.")
 
@@ -225,7 +226,7 @@ def test_camera_phone_not_connected_still_runs_the_rest(tmp_path):
     camera = FakeCamera([], connected=False)
     cli, _ = _cli(tmp_path, camera)
     first = _say(cli, "Ballistica, equipment check")
-    assert "not hearing from the camera phone" in first and "Which rifle" in first
+    assert "not hearing from the camera phone" in first and "What caliber" in first
     assert camera.taken == 0
     _say(cli, "Tikka")
     end = _say(cli, "the factory ammo, the ELD-M")

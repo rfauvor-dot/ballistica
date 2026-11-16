@@ -1746,22 +1746,73 @@ function unlockAudioPlayback() {
   sharedAudioEl.play().catch(() => {});
 }
 
-async function playAudioBlob(blob) {
+// Barge-in (Rick, 2026-11-16: "she should stop talking the moment I
+// speak"). While a reply plays and the mic is already open (mid-
+// conversation), the mic level is watched: once it rises clearly above
+// her own voice leaking back in (the browser's echo cancellation takes
+// most of that out; what's left is tracked as a running baseline), for a
+// few frames in a row, playback stops and onSpeech() runs -- which starts
+// recording what he's saying as the next input. Thresholds sit well above
+// recordCommand's SILENCE_LEVEL so her own voice can't cut her off.
+const BARGE_IN_LEVEL = 20;          // absolute floor (recordCommand's silence level is 8)
+const BARGE_IN_OVER_ECHO = 2.0;     // and this many times the echo baseline
+const BARGE_IN_FRAMES = 4;          // ~65 ms of speech at ~60 frames a second
+const BARGE_IN_GRACE_MS = 250;      // the first moment of playback only sets the baseline
+function watchForBargeIn(isDone, onSpeech) {
+  if (!sharedAnalyser) return;
+  const levels = new Uint8Array(sharedAnalyser.frequencyBinCount);
+  const startedAt = Date.now();
+  let baseline = 0;
+  let streak = 0;
+  function tick() {
+    if (isDone() || !sharedAnalyser) return;
+    sharedAnalyser.getByteFrequencyData(levels);
+    const avg = levels.reduce((a, b) => a + b, 0) / levels.length;
+    const trigger = Math.max(BARGE_IN_LEVEL, baseline * BARGE_IN_OVER_ECHO);
+    if (Date.now() - startedAt < BARGE_IN_GRACE_MS) {
+      baseline = Math.max(baseline, avg);
+    } else if (avg > trigger) {
+      streak++;
+      if (streak >= BARGE_IN_FRAMES) { onSpeech(); return; }
+    } else {
+      streak = 0;
+      baseline = 0.95 * baseline + 0.05 * avg;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+// Resolves true if the shooter talked over it (barge-in) and playback was
+// cut short, false once it finished (or failed) on its own.
+async function playAudioBlob(blob, { onBargeIn = null } = {}) {
   const url = URL.createObjectURL(blob);
   if (!sharedAudioEl) sharedAudioEl = new Audio();
   sharedAudioEl.src = url;
+  let interrupted = false;
   await new Promise((resolve) => {
-    sharedAudioEl.onended = resolve;
-    sharedAudioEl.onerror = resolve;
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    sharedAudioEl.onended = finish;
+    sharedAudioEl.onerror = finish;
     sharedAudioEl.play().catch((e) => {
       // No longer silently swallowed -- a real failure here should be
       // visible for future debugging, even though unlockAudioPlayback()
       // above is what should prevent it from happening at all now.
       console.error('TTS playback blocked or failed:', e);
-      resolve();
+      finish();
     });
+    if (onBargeIn && sharedMicStream) {
+      watchForBargeIn(() => done, () => {
+        interrupted = true;
+        sharedAudioEl.pause();
+        onBargeIn();
+        finish();
+      });
+    }
   });
   URL.revokeObjectURL(url);
+  return interrupted;
 }
 
 // Reverted to full speed (2026-09-06) after live feedback that ordinary
@@ -1775,7 +1826,21 @@ async function playAudioBlob(blob) {
 // is_readout) does by not passing this constant.
 const CONVERSATIONAL_TTS_SPEED = 1.0;
 
-async function speak(text, speed) {
+// What he said over the top of her (see watchForBargeIn): a recording
+// already under way, picked up by the next runConversationTurn() as its
+// input instead of starting a fresh one.
+let pendingBargeIn = null;   // { recording: Promise<{blob, hadSpeech}>, at: ms }
+const BARGE_IN_STALE_MS = 20000;
+
+function takePendingBargeIn() {
+  const p = pendingBargeIn;
+  pendingBargeIn = null;
+  return p && Date.now() - p.at < BARGE_IN_STALE_MS ? p.recording : null;
+}
+
+// Returns true when the shooter talked over the reply and it was cut off
+// (only with { bargeIn: true }, and only while the mic is already open).
+async function speak(text, speed, { bargeIn = false } = {}) {
   try {
     const body = { text };
     if (speed !== undefined) body.speed = speed;
@@ -1802,11 +1867,18 @@ async function speak(text, speed) {
       if (refusal) handleBudgetExceeded(refusal);
       return;
     }
-    await playAudioBlob(await res.blob());
+    const onBargeIn = bargeIn ? () => {
+      // Start recording at once so the start of what he says isn't lost.
+      pendingBargeIn = { recording: recordCommand({ alreadySpeaking: true }), at: Date.now() };
+      voiceState = 'listening';
+      setVoiceState('Listening...', true);
+    } : null;
+    return await playAudioBlob(await res.blob(), { onBargeIn });
   } catch (e) {
     // Voice output failing shouldn't break the loop -- the state line
     // still shows what was going on, silently.
   }
+  return false;
 }
 
 // Addendum 30 (root-caused from code, pending Rick's live confirmation):
@@ -1837,6 +1909,7 @@ async function ensureMicStream() {
 }
 
 function releaseMicStream() {
+  pendingBargeIn = null;
   if (sharedMicStream) sharedMicStream.getTracks().forEach(t => t.stop());
   sharedMicStream = null;
   if (sharedAudioCtx) { try { sharedAudioCtx.close(); } catch (e) {} }
@@ -1844,7 +1917,9 @@ function releaseMicStream() {
   sharedAnalyser = null;
 }
 
-async function recordCommand() {
+// alreadySpeaking: started by a barge-in, so he's mid-sentence already --
+// the usual wait for speech to begin doesn't apply.
+async function recordCommand({ alreadySpeaking = false } = {}) {
   await ensureMicStream();
   const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4'].find(
     t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
@@ -1885,7 +1960,7 @@ async function recordCommand() {
   const SPEECH_ONSET_FRAMES = 3;
   const startedAt = Date.now();
   let silenceStartedAt = null;
-  let hasSpokenYet = false;
+  let hasSpokenYet = alreadySpeaking;
   let aboveThresholdStreak = 0;
 
   return new Promise((resolve) => {
@@ -2062,7 +2137,9 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
   setVoiceState('Listening...', true);
   let blob, hadSpeech;
   try {
-    ({ blob, hadSpeech } = await recordCommand());
+    // Talked over her last reply: that recording is this turn's input.
+    const bargedIn = takePendingBargeIn();
+    ({ blob, hadSpeech } = await (bargedIn || recordCommand()));
   } catch (e) {
     setVoiceState('Voice: microphone error');
     return { continueConversation: false, hadSpeech: false };
@@ -2077,7 +2154,8 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     // stretch between shots.
     if (speakOnSilence) {
       voiceState = 'speaking';
-      await speak("Didn't catch that. Say again.", CONVERSATIONAL_TTS_SPEED);
+      const cutOff = await speak("Didn't catch that. Say again.", CONVERSATIONAL_TTS_SPEED, { bargeIn: true });
+      if (cutOff) return { continueConversation: true, hadSpeech: false };
     } else {
       setVoiceState(voiceEnabled ? 'Listening...' : 'Voice: off', true);
     }
@@ -2139,7 +2217,8 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     if (!heardText) {
       if (speakOnSilence) {
         voiceState = 'speaking';
-        await speak("Didn't catch that. Say again.", CONVERSATIONAL_TTS_SPEED);
+        const cutOff = await speak("Didn't catch that. Say again.", CONVERSATIONAL_TTS_SPEED, { bargeIn: true });
+        if (cutOff) return { continueConversation: true, hadSpeech: true, heardText: '' };
       }
       return { continueConversation: false, hadSpeech: true, heardText: '' };
     }
@@ -2173,11 +2252,15 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     // apply) and gets shown on screen to linger -- ordinary conversation
     // reverted to full speed (2026-09-06) and isn't worth pinning to
     // the screen.
+    // Talking over the reply stops it and makes what he says the next
+    // turn (barge-in) -- so the conversation carries on even if the
+    // backend wasn't waiting on an answer.
+    let cutOff;
     if (queryData.is_readout) {
       showReadout(queryData.reply || '');
-      await speak(queryData.reply || "Didn't catch that.");
+      cutOff = await speak(queryData.reply || "Didn't catch that.", undefined, { bargeIn: true });
     } else {
-      await speak(queryData.reply || "Didn't catch that.", CONVERSATIONAL_TTS_SPEED);
+      cutOff = await speak(queryData.reply || "Didn't catch that.", CONVERSATIONAL_TTS_SPEED, { bargeIn: true });
     }
     // Root-caused live (2026-09-06): a voice-triggered rifle switch (or
     // new rifle, or delete) was saved correctly server-side -- confirmed
@@ -2193,7 +2276,7 @@ async function runConversationTurn({ speakOnSilence = true } = {}) {
     if (!queryData.awaiting_response) {
       loadRifles().catch(() => {});
     }
-    return { continueConversation: !!queryData.awaiting_response, hadSpeech: true, heardText };
+    return { continueConversation: !!queryData.awaiting_response || cutOff, hadSpeech: true, heardText };
   } catch (e) {
     setVoiceState('Voice: error handling that command');
     return { continueConversation: false, hadSpeech: true, heardText: '' };

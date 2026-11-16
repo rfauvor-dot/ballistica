@@ -299,7 +299,7 @@ def test_switch_to_a_new_rifle_asks_instead_of_starting_a_setup(tmp_path, monkey
     _no_llm(monkeypatch)
     reply = cli.handle("Copy that. Can you switch to a new rifle?")
     assert "Which rifle do you want to switch to" in reply
-    assert "AR-15 20-inch Faxon" in reply and "6mm ARC test rifle" in reply
+    assert "What caliber?" in reply and "AR-15" not in reply    # asked, never read as a list
     assert cli._setup is None                       # no interview started
     assert cli._pending_rifle_switch is not None    # the next answer resolves against the real list
     assert "Switched you over to the AR-15 20-inch Faxon" in cli.handle("the AR-15")

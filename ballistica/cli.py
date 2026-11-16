@@ -27,6 +27,10 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from .angle import solve_incline_angle
 from .atmosphere import AtmosphereConditions, STANDARD_ATMOSPHERE
 from .intent import classify_calibration_turn, extract_intent, extract_setup_fields
+from .narrowing import (
+    MAX_SPOKEN_LIST, confirm_question, distinct_name_hits, narrow_loads, narrow_rifles,
+    next_rifle_question, short_list, which_load_question,
+)
 from .profiles import Load, ProfileStore, Rifle
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
@@ -429,7 +433,15 @@ _EQUIPMENT_STOP_RE = re.compile(
 _FOCUS_SKIP_RE = re.compile(r"\b(?:good enough|skip|move on|leave it|that'?s (?:fine|good|okay)|it'?s (?:fine|good)|"
                             r"next|carry on|forget (?:the )?focus)\b")
 _FOCUS_MAX_TRIES = 8
+# "Right?" answered with "right" / "that's it" / "correct".
+_RIGHT_YES_RE = re.compile(r"^(?:right|correct|that'?s (?:it|right|the one|correct)|affirmative|you got it)\b")
 _FOCUS_CHANGE = 0.02   # rig.FOCUS_CHANGE: a smaller change in blur is within the frame-to-frame wander
+
+
+def _has_ordinal(text: str) -> bool:
+    """'the second one' -- only an answer when a list was actually read."""
+    low = text.lower()
+    return any(re.search(rf"\b{w}\b", low) for w in _ORDINAL_CHOICE_WORDS)
 
 
 def _spoken_join(items: list[str], last_word: str = "and") -> str:
@@ -1204,11 +1216,24 @@ class BallisticaCLI:
             return self._request_save_session_velocities()
         if re.search(r"\bsession\s+(summary|recap|log)\b|\bhow many (?:shots|readings)\b", low):
             return self._session_summary()
+        # Read aloud, so never more than a few names (Rick, 2026-11-16).
         if low == "list rifles":
-            return "\n".join(self.store.rifles.keys()) or "No rifles configured."
+            rifles = list(self.store.rifles.values())
+            if len(rifles) <= MAX_SPOKEN_LIST:
+                return "\n".join(r.name for r in rifles) or "No rifles configured."
+            calibers = list(dict.fromkeys(r.caliber.strip() for r in rifles if r.caliber.strip()))
+            in_cals = short_list(calibers, "and")
+            if in_cals:
+                return f"You have {len(rifles)} rifles, in {in_cals}."
+            return f"You have {len(rifles)} rifles" + (f", in {len(calibers)} calibers." if calibers else ".")
         if low == "list loads":
             rifle = self.store.get_active_rifle()
-            return "\n".join(rifle.loads.keys()) or "No loads configured."
+            loads = list(rifle.loads.values())
+            if len(loads) <= MAX_SPOKEN_LIST:
+                return "\n".join(ld.name for ld in loads) or "No loads configured."
+            weights = short_list([f"{w:g}" for w in dict.fromkeys(ld.bullet_weight_gr for ld in loads)], "and")
+            return (f"You have {len(loads)} loads on the {rifle.name}"
+                    + (f", in {weights} grain." if weights else "."))
 
         m = re.search(r"drop at ([\d.]+)\s*(?:yd|yard|yards)", low)
         if m:
@@ -1258,17 +1283,25 @@ class BallisticaCLI:
                     return "No rifles saved yet -- say 'new rifle' to set one up."
                 self._pending_rifle_switch = names
                 self._pending_rifle_switch_at = time.time()
-                return (f"Which rifle do you want to switch to -- {', '.join(names)}? "
+                # Asked by caliber, never by reading every rifle (Rick, 2026-11-16).
+                if len(names) == 1:
+                    question = confirm_question(self.store.rifles[names[0]])
+                else:
+                    question = "What caliber?"
+                return (f"Which rifle do you want to switch to? {question} "
                         f"Or say 'set up a new rifle' to add one.")
             try:
-                names = list(self.store.get_active_rifle().loads.keys())
+                rifle = self.store.get_active_rifle()
+                names = list(rifle.loads.keys())
             except ValueError:
                 names = []
             if not names:
                 return "No loads saved on this rifle yet -- say 'new load' to set one up."
             self._pending_load_switch = names
             self._pending_load_switch_at = time.time()
-            return (f"Which load do you want to switch to -- {', '.join(names)}? "
+            listed = short_list(names)
+            question = f" -- {listed}?" if listed else f"? {which_load_question(list(rifle.loads.values()), rifle.name)}"
+            return (f"Which load do you want to switch to{question} "
                     f"Or say 'set up a new load' to add one.")
 
         # Start a guided voice interview for a brand new load/rifle --
@@ -1538,6 +1571,9 @@ class BallisticaCLI:
             # instead of getting freshly (and wrongly) classified.
             self._pending_load_switch = names
             self._pending_load_switch_at = time.time()
+            if len(names) > MAX_SPOKEN_LIST:
+                return (f"I'm not finding exactly one load matching '{query}' on the {rifle.name}. "
+                        f"{which_load_question(options, rifle.name)}")
             listed = ", ".join(names)
             return (f"I'm not finding exactly one load matching '{query}' on the "
                     f"{rifle.name} -- here's what's saved: {listed}. Which one do you want?")
@@ -1602,10 +1638,9 @@ class BallisticaCLI:
         if _CANCEL_WORD_RE.match(text.lower().strip()):
             self._pending_rifle_switch = None
             return "Okay, never mind."
-        chosen = self._resolve_pending_choice(candidates, text)
+        chosen, reask = self._narrow_rifle_switch(candidates, text)
         if chosen is None:
-            listed = ", ".join(candidates)
-            return f"Didn't catch which one -- {listed}. Which one do you mean?"
+            return reask
         self._pending_rifle_switch = None
         reply = self._switch_rifle(chosen)
         # Readings held while this was ambiguous (Session Mode) attach now
@@ -1613,6 +1648,45 @@ class BallisticaCLI:
         if self._pending_rifle_switch is None:
             reply += self._resolve_held_readings_after_rifle_switch()
         return reply
+
+    def _rifle_question(self, names: list[str], asked_caliber: bool = True) -> str:
+        """What to ask about rifles still in the running: a confirm for one,
+        else the caliber, else the barrel length, else (a few) their names."""
+        rifles = [self.store.rifles[n] for n in names if n in self.store.rifles]
+        if len(rifles) == 1:
+            return confirm_question(rifles[0])
+        return next_rifle_question(rifles, asked_caliber=asked_caliber)[0]
+
+    def _narrow_rifle_switch(self, candidates: list[str], text: str) -> tuple[str | None, str]:
+        """An answer to "which rifle?": (the rifle, "") once it's pinned down,
+        else (None, the next question). Narrows by caliber and barrel length
+        as well as by name, and never reads more than a few names back."""
+        rifles = [self.store.rifles[n] for n in candidates if n in self.store.rifles]
+        low = text.lower().strip()
+        if len(rifles) == 1 and (_CONFIRM_YES_WORD_RE.match(low) or _RIGHT_YES_RE.match(low)):
+            return rifles[0].name, ""
+        no = _CONFIRM_NO_RE.match(low)
+        if len(rifles) == 1 and no and not no.group(3).strip():
+            self._pending_rifle_switch = None
+            return None, "Okay, never mind."
+        few = len(rifles) <= MAX_SPOKEN_LIST
+        expect_barrel = len(rifles) > 1 and next_rifle_question(rifles, asked_caliber=True)[1] == "barrel"
+        narrowed, heard = narrow_rifles(rifles, text, expect_barrel=expect_barrel)
+        if heard and len(narrowed) == 1:
+            return narrowed[0].name, ""
+        if heard and 1 < len(narrowed) < len(rifles):
+            self._pending_rifle_switch = [r.name for r in narrowed]
+            return None, self._rifle_question(self._pending_rifle_switch)
+        chosen = (None if not few and _has_ordinal(text)
+                  else self._resolve_pending_choice(candidates, text))
+        if chosen is not None:
+            return chosen, ""
+        if heard and not narrowed:
+            return None, f"None of them fits that. {self._rifle_question(candidates)}"
+        listed = short_list(candidates, "or")
+        if listed and len(candidates) > 1:
+            return None, f"Didn't catch which one -- {listed}. Which one do you mean?"
+        return None, f"Didn't catch which one. {self._rifle_question(candidates)}"
 
     def _resolve_held_readings_after_rifle_switch(self) -> str:
         """Readings held during a rifle disambiguation only ever attach to
@@ -1632,7 +1706,11 @@ class BallisticaCLI:
             names = list(rifle.loads.keys())
             self._pending_load_switch = names
             self._pending_load_switch_at = time.time()
-            return f" Which load are the {len(log.unassigned)} held readings on -- {', '.join(names)}?"
+            listed = short_list(names)
+            if listed:
+                return f" Which load are the {len(log.unassigned)} held readings on -- {listed}?"
+            return (f" Which load are the {len(log.unassigned)} held readings on? "
+                    f"{which_load_question(list(rifle.loads.values()), rifle.name)}")
         return self._flush_unassigned_velocities()
 
     def _handle_load_switch_confirm(self, text: str) -> str:
@@ -1640,10 +1718,26 @@ class BallisticaCLI:
         if _CANCEL_WORD_RE.match(text.lower().strip()):
             self._pending_load_switch = None
             return "Okay, never mind."
-        chosen = self._resolve_pending_choice(candidates, text)
+        listed = short_list(candidates)
+        chosen = (None if not listed and _has_ordinal(text)
+                  else self._resolve_pending_choice(candidates, text))
         if chosen is None:
-            listed = ", ".join(candidates)
-            return f"Didn't catch which one -- {listed}. Which one do you want?"
+            # A bullet weight ("the 140s") narrows the loads still in the running.
+            try:
+                rifle = self.store.get_active_rifle()
+                loads = [rifle.loads[n] for n in candidates if n in rifle.loads]
+            except ValueError:
+                rifle, loads = None, []
+            fits, heard = narrow_loads(loads, text)
+            if heard and len(fits) == 1:
+                chosen = fits[0].name
+            elif heard and 1 < len(fits) < len(loads):
+                self._pending_load_switch = [ld.name for ld in fits]
+                return which_load_question(fits, rifle.name)
+        if chosen is None:
+            if listed:
+                return f"Didn't catch which one -- {listed}. Which one do you want?"
+            return f"Didn't catch which one. {which_load_question(loads, rifle.name if rifle else 'rifle')}"
         self._pending_load_switch = None
         reply = self._switch_load(chosen)
         if self._pending_load_switch is None:
@@ -1672,6 +1766,8 @@ class BallisticaCLI:
             # instead of getting freshly (and wrongly) classified.
             self._pending_rifle_switch = names
             self._pending_rifle_switch_at = time.time()
+            if len(names) > MAX_SPOKEN_LIST:
+                return f"That matches {len(names)} rifles. {self._rifle_question(names, asked_caliber=False)}"
             return f"That could be {', '.join(names)}. Which one do you mean?"
         self.store.save()
         self._forget_chat_history()
@@ -1835,6 +1931,9 @@ class BallisticaCLI:
         elif not matches:
             return (f"I couldn't find anything matching '{query}'. "
                      f"You may need to check the name in Settings.")
+        elif len(matches) > MAX_SPOKEN_LIST:
+            return (f"That matches {len(matches)} rifles. Say it again with the caliber and barrel length, "
+                    f"or a word from its name.")
         elif len(matches) > 1:
             names = [f"the {m.name}" for m in matches]
             listed = " or ".join(names) if len(names) == 2 else ", ".join(names[:-1]) + f", or {names[-1]}"
@@ -2489,6 +2588,9 @@ class BallisticaCLI:
                     held = f" I'm holding those {len(velocities)} readings."
                 else:
                     held = ""
+                if len(names) > MAX_SPOKEN_LIST:
+                    return (f"That matches {len(names)} rifles.{held} "
+                            f"{self._rifle_question(names, asked_caliber=False)}")
                 return f"That could be {', '.join(names)}.{held} Which one do you mean?"
             if matches[0].name != self.store.get_active_rifle().name:
                 self.store.set_active_rifle(matches[0].name)
@@ -2513,6 +2615,8 @@ class BallisticaCLI:
                 self._pending_load_switch = names
                 self._pending_load_switch_at = time.time()
                 held = f" I'm holding those {len(velocities)} readings." if velocities else ""
+                if len(names) > MAX_SPOKEN_LIST:
+                    return f"That matches {len(names)} loads.{held} {which_load_question(load_matches, rifle.name)}"
                 return f"That could be {', '.join(names)}.{held} Which one do you want?"
             if load_matches[0].name != rifle.active_load_name:
                 self.store.set_active_load(load_matches[0].name)
@@ -2555,7 +2659,10 @@ class BallisticaCLI:
             log.hold(velocities)
             self._pending_load_switch = names
             self._pending_load_switch_at = time.time()
-            notes.append(f"Which load are those {len(velocities)} readings on -- {', '.join(names)}?")
+            listed = short_list(names)
+            notes.append(f"Which load are those {len(velocities)} readings on -- {listed}?" if listed else
+                         f"Which load are those {len(velocities)} readings on? "
+                         f"{which_load_question(list(rifle.loads.values()), rifle.name)}")
             velocities = []
 
         # --- log new readings against the (now resolved) rifle/load ----
@@ -2903,6 +3010,11 @@ class BallisticaCLI:
                        for w in re.findall(r"[a-z0-9]+", n.lower()))]
         return hits[0] if len(hits) == 1 else None
 
+    # Which rifle (Rick, 2026-11-16): never a list of every rifle. "What
+    # caliber are you shooting?", then "What barrel length?" if more than one
+    # fits, then "The 6.5 Creedmoor Tikka, 24-inch barrel -- right?". Naming
+    # the rifle itself ("the Tikka") skips straight to it. ec["pick"] holds
+    # the rifles still in the running and what was just asked.
     def _equipment_ask_rifle(self, ec: dict) -> str:
         names = list(self.store.rifles.keys())
         if not names:
@@ -2910,17 +3022,58 @@ class BallisticaCLI:
             return self._equipment_finish(ec)
         ec["step"], ec["asks"] = "rifle", 0
         self._equipment_check = ec
-        return f"Which rifle are you shooting -- {_spoken_join(names, 'or')}?"
+        if len(names) == 1:
+            ec["pick"] = {"cands": names, "asking": "confirm"}
+            return confirm_question(self.store.rifles[names[0]])
+        ec["pick"] = {"cands": names, "asking": "caliber"}
+        return "What caliber are you shooting?"
 
     def _equipment_rifle_turn(self, ec: dict, text: str) -> str:
-        names = list(self.store.rifles.keys())
-        chosen = self._equipment_choose(names, text)
-        if chosen is None:
-            ec["asks"] += 1
-            if ec["asks"] >= 2:
-                ec["issues"].append("I didn't get which rifle")
-                return self._equipment_finish(ec)
-            return f"Didn't catch which rifle -- {_spoken_join(names, 'or')}?"
+        pick = ec.get("pick") or {"cands": list(self.store.rifles.keys()), "asking": "caliber"}
+        every = list(self.store.rifles.values())
+        cands = [self.store.rifles[n] for n in pick["cands"] if n in self.store.rifles] or every
+        low = text.lower().strip()
+        if pick["asking"] == "confirm":
+            if _CONFIRM_YES_WORD_RE.match(low) or _RIGHT_YES_RE.match(low):
+                return self._equipment_rifle_chosen(ec, cands[0].name)
+            no = _CONFIRM_NO_RE.match(low)
+            if no and not no.group(3).strip():
+                ec["pick"] = {"cands": [r.name for r in every], "asking": "caliber"}
+                return "Okay. What caliber are you shooting?"
+            if no:
+                text = no.group(3)
+            cands = every                                   # a fresh answer: start from every rifle
+        names = [r.name for r in cands]
+        narrowed, heard = narrow_rifles(cands, text, expect_barrel=pick["asking"] == "barrel")
+        # Named outright ("the Tikka"): no need to confirm what he just said.
+        # ("The second one" only means something after a list was read.)
+        by_name = (None if pick["asking"] != "name" and _has_ordinal(text)
+                   else self._equipment_choose(names, text))
+        if by_name is not None and (not heard or [r.name for r in distinct_name_hits(cands, text)] == [by_name]):
+            return self._equipment_rifle_chosen(ec, by_name)
+        if heard and len(narrowed) == 1:
+            ec["pick"] = {"cands": [narrowed[0].name], "asking": "confirm"}
+            return confirm_question(narrowed[0])
+        if heard and narrowed and len(narrowed) < len(cands):
+            question, asking = next_rifle_question(narrowed, asked_caliber=True)
+            ec["pick"] = {"cands": [r.name for r in narrowed], "asking": asking}
+            return question
+        ec["asks"] += 1
+        if ec["asks"] >= 2:
+            ec["issues"].append("I didn't get which rifle")
+            return self._equipment_finish(ec)
+        if heard and not narrowed:
+            if pick["asking"] == "barrel":
+                return "None of them has that barrel length. What barrel length?"
+            ec["pick"] = {"cands": [r.name for r in every], "asking": "caliber"}
+            return "I don't have a rifle saved in that caliber. What caliber are you shooting?"
+        question, asking = (("What caliber are you shooting?", "caliber") if len(cands) == len(every)
+                            else next_rifle_question(cands, asked_caliber=True))
+        ec["pick"] = {"cands": names, "asking": asking}
+        return f"Didn't catch which rifle. {question}"
+
+    def _equipment_rifle_chosen(self, ec: dict, chosen: str) -> str:
+        ec.pop("pick", None)
         if self.store.active_rifle_name != chosen:
             self.store.active_rifle_name = chosen
             self.store.save()
@@ -2934,18 +3087,32 @@ class BallisticaCLI:
             ec["issues"].append(f"no ammunition is saved for the {rifle.name}: say new load to add it")
             return self._equipment_finish(ec)
         ec["step"], ec["asks"] = "load", 0
-        return f"And which ammunition -- {_spoken_join(names, 'or')}?"
+        ec["load_cands"] = names
+        listed = short_list(names)
+        if listed:
+            return f"And which ammunition -- {listed}?"
+        return f"And which ammunition? {which_load_question(list(rifle.loads.values()), rifle.name)}"
 
     def _equipment_load_turn(self, ec: dict, text: str) -> str:
         rifle = self.store.get_active_rifle()
-        names = list(rifle.loads.keys())
-        chosen = self._equipment_choose(names, text)
+        names = [n for n in ec.get("load_cands") or [] if n in rifle.loads] or list(rifle.loads.keys())
+        listed = short_list(names)
+        chosen = (None if not listed and _has_ordinal(text) else self._equipment_choose(names, text))
+        if chosen is None:
+            fits, heard = narrow_loads([rifle.loads[n] for n in names], text)
+            if heard and len(fits) == 1:
+                chosen = fits[0].name
+            elif heard and 1 < len(fits) < len(names):
+                ec["load_cands"] = [ld.name for ld in fits]
+                return which_load_question(fits, rifle.name)
         if chosen is None:
             ec["asks"] += 1
             if ec["asks"] >= 2:
                 ec["issues"].append("I didn't get which ammunition")
                 return self._equipment_finish(ec)
-            return f"Didn't catch which ammunition -- {_spoken_join(names, 'or')}?"
+            if listed:
+                return f"Didn't catch which ammunition -- {listed}?"
+            return f"Didn't catch which ammunition. {which_load_question([rifle.loads[n] for n in names], rifle.name)}"
         if rifle.active_load_name != chosen:
             rifle.active_load_name = chosen
             self.store.save()

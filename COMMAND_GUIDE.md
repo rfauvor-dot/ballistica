@@ -31,6 +31,12 @@ Voice works two different ways depending on what's said:
   delete confirmation, the app keeps listening for your next answer
   without requiring "Ballistica" again. A plain one-shot answer (like a
   drop-at-range solution) drops back to sleep after one reply.
+- **Talking over her stops her (barge-in, added 2026-11-16).** While she's
+  answering you mid-conversation, start talking and she stops right away;
+  what you say is taken as your next command or answer. Her own voice
+  coming back through the speaker doesn't count (it has to be clearly
+  louder than that for a moment). Wake-word greetings and live shot calls
+  aren't interrupted this way.
 - Voice must be turned on with a tap first (browsers require a real tap
   before they'll grant microphone access) — after that it's hands-free
   until you tap "Disable voice." Turning it off plays a signoff line.
@@ -65,8 +71,34 @@ mid-string at the line or at the bench setting things up.
 |---|---|
 | "switch to 23.5gr H335" / "switch to my heavier load" | Changes the active **load** on the current rifle (fuzzy match — natural descriptions work via the LLM fallback, not just exact names) |
 | "switch rifle to AR-15 20in Faxon" / "switch rifles, the AR-15" / "switch me to the rifle 6mm" | Changes the active **rifle** (checked before the plain "switch to" pattern, so "switch rifle to X" never gets misread as a load switch). Any phrasing of "switch (to the) rifle(s) [to] <name>" works (added 2026-09-23) |
-| "switch to a new rifle" / "switch to a new load" | Asks **which one you already have** (and offers "set up a new rifle" to add one) instead of starting a setup — "switch" plus "new" is ambiguous (added 2026-09-23) |
+| "switch to a new rifle" / "switch to a new load" | Asks **which one you already have** (and offers "set up a new rifle" to add one) instead of starting a setup — "switch" plus "new" is ambiguous (added 2026-09-23). For a rifle she asks **"What caliber?"** rather than reading your rifles out (see "Picking a rifle" below) |
 | "change rifles" / "switch loads" (no name given) | Asks which one you mean (added 2026-09-18) — previously this got misread as a status question and just re-read back whatever was already active, which looked exactly like the switch request had been ignored |
+
+### Picking a rifle (added 2026-11-16)
+
+She never reads out more than **four** rifles or loads. To pick a rifle she
+narrows it down instead:
+
+1. **"What caliber are you shooting?"** — "6.5 Creedmoor", "creedmoor",
+   ".223", "300 blackout" all work.
+2. If more than one rifle is in that caliber: **"What barrel length?"** —
+   "24", "24 inch" or "twenty four inch".
+3. Then she confirms the one that fits: **"The 6.5 Creedmoor Tikka, 24-inch
+   barrel -- right?"** Say yes (or "right", "that's it"). "No" starts over
+   at the caliber; "no, the Bergara" picks the Bergara.
+
+Naming the rifle itself ("the Tikka") picks it straight away, no confirm.
+If two rifles share a caliber and barrel length she asks "Which one -- the
+Tikka or the Rem 700?". A caliber with no saved rifle gets "I don't have a
+rifle saved in that caliber." Rifles without a caliber or barrel length
+saved are matched on their names (a length written in the name, like
+"AR-15 20-inch Faxon", counts).
+
+The same applies anywhere a choice would be a long list: an ambiguous
+"switch rifle to 6.5 creedmoor" matching five rifles gets "That matches 5
+rifles. What barrel length?"; a rifle with more than four loads gets
+"What bullet weight?" ("the 140s"), then the few that are left by name.
+"The second one" only counts after she has actually read a short list.
 
 **Quirk worth knowing:** this only *selects among rifles/loads that
 already exist*. There's no voice command to delete a single load (see
@@ -261,8 +293,12 @@ ends with **"All set."** or **"Still needs fixing: ..."**:
    it's sharp. **"Good enough"** moves on (the softness goes on the list).
 3. **Phone and tablet connected** (or "the camera's running on this
    device" when it is).
-4. **Which rifle**, then 5. **which ammunition** — your answers become the
-   active rifle and load.
+4. **Which rifle** — "What caliber are you shooting?", then "What barrel
+   length?" if more than one fits, then "The 6.5 Creedmoor Tikka, 24-inch
+   barrel -- right?" (see §3, "Picking a rifle"); with only one rifle saved
+   she goes straight to the confirm. 5. **Which ammunition** — named if
+   there are four or fewer, otherwise "What bullet weight?" first. Your
+   answers become the active rifle and load.
 
 "Stop" or "cancel" ends the check. Answers like "I'm shooting the Tikka"
 work during the check (normally "shooting" would be taken as a request for
@@ -317,8 +353,8 @@ page plays a range video through the same calling, for trying it at home.
 | Say | What happens |
 |---|---|
 | "status" | Reports the active rifle, load, current conditions, and wind |
-| "list rifles" | Lists every saved rifle name — **exact phrase only, no natural-language fallback** (see §12) |
-| "list loads" | Lists every saved load name on the **active** rifle — same exact-phrase-only limitation |
+| "list rifles" | Lists every saved rifle name — **exact phrase only, no natural-language fallback** (see §12). With more than four rifles she says how many and which calibers instead ("You have 9 rifles, in 6.5 Creedmoor, .223 Wylde, 300 Blackout and .308 Winchester") |
+| "list loads" | Lists every saved load name on the **active** rifle — same exact-phrase-only limitation. With more than four loads, how many and their bullet weights |
 | "help" / "?" | Prints the built-in command cheat sheet |
 
 ## 11. Small talk
