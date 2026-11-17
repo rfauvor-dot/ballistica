@@ -111,7 +111,15 @@ def test_api_rejects_bad_shots(client, change):
     assert client.post("/v2/rig/shots", json=body).status_code == 422
 
 
-def test_shots_need_sign_in():
+def test_shots_need_sign_in(monkeypatch):
+    # Reject the token the way a real Supabase check would, so this doesn't
+    # depend on SUPABASE_URL being set (CI has no credentials; without it the
+    # real verify_token raises RuntimeError, a deliberate fail-closed 500).
+    import jwt
+
+    def reject(token):
+        raise jwt.InvalidTokenError("not a real token")
+    monkeypatch.setattr(api, "verify_token", reject)
     plain = TestClient(api.app)
     assert plain.get("/v2/rig/shots").status_code in (401, 403, 422)     # no Authorization header: 422
     assert plain.get("/v2/rig/shots", headers={"Authorization": "Bearer nonsense"}).status_code in (401, 403)
