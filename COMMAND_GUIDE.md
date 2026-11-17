@@ -177,6 +177,52 @@ app itself (see the quit/exit note in §9).
   auto-cancels the interview ("Having trouble understanding you...")
   rather than looping forever.
 
+### Loads are shared by caliber (added 2026-11-16)
+
+Enter a load once and every rifle of that caliber has it. The bullet's own
+facts -- weight, ballistic coefficient, drag model, bullet, powder and
+charge -- are the same in every rifle, and changing one (by voice or in the
+web app) changes them all. **Velocity and zero stay per rifle.**
+
+- **Adding a load** to one rifle also adds it to your other rifles of the
+  same caliber: "Saved -- you're on the 69 SMK now. Also added to the 556
+  14.5-inch, with speeds estimated for barrel length."
+- **Adding a rifle**, giving one a caliber, or switching to one brings in
+  the loads its caliber already has: "Switched you over to the 556
+  14.5-inch. It now has 69 SMK from your other 5.56 NATO rifles, with speeds
+  estimated for its barrel length."
+- **The estimate:** a rifle with no measured speed for that load is given
+  your measured speed from the rifle of that caliber with the closest barrel
+  length, plus or minus **25 fps per inch** of barrel difference (3,000 fps
+  from a 20-inch barrel is about 2,862 from a 14.5-inch). If either barrel
+  length isn't saved, the speed is carried over unchanged. Any speed you
+  typed in or chronographed counts as measured.
+- **She tells you it's an estimate:** on switching to that load ("That speed
+  is an estimate, from the 556 20-inch, adjusted for barrel length -- chrono
+  it, or tell me where your hits landed, to correct it."), in the equipment
+  check, in "status" ("2862 fps (estimated)"), and at the end of every
+  solution ("Speed is an estimate.").
+- **Correcting it:** a chronograph session (calibration or Session Mode
+  "save velocities"), saying the velocity, or editing it in the web app
+  makes it that rifle's measured speed. Or tell her **where your hits
+  landed**: "at 500 yards I needed 3.1 mils", "my hits at 600 yards took 45
+  clicks", "at 600 yards I dialed 15 MOA". She works out the speed that
+  explains it ("3.1 mils at 500 yards works out to 2948 feet per second for
+  the 69 SMK in the 556 14.5-inch, against the 2862 estimate. Save it?") and
+  saves it only on a yes. It's worked out with the current conditions, so
+  set them first. Hits within 50 yards of the zero can't tell the speed and
+  are refused. Saving notes "Trued from hits: ..." on the load.
+- Whenever a measured speed changes, every other rifle's estimate for that
+  load is worked out again from the closest measured barrel.
+- "The same caliber" means the same short caliber name: "5.56" and "5.56
+  NATO" match; **.223 Wylde and 5.56 NATO don't**, so set the caliber the
+  same way on rifles that should share. Two loads are the same ammo when
+  their names match, or when weight, BC and drag model all match.
+- Each rifle still has its own copy (so its own speed and zero). Deleting
+  the load from one rifle leaves the others. An estimate is marked in the
+  load's notes ("[Estimated velocity from the ...]") until it's measured,
+  and estimates are never sent to the shared data pool.
+
 ## 6. Editing an existing rifle
 
 ### Renaming rifles (added 2026-11-16)

@@ -63,6 +63,7 @@ from .import_export import (
 from .openai_client import get_openai_client
 from .profiles import Load, Rifle
 from .reporting import report_for_point
+from .shared_loads import share_into, share_load
 from .supabase_auth import verify_token
 from .supabase_store import SupabaseProfileStore, supabase_http
 from . import target as target_photo
@@ -1322,8 +1323,16 @@ def v2_create_rifle(payload: RifleIn, user_store: SupabaseProfileStore = Depends
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_msg(exc))
     user_store.add_rifle(rifle)
+    # Loads are shared by caliber (2026-11-16, see shared_loads.py): this
+    # rifle's loads go to its caliber's other rifles, and it gets theirs,
+    # with speeds estimated for barrel length.
+    own_loads = list(rifle.loads.values())
+    for load in own_loads:
+        share_load(user_store, rifle, load)
+    share_into(user_store, rifle)
     user_store.save()
-    for load in rifle.loads.values():
+    # Only what was actually entered goes to the pool -- never an estimate.
+    for load in own_loads:
         contribute_load(rifle, load, user_store.access_token)
     return _rifle_to_detail(rifle)
 
@@ -1558,6 +1567,8 @@ def v2_add_load(
     replaced = rifle.loads.get(load.name)
     previous = build_load_event_payload(rifle, replaced) if replaced else None
     rifle.add_load(load)
+    if replaced is None:
+        share_load(user_store, rifle, load)   # shared by caliber, see shared_loads.py
     user_store.save()
     # Every saved load is automatically anonymized and contributed to
     # the aggregate pool -- standard, non-optional, per waiver.py

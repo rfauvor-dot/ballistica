@@ -6,6 +6,8 @@ switching the active rifle/load by (fuzzy, voice-friendly) name.
 """
 from __future__ import annotations
 
+import dataclasses
+
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
@@ -348,9 +350,14 @@ class ProfileStore:
     def update_load_velocity(self, rifle_query: str, load_query: str, new_velocity_fps: float) -> Load:
         """Updates just the muzzle velocity on an existing load, e.g.
         after chronograph testing, without re-entering everything else."""
+        from .shared_loads import mark_measured, refresh_estimates
         rifle = self.find_rifle(rifle_query)
         load = rifle.find_load(load_query)
         load.muzzle_velocity_fps = new_velocity_fps
+        # Measured in this rifle now: no longer an estimate, and the other
+        # rifles' estimates of this ammo are worked out again (2026-11-16).
+        mark_measured(load)
+        refresh_estimates(self, rifle, load)
         return load
 
     def update_rifle_fields(self, rifle_query: str, **fields) -> Rifle:
@@ -407,6 +414,14 @@ class ProfileStore:
             self.rifles[new_name] = rifle
             if self.active_rifle_name == old_name:
                 self.active_rifle_name = new_name
+        # A new caliber brings that caliber's loads; a new caliber or barrel
+        # length means its velocity estimates are worked out again.
+        changed = {k for k, v in original.items() if getattr(rifle, k) != v}
+        if changed & {"caliber", "barrel_length_in"}:
+            from .shared_loads import refresh_rifle, share_into
+            if "caliber" in changed:
+                share_into(self, rifle)
+            refresh_rifle(self, rifle)
         return rifle
 
     def update_load_fields(self, rifle_query: str, load_query: str, **fields) -> Load:
@@ -420,8 +435,10 @@ class ProfileStore:
         editing a load's name field created a second, duplicate load
         under the new name while leaving the original sitting there
         under its old name, rather than renaming it."""
+        from .shared_loads import mark_measured, refresh_estimates, sync_bullet
         rifle = self.find_rifle(rifle_query)
         load = rifle.find_load(load_query)
+        before = dataclasses.replace(load)
         new_name = fields.pop("name", None)
         original = {}
         for key, value in fields.items():
@@ -446,6 +463,15 @@ class ProfileStore:
             rifle.loads[new_name] = load
             if rifle.active_load_name == old_name:
                 rifle.active_load_name = new_name
+        # Loads are shared by caliber (2026-11-16, see shared_loads.py): the
+        # bullet's own facts follow to the other rifles' copies, and a new
+        # velocity is this rifle's measured one. Only what actually changed
+        # counts -- the web form sends every field on every save.
+        changed = {k: v for k, v in fields.items() if original.get(k) != v}
+        sync_bullet(self, rifle, before, changed)
+        if "muzzle_velocity_fps" in changed:
+            mark_measured(load)
+            refresh_estimates(self, rifle, load)
         return load
 
     def save(self) -> None:

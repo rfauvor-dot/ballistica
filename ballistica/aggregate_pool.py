@@ -79,6 +79,11 @@ def contribute_load(rifle: Rifle, load: Load, access_token: str, previous: dict 
     otherwise-successful rifle/load save."""
     if not _SUPABASE_URL:
         return
+    # A velocity estimated from another barrel (shared_loads.py) isn't a
+    # measurement -- it never goes to the pool.
+    from .shared_loads import is_estimate
+    if is_estimate(load):
+        return
     if previous is not None and previous == build_load_event_payload(rifle, load):
         return
     try:

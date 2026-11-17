@@ -36,6 +36,7 @@ from .rifle_names import (
     clean_maker, clean_spoken_name, maker_from_name, name_base, needs_maker, suggest_name,
 )
 from .narrowing import _spoken_numbers, rifle_barrel
+from .shared_loads import is_estimate, share_into, share_load, spoken_estimate_note
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
 from .units import moa_to_mrad
@@ -433,6 +434,16 @@ _SESSION_STALE_SECONDS = 300
 
 # Equipment check (2026-11-16): "Ballistica, equipment check" -- a preflight
 # checklist at the range. See _start_equipment_check().
+# Correcting a speed from where the hits landed (2026-11-16): "at 600 yards
+# I needed 4.2 mils", "my hits at 500 took 11 clicks", "true the velocity,
+# 800 yards, 6.1 mils". A range AND an elevation in mils / MOA / clicks, plus
+# a word saying it's what actually happened -- never a windage figure.
+_HITS_WORD_RE = re.compile(
+    r"\b(?:hit|hits|hitting|impacts?|took|needed|dialed|dialled|held|true|truing|trued|correct(?:ed)?)\b"
+)
+_HITS_RANGE_RE = re.compile(r"\b(\d{2,4})\s*(?:yards?|yds?)\b")
+_HITS_ELEV_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*(mils?|mrad|moa|m\.?\s?o\.?\s?a\b\.?|clicks?)")
+
 # Renaming rifles (2026-11-16): all of them, one at a time, or the active one.
 _RENAME_ALL_RE = re.compile(
     r"\b(?:rename|re-name)\s+(?:all\s+(?:of\s+)?)?(?:my|the)\s+rifles\b|\brename\s+all\s+(?:the\s+|my\s+)?rifles\b"
@@ -856,6 +867,9 @@ class BallisticaCLI:
         self._equipment_check: dict | None = None
         # The rifle rename walk-through in progress (see _start_rename), or None.
         self._rename: dict | None = None
+        # A speed worked out from where the hits landed, waiting on a yes
+        # (see _request_true_velocity): {rifle, load, fps, said, range_yd, at}.
+        self._pending_true_velocity: dict | None = None
         # The camera phone link (rig.CameraLink), set per request by api.py;
         # None when there is no link at all (the command-line app).
         self._camera = None
@@ -885,7 +899,7 @@ class BallisticaCLI:
         "_pending_setup_kind", "_pending_setup_text", "_pending_setup_at",
         "_chat_history", "_session_log",
         "_pending_session_save", "_pending_session_save_at",
-        "_equipment_check", "_rename",
+        "_equipment_check", "_rename", "_pending_true_velocity",
     })
     _REQUEST_ONLY_ATTRS = frozenset({
         "store",                   # rebuilt per request from the database
@@ -934,6 +948,7 @@ class BallisticaCLI:
             "wind": dataclasses.asdict(self.wind),
             "equipment_check": self._equipment_check,
             "rename": self._rename,
+            "pending_true_velocity": self._pending_true_velocity,
         }
 
     def load_state(self, state: dict) -> None:
@@ -974,6 +989,7 @@ class BallisticaCLI:
         self._pending_session_save_at = pending["at"] if pending else 0.0
         self._equipment_check = state.get("equipment_check") or None
         self._rename = state.get("rename") or None
+        self._pending_true_velocity = state.get("pending_true_velocity") or None
         if state.get("atmosphere"):
             self.atmosphere = AtmosphereConditions(**state["atmosphere"])
         if state.get("wind"):
@@ -1019,6 +1035,9 @@ class BallisticaCLI:
             self._pending_session_save = None
         if self._rename is not None and now - self._rename.get("at", 0) > _SESSION_STALE_SECONDS:
             self._rename = None
+        if (self._pending_true_velocity is not None
+                and now - self._pending_true_velocity.get("at", 0) > _SESSION_STALE_SECONDS):
+            self._pending_true_velocity = None
         if self._equipment_check is not None and now - self._equipment_check["at"] > _SESSION_STALE_SECONDS:
             self._equipment_check = None
         if self._session_log is not None and now - self._session_log.last_activity > _SESSION_LOG_STALE_SECONDS:
@@ -1174,6 +1193,7 @@ class BallisticaCLI:
             self._pending_delete is not None or self._pending_rifle_switch is not None
             or self._pending_load_switch is not None or self._pending_calibration_start
             or self._pending_setup_kind is not None or self._pending_session_save is not None
+            or self._pending_true_velocity is not None
         )
         if (self._setup is not None or self._calibration is not None or any_pending_confirm) \
                 and self._requests_different_top_level_task(low):
@@ -1227,6 +1247,17 @@ class BallisticaCLI:
             self._pending_session_save_at = time.time()
             self._last_tool_name = "session_save_confirm"
             return self._handle_session_save_confirm(t)
+
+        if self._pending_true_velocity is not None:
+            self._last_tool_name = "true_velocity_confirm"
+            return self._handle_true_velocity_confirm(t)
+
+        # Where the hits landed -> the speed that explains them.
+        if _HITS_WORD_RE.search(low) and not re.search(r"wind", low):
+            rng, elev = _HITS_RANGE_RE.search(low), _HITS_ELEV_RE.search(low)
+            if rng and elev:
+                self._last_tool_name = "true_velocity"
+                return self._request_true_velocity(float(rng.group(1)), float(elev.group(1)), elev.group(2))
 
         if low in ("help", "?"):
             return HELP_TEXT
@@ -1596,6 +1627,12 @@ class BallisticaCLI:
         # candidates if there's a specific tie, every load on the rifle
         # if nothing matched at all) gives that helpful answer on the
         # first try instead of requiring a correction first.
+        # Loads are shared by caliber: whatever the other rifles of this
+        # caliber have is available here too (2026-11-16).
+        try:
+            self._share_into(self.store.get_active_rifle())
+        except ValueError:
+            pass
         try:
             load = self.store.set_active_load(query)
         except KeyError:
@@ -1630,7 +1667,8 @@ class BallisticaCLI:
                     f"{rifle.name} -- here's what's saved: {listed}. Which one do you want?")
         self.store.save()
         self._forget_chat_history()
-        return f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
+        reply = f"Alright, you're on the {load.name} now -- {load.muzzle_velocity_fps:.0f} feet per second."
+        return f"{reply} {spoken_estimate_note(load)}".strip()
 
     def _resolve_pending_choice(self, candidates: list[str], text: str) -> str | None:
         """Resolves a follow-up answer to a 'which one do you mean?' prompt
@@ -1795,6 +1833,92 @@ class BallisticaCLI:
             reply += self._flush_unassigned_velocities()
         return reply
 
+    def _velocity_for_elevation(self, rifle: Rifle, load: Load, range_yd: float, elev_mrad: float) -> float | None:
+        """The muzzle velocity at which the solver's elevation at range_yd
+        equals what actually hit. Elevation falls as speed rises, so a
+        bisection between 800 and 5000 fps finds it; None if no speed in
+        that span gives it."""
+        def elevation(fps: float) -> float:
+            solver = TrajectorySolver(
+                muzzle_velocity_fps=fps, bc=load.bc, drag_model=load.drag_model,
+                scope_height_in=rifle.scope_height_in, atmosphere=self.atmosphere, wind=self.wind,
+            )
+            try:
+                point = solver.at_range(load.zero_distance_yd, range_yd)
+            except ValueError:
+                return float("inf")   # too slow to get there at all
+            return report_for_point(point, rifle.click_value_mrad).drop_mrad
+        lo, hi = 800.0, 5000.0
+        e_lo, e_hi = elevation(lo), elevation(hi)
+        if not (e_hi <= elev_mrad <= e_lo):
+            return None
+        for _ in range(40):
+            mid = (lo + hi) / 2
+            if elevation(mid) > elev_mrad:
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo < 0.5:
+                break
+        return round((lo + hi) / 2)
+
+    def _request_true_velocity(self, range_yd: float, amount: float, unit: str) -> str:
+        try:
+            _, rifle, load = self.solver()
+        except ValueError as exc:
+            return str(exc)
+        unit = unit.lower().replace(".", "").replace(" ", "")
+        if unit.startswith("click"):
+            elev_mrad, said = amount * rifle.click_value_mrad, f"{amount:g} clicks"
+        elif unit == "moa":
+            elev_mrad, said = moa_to_mrad(amount), f"{amount:g} M O A"
+        else:
+            elev_mrad, said = amount, f"{amount:g} mils"
+        if range_yd <= load.zero_distance_yd + 50:
+            return (f"{range_yd:.0f} yards is too close to the {load.zero_distance_yd:g}-yard zero to tell the "
+                    f"speed from. Tell me a hit at a longer range.")
+        fps = self._velocity_for_elevation(rifle, load, range_yd, elev_mrad)
+        if fps is None:
+            return f"{said} at {range_yd:.0f} yards doesn't fit any sensible speed for the {load.name}. Check the numbers?"
+        old = load.muzzle_velocity_fps
+        kind = "estimate" if is_estimate(load) else "saved speed"
+        self._pending_true_velocity = {"rifle": rifle.name, "load": load.name, "fps": fps, "said": said,
+                                       "range_yd": range_yd, "at": time.time()}
+        return (f"{said} at {range_yd:.0f} yards works out to {fps:.0f} feet per second for the {load.name} "
+                f"in the {rifle.name}, against the {old:.0f} {kind}. Save it?")
+
+    def _handle_true_velocity_confirm(self, text: str) -> str:
+        low = text.lower().strip()
+        pending = self._pending_true_velocity
+        self._pending_true_velocity = None
+        if not (_CONFIRM_YES_WORD_RE.match(low) or (
+            re.search(r"(correct|right)", low) and not _NEGATED_CONFIRM_RE.search(low)
+        )):
+            return "Okay, speed unchanged."
+        try:
+            load = self.store.update_load_velocity(pending["rifle"], pending["load"], pending["fps"])
+        except (KeyError, ValueError):
+            return f"Couldn't find the {pending['load']} anymore, so nothing was saved."
+        note = f"Trued from hits: {pending['said']} at {pending['range_yd']:.0f} yards."
+        load.notes = f"{load.notes} {note}".strip() if load.notes else note
+        self.store.save()
+        self._forget_chat_history()
+        return f"Saved -- the {load.name} is now {pending['fps']:.0f} feet per second in the {pending['rifle']}."
+
+    def _share_into(self, rifle: Rifle) -> list[str]:
+        """Gives a rifle its caliber's loads it doesn't have yet, saved."""
+        added = share_into(self.store, rifle)
+        if added:
+            self.store.save()
+        return added
+
+    def _shared_loads_note(self, rifle: Rifle, added: list[str]) -> str:
+        if not added:
+            return ""
+        what = short_list(added, "and") or f"{len(added)} loads"
+        return (f" It now has {what} from your other {rifle.caliber.strip()} rifles, "
+                f"with speeds estimated for its barrel length.")
+
     def _switch_rifle(self, query: str, new_load_fields: dict | None = None) -> str:
         # Live demo bug (2026-09-06): this used to let find_rifle()'s bare
         # KeyError propagate straight through to speech -- confirmed live,
@@ -1820,9 +1944,10 @@ class BallisticaCLI:
             if len(names) > MAX_SPOKEN_LIST:
                 return f"That matches {len(names)} rifles. {self._rifle_question(names, asked_caliber=False)}"
             return f"That could be {', '.join(names)}. Which one do you mean?"
+        added = share_into(self.store, rifle)
         self.store.save()
         self._forget_chat_history()
-        switched = f"Switched you over to the {rifle.name}."
+        switched = f"Switched you over to the {rifle.name}." + self._shared_loads_note(rifle, added)
         if new_load_fields:
             return f"{switched} {self._begin_setup_from_fields('load', new_load_fields)}"
         return switched
@@ -2238,10 +2363,17 @@ class BallisticaCLI:
                 load = Load(**{k: v for k, v in d.items() if k in valid})
                 rifle = self.store.get_active_rifle()
                 rifle.add_load(load, make_active=True)
+                # Shared by caliber: the other rifles get it too, each with
+                # a speed estimated for its barrel (2026-11-16).
+                others = share_load(self.store, rifle, load)
                 self.store.save()
                 self._setup = None
                 self._forget_chat_history()
-                return f"Saved -- you're on the {load.name} now."
+                reply = f"Saved -- you're on the {load.name} now."
+                if others:
+                    where = short_list([f"the {n}" for n in others], "and") or f"your other {len(others)} rifles"
+                    reply += f" Also added to {where}, with speeds estimated for barrel length."
+                return reply
             # The one authoritative point click_value gets converted to
             # true mrad -- see _normalize_click_value()'s docstring.
             # Deliberately not done turn-by-turn: reticle_unit is asked
@@ -2255,10 +2387,11 @@ class BallisticaCLI:
             valid = {f.name for f in dataclasses.fields(Rifle)}
             rifle = Rifle(**{k: v for k, v in d.items() if k in valid})
             self.store.add_rifle(rifle, make_active=True)
+            added = share_into(self.store, rifle)
             self.store.save()
             self._setup = None
             self._forget_chat_history()
-            return f"Saved -- switched you to the {rifle.name}."
+            return f"Saved -- switched you to the {rifle.name}." + self._shared_loads_note(rifle, added)
         except (ValueError, TypeError) as exc:
             # Deliberately don't clear self._setup here -- the draft is
             # still good except for whatever's wrong, so the interview
@@ -3144,6 +3277,7 @@ class BallisticaCLI:
         self._pending_session_save = None
         self._equipment_check = None
         self._rename = None
+        self._pending_true_velocity = None
 
     # ------------------------------------------------------------------
     # Equipment check (2026-11-16): "Ballistica, equipment check". A
@@ -3376,6 +3510,7 @@ class BallisticaCLI:
             self.store.active_rifle_name = chosen
             self.store.save()
             self._forget_chat_history()
+        self._share_into(self.store.rifles[chosen])
         return f"The {chosen}. " + self._equipment_ask_load(ec)
 
     def _equipment_ask_load(self, ec: dict) -> str:
@@ -3415,7 +3550,9 @@ class BallisticaCLI:
             rifle.active_load_name = chosen
             self.store.save()
             self._forget_chat_history()
-        return f"The {chosen}. " + self._equipment_finish(ec)
+        estimate = (f" {rifle.loads[chosen].muzzle_velocity_fps:.0f} feet per second is an estimate -- "
+                    f"chrono it, or tell me where your hits landed." if is_estimate(rifle.loads[chosen]) else "")
+        return f"The {chosen}.{estimate} " + self._equipment_finish(ec)
 
     def _equipment_finish(self, ec: dict) -> str:
         self._equipment_check = None
@@ -3438,7 +3575,8 @@ class BallisticaCLI:
             f"Rifle: {rifle.name} (scope height {rifle.scope_height_in}in, "
             f"click value {rifle.click_value_mrad} mrad)\n"
             f"Load: {load.name} -- {load.bullet_weight_gr}gr, BC {load.bc} {load.drag_model}, "
-            f"{load.muzzle_velocity_fps:.0f} fps, zero {load.zero_distance_yd}yd\n"
+            f"{load.muzzle_velocity_fps:.0f} fps{' (estimated)' if is_estimate(load) else ''}, "
+            f"zero {load.zero_distance_yd}yd\n"
             f"Conditions: {self.atmosphere.temp_f:.0f}F, {self.atmosphere.pressure_inhg:.2f}inHg, "
             f"{self.atmosphere.humidity_pct:.0f}% RH, {self.atmosphere.altitude_ft:.0f}ft\n"
             f"Wind: {self.wind.speed_mph:.0f} mph @ {self.wind.clock_deg / 30:g} o'clock"
@@ -3498,6 +3636,8 @@ class BallisticaCLI:
         muzzle_mach = load.muzzle_velocity_fps / solver.atmosphere.speed_of_sound_fps()
         if muzzle_mach > _SUPERSONIC_LOAD_MACH and point.mach < 1.0:
             caution = " Past supersonic range, so treat that as approximate."
+        if is_estimate(load):
+            caution += " Speed is an estimate."
         return (f"Solution, {r.range_yd:.0f} yards. "
                 f"Elevation, {elev_dir} {abs(elev_val):.1f} {unit_word}. "
                 f"Windage, {wind_dir} {abs(wind_val):.1f} {unit_word}.{caution}")

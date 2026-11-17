@@ -65,6 +65,8 @@ def _populate(cli):
     cli._rename = {"queue": ["A", "B"], "stage": "offer", "skipped": [], "maker": "Tikka",
                    "suggestion": "6.5 Creedmoor 24-inch Tikka", "custom": "", "renamed": [["X", "Y"]],
                    "single": False, "at": now}
+    cli._pending_true_velocity = {"rifle": "A", "load": "C", "fps": 2948, "said": "3.1 mils",
+                                  "range_yd": 500.0, "at": now}
 
 
 def test_fully_populated_state_round_trips(tmp_path):
