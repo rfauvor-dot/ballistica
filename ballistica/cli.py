@@ -32,6 +32,10 @@ from .narrowing import (
     next_rifle_question, short_list, which_load_question,
 )
 from .profiles import Load, ProfileStore, Rifle
+from .rifle_names import (
+    clean_maker, clean_spoken_name, maker_from_name, name_base, needs_maker, suggest_name,
+)
+from .narrowing import _spoken_numbers, rifle_barrel
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
 from .units import moa_to_mrad
@@ -245,6 +249,12 @@ _CONFIRM_DELETE_YES_RE = re.compile(
 _DELETE_HESITATION_RE = re.compile(
     r"\b(no|nope|not|don.?t|do not|wait|hold on|hang on|stop|cancel|never ?mind|keep|wrong)\b"
 )
+# Taking an offered rifle name ("How about '338 24-inch'?") -- see
+# _handle_setup_turn and the rename walk-through.
+_NAME_OFFER_YES_RE = re.compile(
+    r"^(?:yes|yeah|yep|yup|sure|ok(?:ay)?|sounds good|perfect|good|great|fine|"
+    r"that works|that(?:'s| is) (?:fine|good|great|perfect|it)|do it|go ahead|correct|right|use (?:it|that))\b"
+)
 _NEGATED_CONFIRM_RE = re.compile(r"\b(not|isn.t|wasn.t|ain.t)\b[\w\s]{0,15}\b(correct|right)\b")
 
 # Answering a "which one do you mean?" disambiguation prompt (switch_rifle/
@@ -423,6 +433,16 @@ _SESSION_STALE_SECONDS = 300
 
 # Equipment check (2026-11-16): "Ballistica, equipment check" -- a preflight
 # checklist at the range. See _start_equipment_check().
+# Renaming rifles (2026-11-16): all of them, one at a time, or the active one.
+_RENAME_ALL_RE = re.compile(
+    r"\b(?:rename|re-name)\s+(?:all\s+(?:of\s+)?)?(?:my|the)\s+rifles\b|\brename\s+all\s+(?:the\s+|my\s+)?rifles\b"
+    r"|\b(?:tidy|clean|fix)\s+up\s+(?:my\s+|the\s+)?rifle\s+names\b"
+)
+_RENAME_ONE_RE = re.compile(
+    r"\b(?:rename|re-name|change the name of)\s+(?:this|the|my|the current|current)\s+rifle\b"
+    r"(?:\s+(?:to|as)\s+(.+))?",
+    re.IGNORECASE,
+)
 _EQUIPMENT_CHECK_RE = re.compile(r"\bequipment\s*check\b|\bpre-?\s*flight\b|\bgear\s*check\b")
 # Getting out of it: a cancel word on its own, or "stop the (equipment) check".
 _EQUIPMENT_STOP_RE = re.compile(
@@ -834,6 +854,8 @@ class BallisticaCLI:
         # The equipment check in progress (a JSON-safe dict, see
         # _start_equipment_check), or None.
         self._equipment_check: dict | None = None
+        # The rifle rename walk-through in progress (see _start_rename), or None.
+        self._rename: dict | None = None
         # The camera phone link (rig.CameraLink), set per request by api.py;
         # None when there is no link at all (the command-line app).
         self._camera = None
@@ -863,7 +885,7 @@ class BallisticaCLI:
         "_pending_setup_kind", "_pending_setup_text", "_pending_setup_at",
         "_chat_history", "_session_log",
         "_pending_session_save", "_pending_session_save_at",
-        "_equipment_check",
+        "_equipment_check", "_rename",
     })
     _REQUEST_ONLY_ATTRS = frozenset({
         "store",                   # rebuilt per request from the database
@@ -911,6 +933,7 @@ class BallisticaCLI:
             "atmosphere": dataclasses.asdict(self.atmosphere),
             "wind": dataclasses.asdict(self.wind),
             "equipment_check": self._equipment_check,
+            "rename": self._rename,
         }
 
     def load_state(self, state: dict) -> None:
@@ -950,6 +973,7 @@ class BallisticaCLI:
         self._pending_session_save = pending["entries"] if pending else None
         self._pending_session_save_at = pending["at"] if pending else 0.0
         self._equipment_check = state.get("equipment_check") or None
+        self._rename = state.get("rename") or None
         if state.get("atmosphere"):
             self.atmosphere = AtmosphereConditions(**state["atmosphere"])
         if state.get("wind"):
@@ -993,6 +1017,8 @@ class BallisticaCLI:
             self._pending_setup_text = ""
         if self._pending_session_save is not None and now - self._pending_session_save_at > _SESSION_STALE_SECONDS:
             self._pending_session_save = None
+        if self._rename is not None and now - self._rename.get("at", 0) > _SESSION_STALE_SECONDS:
+            self._rename = None
         if self._equipment_check is not None and now - self._equipment_check["at"] > _SESSION_STALE_SECONDS:
             self._equipment_check = None
         if self._session_log is not None and now - self._session_log.last_activity > _SESSION_LOG_STALE_SECONDS:
@@ -1089,6 +1115,31 @@ class BallisticaCLI:
             self._equipment_check["at"] = time.time()
             self._last_tool_name = "equipment_check_turn"
             return self._handle_equipment_check_turn(t)
+
+        # Renaming rifles: "rename my rifles" walks through every rifle not
+        # yet named by caliber and barrel length; "rename this rifle" does
+        # the active one. While it runs, every turn is an answer to it,
+        # unless it clearly asks for something else.
+        if _RENAME_ALL_RE.search(low):
+            self._last_tool_name = "rename_rifles"
+            targets = self._rename_targets()
+            if not targets and self.store.rifles:
+                return "All your rifles are already named by caliber and barrel length."
+            return self._start_rename(targets)
+        m = _RENAME_ONE_RE.search(t)
+        if m:
+            self._last_tool_name = "rename_rifle"
+            try:
+                active = self.store.get_active_rifle().name
+            except ValueError:
+                return "No rifle selected -- say 'switch rifle' first."
+            return self._start_rename([active], custom=clean_spoken_name(m.group(1) or ""))
+        if self._rename is not None:
+            if self._requests_different_top_level_task(low):
+                self._rename = None
+            else:
+                self._last_tool_name = "rename_turn"
+                return self._handle_rename_turn(t)
 
         # Top-level intent switching (2026-09-05, deployed to main
         # 2026-09-06 after being confirmed live-broken again in
@@ -2076,7 +2127,22 @@ class BallisticaCLI:
         """Required fields first (can't be skipped), then every remaining
         optional field the manual Setup form has, in order -- skipped or
         already-filled ones are passed over. None once both are exhausted,
-        meaning it's time to read back the summary."""
+        meaning it's time to read back the summary.
+
+        A new rifle without a name yet is asked its caliber and barrel
+        length first (both skippable), and -- when another rifle already
+        has that caliber and length -- its maker or action ("_maker"), so
+        the name question can offer one built from them (Rick,
+        2026-11-16)."""
+        d, skipped = self._setup.draft, self._setup.skipped
+        if self._setup.kind == "rifle" and d.get("name") in (None, ""):
+            if "caliber" not in skipped and d.get("caliber") in (None, ""):
+                return "caliber"
+            if d.get("caliber") and "barrel_length_in" not in skipped and d.get("barrel_length_in") in (None, ""):
+                return "barrel_length_in"
+            if (d.get("caliber") and "_maker" not in skipped and not d.get("_maker")
+                    and needs_maker(d["caliber"], self._draft_barrel(), list(self.store.rifles.values()))):
+                return "_maker"
         required = _LOAD_REQUIRED if self._setup.kind == "load" else _RIFLE_REQUIRED
         for field in required:
             if self._setup.draft.get(field) in (None, ""):
@@ -2097,7 +2163,35 @@ class BallisticaCLI:
                 return field
         return None
 
+    def _draft_barrel(self) -> float | None:
+        try:
+            value = self._setup.draft.get("barrel_length_in")
+            return float(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    def _suggested_setup_name(self) -> str | None:
+        """'338 24-inch' for the rifle being set up, unless he turned the
+        offer down ("no") or there's no caliber to build it from."""
+        d = self._setup.draft
+        if self._setup.kind != "rifle" or "_name_offer" in self._setup.skipped or not d.get("caliber"):
+            return None
+        return suggest_name(str(d["caliber"]), self._draft_barrel(), list(self.store.rifles.values()),
+                            maker=d.get("_maker", ""))
+
+    def _setup_next_prompt(self) -> str:
+        missing = self._next_field_to_ask()
+        if missing is None:
+            self._setup.confirming = True
+            return self._setup_summary()
+        return self._prompt_for(missing)
+
     def _prompt_for(self, field: str) -> str:
+        if field == "_maker":
+            base = name_base(str(self._setup.draft["caliber"]), self._draft_barrel())
+            return f"You already have a {base}. What's the maker or action -- like Ruger or AR?"
+        if field == "name" and (suggestion := self._suggested_setup_name()):
+            return f"How about '{suggestion}'? Say yes, or say the name you want."
         prompts = _LOAD_PROMPTS if self._setup.kind == "load" else _RIFLE_PROMPTS
         extra_prompts = _LOAD_EXTRA_PROMPTS if self._setup.kind == "load" else _RIFLE_EXTRA_PROMPTS
         return prompts.get(field) or extra_prompts[field]
@@ -2215,10 +2309,29 @@ class BallisticaCLI:
             elif _CONFIRM_YES_WORD_RE.match(low) or re.search(r"\b(correct|right)\b", low):
                 return self._finalize_setup()
 
+        # The name built from caliber and barrel length (see
+        # _next_field_to_ask): "yes" takes the offered name, a bare "no"
+        # asks for his own, and anything else is his own name, read below.
+        current_field = self._next_field_to_ask()
+        if current_field == "_maker" and not _SKIP_RE.match(low):
+            maker = clean_maker(text)
+            if maker:
+                self._setup.draft["_maker"] = maker
+                self._setup.failed_attempts = 0
+                return self._setup_next_prompt()
+        if current_field == "name" and (suggestion := self._suggested_setup_name()):
+            no_m = _CONFIRM_NO_RE.match(low)
+            if _NAME_OFFER_YES_RE.match(low) and not _NEGATED_CONFIRM_RE.search(low):
+                self._setup.draft["name"] = suggestion
+                self._setup.failed_attempts = 0
+                return self._setup_next_prompt()
+            if no_m and not no_m.group(3).strip():
+                self._setup.skipped.add("_name_offer")
+                return "Okay, what do you want to call it?"
+
         # "Skip" only applies to whichever optional field is currently
         # being asked -- required fields can't be skipped, since there's
         # nothing to save without them.
-        current_field = self._next_field_to_ask()
         required = _LOAD_REQUIRED if self._setup.kind == "load" else _RIFLE_REQUIRED
         if current_field is not None and _SKIP_RE.match(low):
             if current_field in required:
@@ -2833,6 +2946,190 @@ class BallisticaCLI:
                 f"{self.atmosphere.humidity_pct:.0f} percent humidity, "
                 f"{self.atmosphere.altitude_ft:.0f} feet.")
 
+    # ------------------------------------------------------------------
+    # Renaming rifles (Rick, 2026-11-16): "go through my existing rifles
+    # once, suggest new names in that same style, and let me approve or
+    # change each one. And add a voice command like 'rename this rifle'."
+    # One rifle at a time, never a list. self._rename (JSON-safe, persisted):
+    #   queue     names still to go, the current one first
+    #   stage     "caliber" / "barrel" / "maker" (filling in what a name
+    #             needs), "offer" (yes / own name / keep), "name" (asked for
+    #             his own), "confirm" (his own name read back)
+    #   skipped   what he said "skip" to for the current rifle
+    #   maker, suggestion, custom   for the current rifle
+    #   renamed   [old, new] pairs so far
+
+    def _start_rename(self, names: list[str], custom: str = "") -> str:
+        self._clear_pending_for_new_task()
+        if not names:
+            return "No rifles saved yet -- say 'new rifle' to set one up."
+        rs = {"queue": list(names), "stage": None, "skipped": [], "maker": "", "suggestion": "",
+              "custom": "", "renamed": [], "single": len(names) == 1, "at": time.time()}
+        self._rename = rs
+        if custom:
+            rs["custom"] = custom
+            rs["stage"] = "confirm"
+            return f"Rename the {names[0]} to '{custom}' -- right?"
+        intro = "" if rs["single"] else f"Let's go through your {len(names)} rifles, one at a time. "
+        return intro + self._rename_prompt(rs)
+
+    def _rename_targets(self) -> list[str]:
+        """Rifles whose name isn't already in the caliber-and-barrel style
+        (or that are missing what such a name needs)."""
+        rifles = list(self.store.rifles.values())
+        out = []
+        for r in rifles:
+            if not r.caliber.strip():
+                out.append(r.name)
+                continue
+            s = suggest_name(r.caliber, rifle_barrel(r), rifles,
+                             maker=maker_from_name(r.name), exclude=r.name)
+            if s is None or s.lower() != r.name.lower():
+                out.append(r.name)
+        return out
+
+    def _rename_prompt(self, rs: dict, lead: str = "") -> str:
+        """The question for the current rifle; moves past rifles that turn
+        out to need nothing, and wraps up when the queue is empty."""
+        while rs["queue"]:
+            name = rs["queue"][0]
+            r = self.store.rifles.get(name)
+            if r is None:
+                self._rename_next(rs)
+                continue
+            rifles = list(self.store.rifles.values())
+            if not r.caliber.strip():
+                if "caliber" in rs["skipped"]:
+                    rs["stage"] = "name"
+                    return f"{lead}What do you want to call the {name}? Or say keep."
+                rs["stage"] = "caliber"
+                return f"{lead}The {name}: what caliber is it? Or say skip."
+            barrel = rifle_barrel(r)   # a length written in the old name counts
+            if barrel is None and "barrel" not in rs["skipped"]:
+                rs["stage"] = "barrel"
+                return f"{lead}The {name}: what barrel length? Or say skip."
+            if needs_maker(r.caliber, barrel, rifles, exclude=name) and not rs["maker"]:
+                rs["maker"] = maker_from_name(name)
+                if not rs["maker"] and "maker" not in rs["skipped"]:
+                    rs["stage"] = "maker"
+                    base = name_base(r.caliber, barrel)
+                    return (f"{lead}The {name}: you have another {base}. "
+                            f"What's the maker or action -- like Ruger or AR?")
+            suggestion = suggest_name(r.caliber, barrel, rifles, maker=rs["maker"], exclude=name)
+            if suggestion.lower() == name.lower():
+                if rs["single"]:
+                    rs["stage"] = "name"
+                    return f"{lead}It's already called '{name}'. What do you want to call it?"
+                self._rename_next(rs)
+                continue
+            rs["suggestion"] = suggestion
+            rs["stage"] = "offer"
+            return (f"{lead}The {name}: how about '{suggestion}'? "
+                    f"Say yes, a different name, or keep.")
+        return self._finish_rename(rs, lead)
+
+    def _rename_next(self, rs: dict) -> None:
+        rs["queue"].pop(0)
+        rs.update(stage=None, skipped=[], maker="", suggestion="", custom="")
+
+    def _finish_rename(self, rs: dict, lead: str = "") -> str:
+        self._rename = None
+        n = len(rs["renamed"])
+        if rs["single"]:
+            return lead.strip() or "Okay, name unchanged."
+        done = f"Renamed {n} rifle{'s' if n != 1 else ''}." if n else "No names changed."
+        return f"{lead}That's all of them. {done}"
+
+    def _do_rename(self, rs: dict, new_name: str) -> str:
+        old = rs["queue"][0]
+        fields = {"name": new_name}
+        rifle = self.store.rifles.get(old)
+        if rifle is not None and rifle.barrel_length_in is None and rifle_barrel(rifle) is not None:
+            fields["barrel_length_in"] = rifle_barrel(rifle)   # kept when the name that held it goes
+        try:
+            self.store.update_rifle_fields(old, **fields)
+        except (ValueError, KeyError) as exc:
+            rs["stage"] = "name"
+            if "already exists" in str(exc):
+                return f"There's already a rifle called '{new_name}'. What should I call the {old}?"
+            return f"That didn't work -- {exc}. What should I call the {old}?"
+        self.store.save()
+        if self._session_log is not None:
+            for reading in self._session_log.readings:
+                if reading.get("rifle") == old:
+                    reading["rifle"] = new_name
+        rs["renamed"].append([old, new_name])
+        self._rename_next(rs)
+        return self._rename_prompt(rs, lead=f"Renamed to '{new_name}'. ")
+
+    def _handle_rename_turn(self, text: str) -> str:
+        rs = self._rename
+        rs["at"] = time.time()
+        low = text.lower().strip().strip(".!?")
+        if _CANCEL_WORD_RE.match(low) or re.match(r"^(?:that'?s enough|done|i'?m done|that'?s all)\b", low):
+            self._rename = None
+            n = len(rs["renamed"])
+            return "Okay, stopped." + (f" Renamed {n} rifle{'s' if n != 1 else ''}." if n else "")
+        name = rs["queue"][0]
+        keep = re.match(r"^(?:keep|skip|leave|next|pass|no change)\b|^no,? keep\b", low)
+        stage = rs["stage"]
+
+        if stage in ("caliber", "barrel", "maker"):
+            if _SKIP_RE.match(low):
+                rs["skipped"].append(stage)
+                return self._rename_prompt(rs)
+            if stage == "caliber":
+                fields = extract_setup_fields(text, "rifle", asking_about="caliber") or {}
+                caliber = str(fields.get("caliber") or "").strip()
+                if not caliber:
+                    return f"Didn't catch the caliber. What caliber is the {name}? Or say skip."
+                self.store.update_rifle_fields(name, caliber=caliber)
+            elif stage == "barrel":
+                m = re.search(r"\d+(?:\.\d+)?", _spoken_numbers(low))
+                length = float(m.group()) if m else None
+                if length is None or not 4 <= length <= 40:
+                    return f"Didn't catch a barrel length. How long is the {name}'s barrel, in inches? Or say skip."
+                self.store.update_rifle_fields(name, barrel_length_in=length)
+            else:
+                rs["maker"] = clean_maker(text)
+                if not rs["maker"]:
+                    return "Didn't catch that. What's the maker or action? Or say skip."
+            self.store.save()
+            return self._rename_prompt(rs)
+
+        if stage == "confirm":
+            if _NAME_OFFER_YES_RE.match(low) and not _NEGATED_CONFIRM_RE.search(low):
+                return self._do_rename(rs, rs["custom"])
+            if keep:
+                self._rename_next(rs)
+                return self._rename_prompt(rs, lead="Okay, kept it. ")
+            no_m = _CONFIRM_NO_RE.match(low)
+            if no_m and not no_m.group(3).strip():
+                rs["stage"] = "name"
+                return f"Okay, what should I call the {name}? Or say keep."
+            custom = clean_spoken_name(text)
+            if not custom:
+                return f"What should I call the {name}? Or say keep."
+            rs["custom"] = custom
+            return f"'{custom}' -- right?"
+
+        # "offer" or "name"
+        if stage == "offer" and _NAME_OFFER_YES_RE.match(low) and not _NEGATED_CONFIRM_RE.search(low):
+            return self._do_rename(rs, rs["suggestion"])
+        if keep:
+            self._rename_next(rs)
+            return self._rename_prompt(rs, lead="Okay, kept it. ")
+        no_m = _CONFIRM_NO_RE.match(low)
+        if no_m and not no_m.group(3).strip():
+            rs["stage"] = "name"
+            return f"Okay, what should I call the {name}? Or say keep."
+        custom = clean_spoken_name(text)
+        if not custom or (stage == "name" and _NAME_OFFER_YES_RE.match(low)):
+            return f"What should I call the {name}? Or say keep."
+        rs["custom"] = custom
+        rs["stage"] = "confirm"
+        return f"'{custom}' -- right?"
+
     def _clear_pending_for_new_task(self) -> None:
         """Drop every half-finished conversation (setup, calibration, the
         equipment check, and every yes/no or which-one question) -- a new
@@ -2846,6 +3143,7 @@ class BallisticaCLI:
         self._pending_setup_kind = None
         self._pending_session_save = None
         self._equipment_check = None
+        self._rename = None
 
     # ------------------------------------------------------------------
     # Equipment check (2026-11-16): "Ballistica, equipment check". A

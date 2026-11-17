@@ -492,7 +492,7 @@ def test_setup_conversation_survives_across_separate_requests(user_a, api_client
 
     start = api_client.post("/v2/voice/query", headers=headers, json={"text": "new rifle"})
     assert start.status_code == 200
-    assert "call this rifle" in start.json()["reply"].lower()
+    assert "what caliber" in start.json()["reply"].lower()
     assert start.json()["awaiting_response"] is True
 
     # A real LLM extraction call, not just "is a session open" -- proves

@@ -112,7 +112,10 @@ def rifle_spoken(rifle: Rifle) -> str:
     if cal:
         cal_nums, cal_words = _caliber_tokens(cal)
         name_nums, name_words = _caliber_tokens(name)
-        if not (cal_nums <= name_nums and cal_words <= name_words):
+        # A name that already carries the caliber's number ('338 24-inch' for
+        # a .338 Lapua Magnum) isn't repeated with the full caliber in front.
+        covered = cal_nums <= name_nums if cal_nums else cal_words <= name_words
+        if not covered:
             label = f"{cal} {name}"
     barrel = rifle_barrel(rifle)
     if rifle.barrel_length_in and not _BARREL_RE.search(name.lower()):

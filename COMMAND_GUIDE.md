@@ -140,6 +140,20 @@ until it's confirmed or cancelled — including "quit"/"exit", which
 **cancel the interview** in this state rather than doing anything to the
 app itself (see the quit/exit note in §9).
 
+- **A new rifle's name is built from its caliber and barrel length (added
+  2026-11-16).** A new rifle starts with **"What caliber?"**, then **"Barrel
+  length, in inches?"**, then she offers a name: **"How about '338
+  24-inch'?"** Say **yes** to take it, or just say your own name ("call it
+  Big Bertha"). A plain "no" gets "Okay, what do you want to call it?".
+  If another rifle already has that caliber and barrel length she first asks
+  **"What's the maker or action -- like Ruger or AR?"** and adds it: "556
+  14.5-inch AR", "338 24-inch Ruger". That way the caliber and barrel-length
+  questions in "Picking a rifle" (§3) always match the names. The caliber is
+  shortened the way it's said: .338 Lapua Magnum is "338", 5.56 NATO is
+  "556", .308 Winchester is "308", while 6.5 Creedmoor and 300 Blackout keep
+  their words. Skipping the caliber falls back to "What do you want to call
+  this rifle?"; a name said in the same breath as "new rifle" is kept and no
+  name is offered.
 - **Backing out (added 2026-09-23):** at any point, "cancel", "never mind", "scrap that", "delete that", "forget it" scrap the draft; "start over" (or, at the "Sound right?" step, "new load" / "new rifle") restarts the same setup from the first question. Only short utterances count, so a long answer that merely mentions one of those words is treated as an answer.
 - **Numbers are sanity-checked (added 2026-09-23):** a value that can't be right — a 1.07-grain bullet, a 27 fps muzzle velocity, a BC of 5.47, a zero at 0 yards — isn't saved; it asks again ("1.07 grains doesn't sound like a bullet weight. Say it again?"). This catches speech-to-text slips ("one oh seven" heard as "1.07") without limiting real, unusual loads (17 gr through 750 gr all pass). The read-back speaks weights exactly (107.5 grain, not 108).
 - **Required fields** (load: name, bullet weight, BC, drag model,
@@ -164,6 +178,28 @@ app itself (see the quit/exit note in §9).
   rather than looping forever.
 
 ## 6. Editing an existing rifle
+
+### Renaming rifles (added 2026-11-16)
+
+| Say | What happens |
+|---|---|
+| "rename my rifles" / "rename all my rifles" / "tidy up my rifle names" | Goes through every rifle **not yet named by caliber and barrel length**, one at a time: "The Tikka T3x: how about '6.5 Creedmoor 24-inch Tikka'? Say yes, a different name, or keep." |
+| "rename this rifle" | The same, for the **active** rifle only |
+| "rename this rifle to Long Tom" | "Rename the Ruger to 'Long Tom' -- right?" |
+
+For each rifle: **yes** takes her name; **keep** (or "skip", "next") leaves
+it; saying a name ("call it Long Tom") gets "'Long Tom' -- right?" before
+it's used; a plain "no" asks what to call it. "Stop" or "that's enough" ends
+the walk-through, keeping what's already renamed. A rifle with no caliber
+saved is asked "what caliber is it?" first, and one with no barrel length
+"what barrel length?" -- the answers are saved on the rifle too ("skip"
+leaves them out). A barrel length written into the old name ("AR-15 20in
+Faxon") counts, and is saved on the rifle when the name changes. When two
+rifles share a caliber and barrel length, the maker is taken from the old
+name ("Tikka", "Bergara"), or asked for if the old name has none. A name
+another rifle already has is refused. Any clearly different command
+("switch rifle to the Ruger", "new load", "give me a solution") ends the
+walk-through and runs.
 
 | Say | What happens |
 |---|---|

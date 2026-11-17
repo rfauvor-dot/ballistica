@@ -309,7 +309,7 @@ def test_switch_to_a_new_rifle_asks_instead_of_starting_a_setup(tmp_path, monkey
 def test_the_setup_phrases_without_switch_still_start_a_setup(tmp_path, monkeypatch):
     cli, _ = _make(tmp_path)
     _no_llm(monkeypatch, setup_prefill=True)
-    assert "call this rifle" in cli.handle("new rifle")
+    assert "What caliber?" in cli.handle("new rifle")
     cli._setup = None
     assert "call this load" in cli.handle("add a new load")
 
@@ -322,7 +322,7 @@ def test_noun_order_setup_phrases_start_immediately(tmp_path, monkeypatch, phras
     LLM route ("Set up a new load? Say yes to begin.")."""
     cli, _ = _make(tmp_path)
     _no_llm(monkeypatch, setup_prefill=True)
-    assert f"call this {kind}" in cli.handle(phrase)
+    assert ("What caliber?" if kind == "rifle" else "call this load") in cli.handle(phrase)
     assert cli._setup.kind == kind
 
 

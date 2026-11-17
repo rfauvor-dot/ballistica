@@ -702,7 +702,7 @@ def test_top_level_intent_interrupts_a_stuck_modal_session(tmp_path):
     cli.handle("let's set up a new load")
     cli.handle("call it Test Load")
     reply2 = cli.handle("actually add a new rifle")
-    assert "call this rifle" in reply2.lower()
+    assert "what caliber" in reply2.lower()   # a new rifle's first question (2026-11-16)
     assert cli._setup.kind == "rifle"
 
     # Mid-rifle-setup, switching to a different rifle must interrupt too.
@@ -912,7 +912,9 @@ def test_rifle_setup_saves_and_activates_new_rifle(monkeypatch, tmp_path):
     bootstrap_default_profile(store)
     cli = BallisticaCLI(store)
 
-    assert "call this rifle" in cli.handle("set up a new rifle").lower()
+    # Caliber comes first now, so the name can be built from it (2026-11-16);
+    # a name said in the same breath still skips the name question.
+    assert "what caliber" in cli.handle("set up a new rifle").lower()
     next_prompt = cli.handle("call it the Creedmoor bolt gun, caliber 6.5 Creedmoor")
     assert "scope height" in next_prompt.lower()
 
@@ -1034,7 +1036,8 @@ def test_setup_extraction_told_which_field_is_being_asked(monkeypatch, tmp_path)
     # captured_calls[0] is the trigger-utterance pre-fill call added for
     # same-breath setup info; the field-being-asked pin this test is
     # actually about is the *second* call, once the interview is running.
-    assert captured_calls[1] == ("pistol caliber carbine, nine millimeter", "rifle", "name")
+    # A new rifle is asked its caliber first (2026-11-16).
+    assert captured_calls[1] == ("pistol caliber carbine, nine millimeter", "rifle", "caliber")
 
 
 def test_setup_acknowledges_progress_when_asked_field_still_unfilled(monkeypatch, tmp_path):
@@ -1046,21 +1049,22 @@ def test_setup_acknowledges_progress_when_asked_field_still_unfilled(monkeypatch
     import ballistica.cli as cli_module
     from ballistica.cli import BallisticaCLI, bootstrap_default_profile
 
+    # Asked the caliber first (2026-11-16), answered with only a name.
     monkeypatch.setattr(cli_module, "extract_setup_fields",
-                         lambda text, kind, asking_about=None: {"caliber": "9mm"} if "pistol" in text else {})
+                         lambda text, kind, asking_about=None: {"name": "Night PCC"} if "pcc" in text else {})
 
     store = ProfileStore(tmp_path / "profiles.json")
     bootstrap_default_profile(store)
     cli = BallisticaCLI(store)
 
-    cli.handle("set up a new rifle")
-    reply = cli.handle("pistol caliber carbine, nine millimeter")
+    assert "what caliber" in cli.handle("set up a new rifle").lower()
+    reply = cli.handle("call it the night pcc")
 
-    assert "9mm" in reply
+    assert "Night PCC" in reply
     assert "got it" in reply.lower()
-    assert "what do you want to call this rifle" in reply.lower()
-    assert cli._setup.draft.get("caliber") == "9mm"
-    assert cli._setup.draft.get("name") in (None, "")
+    assert "scope height" in reply.lower()
+    assert cli._setup.draft.get("name") == "Night PCC"
+    assert cli._setup.draft.get("caliber") in (None, "")
 
 
 def test_setup_rejects_hallucinated_placeholder_values(monkeypatch, tmp_path):
@@ -1982,7 +1986,7 @@ def test_abandoned_calibration_session_expires_instead_of_swallowing_later_comma
     assert cli._calibration is None
     assert cli._setup is not None
     assert cli._setup.kind == "rifle"
-    assert "call this rifle" in reply.lower()
+    assert "what caliber" in reply.lower()
 
 
 def test_recent_calibration_session_does_not_expire_mid_conversation(tmp_path):

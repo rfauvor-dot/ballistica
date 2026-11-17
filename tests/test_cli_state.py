@@ -62,6 +62,9 @@ def _populate(cli):
     cli._equipment_check = {"step": "focus", "issues": [], "framing_issues": ["another sheet is in view"],
                             "link_note": "Phone and tablet are connected.", "sharp_verdict": "soft",
                             "focus_last": 0.3, "focus_tries": 1, "asks": 0, "at": now}
+    cli._rename = {"queue": ["A", "B"], "stage": "offer", "skipped": [], "maker": "Tikka",
+                   "suggestion": "6.5 Creedmoor 24-inch Tikka", "custom": "", "renamed": [["X", "Y"]],
+                   "single": False, "at": now}
 
 
 def test_fully_populated_state_round_trips(tmp_path):
