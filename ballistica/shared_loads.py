@@ -45,8 +45,68 @@ BULLET_FIELDS = ("bullet_weight_gr", "bc", "drag_model", "bullet_type", "powder"
 ESTIMATE_RE = re.compile(r"\s*\[Estimated velocity[^\]]*\]")
 
 
+# The 5.56 family (Rick, 2026-11-16): 5.56 NATO, .223 Wylde and .223
+# Remington chambers share loads, with one rule that is about safety, not
+# convenience -- a .223 Remington chamber isn't rated for 5.56 NATO pressure,
+# so a .223 Remington rifle only ever gets .223 Remington loads. 5.56 and
+# Wylde chambers take both.
+_WYLDE_RE = re.compile(r"wylde")
+_556_RE = re.compile(r"5\.56|(?<![\d.])556(?!\d)|\bnato\b|\bx?m193\b|\bm855\b|\bss109\b")
+_223_RE = re.compile(r"(?<![\d.])\.?223(?!\d)")
+# Written into the notes of a .223 Remington load copied into a 5.56 or
+# Wylde rifle, so the copy is still known to be .223 Remington ammo.
+AMMO_223_MARK = "[.223 Remington ammo]"
+FAMILY_556 = "5.56 / .223"
+
+
+def chamber(rifle: Rifle) -> str | None:
+    """'wylde', '556' or '223rem' for the 5.56 family, else None."""
+    cal = rifle.caliber.lower()
+    if _WYLDE_RE.search(cal):
+        return "wylde"
+    if _556_RE.search(cal):
+        return "556"
+    if _223_RE.search(cal):
+        return "223rem"
+    return None
+
+
 def caliber_key(rifle: Rifle) -> str:
+    if chamber(rifle):
+        return FAMILY_556
     return short_caliber(rifle.caliber).lower() if rifle.caliber.strip() else ""
+
+
+def family_label(rifle: Rifle) -> str:
+    return "5.56 and .223" if chamber(rifle) else rifle.caliber.strip()
+
+
+def ammo_kind(load: Load, home: Rifle) -> str | None:
+    """'556' or '223rem' for ammo in a 5.56-family rifle (`home` holds it),
+    else None. What the load itself says wins (the copy marker, '5.56',
+    'NATO', 'M193', '223'); otherwise it's the home chamber's ammo, and in a
+    5.56 or Wylde rifle that means 5.56 NATO -- the safe assumption, since it
+    keeps the load out of .223 Remington chambers."""
+    home_chamber = chamber(home)
+    if home_chamber is None:
+        return None
+    text = ESTIMATE_RE.sub("", f"{load.name} {load.bullet_type} {load.notes}")
+    if AMMO_223_MARK in text:
+        return "223rem"
+    low = text.lower()
+    if _556_RE.search(low):
+        return "556"
+    if _223_RE.search(low):
+        return "223rem"
+    return "223rem" if home_chamber == "223rem" else "556"
+
+
+def can_use(target: Rifle, load: Load, home: Rifle) -> bool:
+    """Whether `target` may be given a load that lives in `home`: never 5.56
+    NATO ammo for a .223 Remington chamber."""
+    if chamber(target) != "223rem":
+        return True
+    return ammo_kind(load, home) == "223rem"
 
 
 def same_ammo(a: Load, b: Load) -> bool:
@@ -116,13 +176,15 @@ def _set_estimate(target: Rifle, load: Load, source_rifle: Rifle, source_load: L
     load.notes = f"{ESTIMATE_RE.sub('', load.notes or '').strip()} {_marker(source_rifle, source_load)}".strip()
 
 
-def _copy_for(target: Rifle, load: Load, store: ProfileStore) -> Load:
+def _copy_for(target: Rifle, load: Load, store: ProfileStore, home: Rifle) -> Load:
     copy = dataclasses.replace(load, notes="")
     pair = _closest(target, _measured_sources(store, target, load))
     if pair is not None:
         _set_estimate(target, copy, *pair)
     else:
         copy.notes = load.notes   # an estimate copied from an estimate: same speed, same marker
+    if ammo_kind(load, home) == "223rem" and AMMO_223_MARK not in copy.notes:
+        copy.notes = f"{AMMO_223_MARK} {copy.notes}".strip()
     name = copy.name
     n = 2
     while name in target.loads:
@@ -137,8 +199,8 @@ def share_load(store: ProfileStore, rifle: Rifle, load: Load) -> list[str]:
     caliber that doesn't have that ammo yet. Returns their names."""
     added = []
     for other in same_caliber_rifles(store, rifle):
-        if find_same_ammo(other, load) is None:
-            other.add_load(_copy_for(other, load, store), make_active=other.active_load_name is None)
+        if can_use(other, load, rifle) and find_same_ammo(other, load) is None:
+            other.add_load(_copy_for(other, load, store, rifle), make_active=other.active_load_name is None)
             added.append(other.name)
     return added
 
@@ -149,10 +211,13 @@ def share_into(store: ProfileStore, rifle: Rifle) -> list[str]:
     added = []
     for other in same_caliber_rifles(store, rifle):
         for load in list(other.loads.values()):
-            if find_same_ammo(rifle, load) is None:
+            if can_use(rifle, load, other) and find_same_ammo(rifle, load) is None:
                 # Prefer a measured copy of this ammo as what's copied.
                 best = _closest(rifle, _measured_sources(store, rifle, load))
-                copy = _copy_for(rifle, best[1] if best else load, store)
+                src_rifle, src_load = best if best else (other, load)
+                copy = _copy_for(rifle, src_load, store, src_rifle)
+                if ammo_kind(load, other) == "223rem" and AMMO_223_MARK not in copy.notes:
+                    copy.notes = f"{AMMO_223_MARK} {copy.notes}".strip()
                 rifle.add_load(copy, make_active=rifle.active_load_name is None)
                 added.append(copy.name)
     return added

@@ -59,8 +59,8 @@ def test_a_load_reaches_every_rifle_of_the_caliber_with_an_estimate(three_556):
     assert is_estimate(short) and estimate_source(short) == "556 20-inch"
     # "5.56" and "5.56 NATO" are the same caliber.
     assert three_556.rifles["556 16-inch"].loads["69 SMK"].muzzle_velocity_fps == 3000 - FPS_PER_INCH * 4
-    # .223 Wylde is its own caliber; the original copy is measured.
-    assert "69 SMK" not in three_556.rifles["223 Wylde 18-inch"].loads
+    # .223 Wylde is in the 5.56 family; the original copy is measured.
+    assert three_556.rifles["223 Wylde 18-inch"].loads["69 SMK"].muzzle_velocity_fps == 3000 - FPS_PER_INCH * 2
     assert not is_estimate(three_556.rifles["556 20-inch"].loads["69 SMK"])
 
 
@@ -159,7 +159,7 @@ def test_switching_rifles_brings_the_calibers_loads_and_says_so(tmp_path, monkey
     store.rifles["556 20-inch"].add_load(_smk())   # added before sharing existed
     cli = BallisticaCLI(store)
     reply = cli.handle("switch rifle to the 556 14.5-inch")
-    assert "It now has 69 SMK from your other 5.56 NATO rifles" in reply
+    assert "It now has 69 SMK from your other 5.56 and .223 rifles" in reply
     assert "69 SMK" in store.rifles["556 14.5-inch"].loads
 
 
@@ -210,4 +210,76 @@ def test_hits_that_cant_tell_the_speed(three_556, monkeypatch):
     cli = BallisticaCLI(three_556)
     assert "too close to the 100-yard zero" in cli.handle("I hit at 120 yards with 0.1 mils")
     assert "doesn't fit any sensible speed" in cli.handle("at 300 yards I needed 40 mils")
+    assert cli._pending_true_velocity is None
+
+
+# ------------------------------------- the 5.56 / Wylde / .223 Rem family
+
+def _family(tmp_path):
+    return _store(tmp_path, [("556 16-inch", "5.56 NATO", 16), ("Wylde 18-inch", ".223 Wylde", 18),
+                             ("223 Rem 22-inch", ".223 Remington", 22), ("308 20-inch", ".308 Winchester", 20)])
+
+
+def _rem55(mv: float = 3200) -> Load:
+    return Load(name="55 V-Max", bullet_weight_gr=55, bc=0.255, drag_model="G1",
+                muzzle_velocity_fps=mv, zero_distance_yd=100)
+
+
+@pytest.mark.parametrize("caliber,kind", [
+    ("5.56 NATO", "556"), ("5.56x45mm", "556"), ("556", "556"), (".223 Wylde", "wylde"), ("223 Wylde", "wylde"),
+    (".223 Remington", "223rem"), (".223 Rem", "223rem"), ("223", "223rem"), (".22-250", None), (".308", None),
+])
+def test_chambers(caliber, kind):
+    from ballistica.shared_loads import chamber
+    assert chamber(Rifle(name="x", scope_height_in=2, caliber=caliber)) == kind
+
+
+def test_wylde_and_556_share_everything_but_556_never_reaches_a_223_rem_chamber(tmp_path):
+    store = _family(tmp_path)
+    nato = store.rifles["556 16-inch"]
+    nato.add_load(_smk(2950, name="69 SMK"))
+    added = share_load(store, nato, nato.loads["69 SMK"])
+    assert added == ["Wylde 18-inch"]
+    assert "69 SMK" not in store.rifles["223 Rem 22-inch"].loads
+    assert "69 SMK" not in store.rifles["308 20-inch"].loads
+    # Nor when the .223 Remington rifle asks for its family's loads.
+    assert share_into(store, store.rifles["223 Rem 22-inch"]) == []
+
+
+def test_223_rem_loads_go_everywhere_in_the_family_and_stay_223(tmp_path):
+    store = _family(tmp_path)
+    rem = store.rifles["223 Rem 22-inch"]
+    rem.add_load(_rem55())
+    assert sorted(share_load(store, rem, rem.loads["55 V-Max"])) == ["556 16-inch", "Wylde 18-inch"]
+    copy = store.rifles["556 16-inch"].loads["55 V-Max"]
+    assert "[.223 Remington ammo]" in copy.notes
+    assert copy.muzzle_velocity_fps == 3200 - FPS_PER_INCH * 6
+    # A new .223 Remington rifle may take that copy back from the 5.56: it's still .223 ammo,
+    # even after the copy is chronographed in the 5.56.
+    store.update_load_velocity("556 16-inch", "55 V-Max", 3010)
+    assert "[.223 Remington ammo]" in copy.notes
+    store.add_rifle(Rifle(name="223 Rem 20-inch", scope_height_in=2.6, caliber=".223 Rem", barrel_length_in=20),
+                    make_active=False)
+    assert share_into(store, store.rifles["223 Rem 20-inch"]) == ["55 V-Max"]
+
+
+def test_ammo_named_as_556_in_a_wylde_rifle_or_223_in_a_556_rifle(tmp_path):
+    from ballistica.shared_loads import ammo_kind
+    store = _family(tmp_path)
+    wylde, nato, rem = store.rifles["Wylde 18-inch"], store.rifles["556 16-inch"], store.rifles["223 Rem 22-inch"]
+    assert ammo_kind(_smk(name="69 SMK"), wylde) == "556"            # unsaid in a Wylde: treated as 5.56
+    assert ammo_kind(_smk(name="Federal 223 Rem 69"), nato) == "223rem"
+    assert ammo_kind(_smk(name="M193"), rem) == "556"
+    nato.add_load(_smk(name="Federal 223 Rem 69"))
+    assert share_load(store, nato, nato.loads["Federal 223 Rem 69"]) == ["Wylde 18-inch", "223 Rem 22-inch"]
+
+
+def test_hits_correction_takes_correct_as_yes_and_ignores_windage(three_556, monkeypatch):
+    _no_llm(monkeypatch)
+    cli = BallisticaCLI(three_556)
+    cli._last_tool_name = ""
+    cli.handle("at 600 yards I needed 4.8 mils")
+    assert cli.handle("that's correct").startswith("Saved -- the 69 SMK is now")
+    # A windage figure is never worked back into a speed.
+    cli.handle("at 600 yards I held 1.2 mils of wind")
     assert cli._pending_true_velocity is None

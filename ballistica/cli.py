@@ -36,7 +36,7 @@ from .rifle_names import (
     clean_maker, clean_spoken_name, maker_from_name, name_base, needs_maker, suggest_name,
 )
 from .narrowing import _spoken_numbers, rifle_barrel
-from .shared_loads import is_estimate, share_into, share_load, spoken_estimate_note
+from .shared_loads import family_label, is_estimate, share_into, share_load, spoken_estimate_note
 from .reporting import format_table_text, report_for_point, report_table
 from .trajectory import TrajectorySolver, WindCondition
 from .units import moa_to_mrad
@@ -1253,7 +1253,7 @@ class BallisticaCLI:
             return self._handle_true_velocity_confirm(t)
 
         # Where the hits landed -> the speed that explains them.
-        if _HITS_WORD_RE.search(low) and not re.search(r"wind", low):
+        if _HITS_WORD_RE.search(low) and not re.search(r"\bwind", low):
             rng, elev = _HITS_RANGE_RE.search(low), _HITS_ELEV_RE.search(low)
             if rng and elev:
                 self._last_tool_name = "true_velocity"
@@ -1892,7 +1892,7 @@ class BallisticaCLI:
         pending = self._pending_true_velocity
         self._pending_true_velocity = None
         if not (_CONFIRM_YES_WORD_RE.match(low) or (
-            re.search(r"(correct|right)", low) and not _NEGATED_CONFIRM_RE.search(low)
+            re.search(r"\b(correct|right)\b", low) and not _NEGATED_CONFIRM_RE.search(low)
         )):
             return "Okay, speed unchanged."
         try:
@@ -1916,7 +1916,7 @@ class BallisticaCLI:
         if not added:
             return ""
         what = short_list(added, "and") or f"{len(added)} loads"
-        return (f" It now has {what} from your other {rifle.caliber.strip()} rifles, "
+        return (f" It now has {what} from your other {family_label(rifle)} rifles, "
                 f"with speeds estimated for its barrel length.")
 
     def _switch_rifle(self, query: str, new_load_fields: dict | None = None) -> str:

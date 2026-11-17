@@ -214,10 +214,29 @@ web app) changes them all. **Velocity and zero stay per rifle.**
   are refused. Saving notes "Trued from hits: ..." on the load.
 - Whenever a measured speed changes, every other rifle's estimate for that
   load is worked out again from the closest measured barrel.
-- "The same caliber" means the same short caliber name: "5.56" and "5.56
-  NATO" match; **.223 Wylde and 5.56 NATO don't**, so set the caliber the
-  same way on rifles that should share. Two loads are the same ammo when
-  their names match, or when weight, BC and drag model all match.
+- "The same caliber" means the same short caliber name ("6.5 Creedmoor",
+  ".308 Winchester" and ".308" match), with one family on top:
+- **The 5.56 / .223 family (added 2026-11-16).** 5.56 NATO, .223 Wylde and
+  .223 Remington rifles share loads, **except that a .223 Remington rifle is
+  never given a 5.56 NATO load** -- its chamber isn't rated for that
+  pressure. 5.56 and Wylde rifles get every load in the family, including
+  .223 Remington ones.
+  - A load is taken as **.223 Remington** if its name, bullet or notes say
+    ".223"/"223" (and not 5.56), or if it was entered on a .223 Remington
+    rifle. It's taken as **5.56 NATO** if they say "5.56", "556", "NATO",
+    "M193", "M855" or "SS109" -- **or if nothing says either and it was
+    entered on a 5.56 or Wylde rifle.** That last one is the safe
+    assumption: a load you entered on your 5.56 that is really .223
+    Remington ammo won't reach your .223 Remington rifle until its name
+    says so ("Federal 223 Rem 55").
+  - A .223 Remington load copied into a 5.56 or Wylde rifle carries
+    "[.223 Remington ammo]" in its notes, so it stays known as .223 ammo
+    there (even after it's chronographed in that rifle).
+  - Rifle calibers are read the same way: "5.56", "5.56 NATO", "5.56x45" or
+    "556" is a 5.56 chamber; anything with "Wylde" is a Wylde; ".223",
+    "223", ".223 Rem" or ".223 Remington" is a .223 Remington chamber.
+- Two loads are the same ammo when their names match, or when weight, BC
+  and drag model all match.
 - Each rifle still has its own copy (so its own speed and zero). Deleting
   the load from one rifle leaves the others. An estimate is marked in the
   load's notes ("[Estimated velocity from the ...]") until it's measured,
