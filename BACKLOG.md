@@ -538,6 +538,20 @@ the CAMERA's own orientation, not automatically a meaningful "three
 o'clock" without knowing which way the shooter is actually facing down
 range. Same open question, not yet resolved either place.
 
+**Paired-data collection, started 2026-11-18:** Rick's meter is a HoldPeak
+HP-866B-APP (Bluetooth; its USB port is reportedly power only). The
+Intelligent Anemometer app 1.4.3 records after Start and saves an .xls:
+time of day plus mph and °F, about one reading a second. The date is only in
+the file name, so don't rename the files. The fan spins down slowly (a
+5.8 mph puff took ~8 s to read zero), so the meter shows gusts arriving
+promptly but ending late. `tools/wind_pairs.py` (logic in
+`ballistica/wind_log.py`) lines logs up with clips and writes per-window
+mean/min/max/sd mph to CSV. Samsung clips: the file name is the local start
+time; the embedded creation_time is the END, in UTC (checked on Rick's
+clips). Record each clip's camera heading (`--heading`). If a different
+device films, film the app screen at the start of each clip to measure
+`--clock-offset`.
+
 **Recommended sequencing:** windsock/vegetation first (tractable, real
 signal, no atmospheric modeling needed) once the camera rig is
 operational; start Kestrel-paired data collection in parallel from day
