@@ -585,6 +585,12 @@ still (77-370 s; the phone was set down at ~34 s and repositioned at
 14:44:01-14:44:21. In view: a pine, a red-leaf tree, a mostly bare tree.
 Still portrait. Results in `data/wind/2026-11-20-backyard-1438.csv`.
 
+Third clip, 20261120_151518 (15:15): wind at 45 degrees. Camera southwest
+(225), wind from the west (270), coming from the front right. 309 s still
+(16-326 s), lighter wind: 2.3 mph average, 4.9 peak, near calm around
+15:15:50. Aimed up at a leafy tree and a close pine that fill most of the
+frame. Results in `data/wind/2026-11-20-backyard-1515.csv`.
+
 **Recommended sequencing:** windsock/vegetation first (tractable, real
 signal, no atmospheric modeling needed) once the camera rig is
 operational; start Kestrel-paired data collection in parallel from day
