@@ -14,7 +14,8 @@ recording are cut off automatically (camera motion between keyframes).
 
 --heading        compass degrees the CAMERA points: one number for every
                  clip, or VIDEO_NAME=DEG per clip (repeatable)
---meter-heading  compass degrees the meter's fan faces, same forms
+--meter-heading  compass degrees the meter takes wind FROM, same forms: wind
+                 from the west through the meter (screen facing east) = 270
 --clock-offset   seconds the camera's clock is AHEAD of the meter phone's; 0
                  when the S25 films and logs at once
 Needs ffmpeg and ffprobe on the PATH, and OpenCV for the trimming.
@@ -166,7 +167,8 @@ def main(argv=None) -> None:
     ap.add_argument("--videos", nargs="+", required=True)
     ap.add_argument("--window", type=float, default=10.0, help="seconds per slice (default 10)")
     ap.add_argument("--heading", action="append", default=[])
-    ap.add_argument("--meter-heading", action="append", default=[])
+    ap.add_argument("--meter-heading", action="append", default=[],
+                    help="compass degrees the meter takes wind FROM (screen faces the opposite way)")
     ap.add_argument("--clock-offset", type=float, default=0.0)
     ap.add_argument("--out", default="wind_pairs.csv")
     ap.add_argument("--no-trim", action="store_true", help="measure the whole clip")

@@ -549,7 +549,8 @@ promptly but ending late. `tools/wind_pairs.py` (logic in
 mean/min/max/sd mph to CSV. Samsung clips: the file name is the local start
 time; the embedded creation_time is the END, in UTC (checked on Rick's
 clips). Record each clip's camera heading (`--heading`) and the meter's
-(`--meter-heading`). If a different device films, film the app screen at
+(`--meter-heading`: the direction the meter takes wind FROM; its screen
+faces the opposite way). If a different device films, film the app screen at
 the start of each clip to measure `--clock-offset`.
 
 Backyard test clips, 2026-11-20: both were handheld, and the picture
@@ -572,7 +573,9 @@ still, with 1 s trimmed off each end.
 
 First good clip, 20261120_124045 (12:40, 2026-11-20): phone on the patio
 table, 296 s of still footage, 3.7 mph average, 7.3 mph peak. The phone
-crept ~13 px at 79-83 s. Still portrait, with the patio overhang in the
+crept ~13 px at 79-83 s. Camera faced west (270), wind from the west
+into the meter (270), so the wind blew toward the camera. Results are in
+`data/wind/2026-11-20-backyard-1240.csv`. Still portrait, with the patio overhang in the
 top edge and the lower half lawn.
 
 **Recommended sequencing:** windsock/vegetation first (tractable, real
