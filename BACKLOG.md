@@ -561,10 +561,19 @@ protocol now:
 - the phone set down on a table in landscape, 1x, focus and exposure
   locked, untouched for 3 minutes.
 
-The tool now measures only the longest stretch where the camera held still:
-keyframe shifts of 3 px or less for at least 20 s, with 1 s trimmed off
-each end. A clip that never held still is measured whole and flagged
-"camera not still". `--start`/`--end` set the stretch by hand.
+The tool now measures every stretch of 20 s or more where the camera held
+still, with 1 s trimmed off each end.
+- A keyframe step counts as still when the median shift over 5 steps is
+  3 px or less and the step itself is no jolt over 10 px.
+- A lone 3-4 px wobble from a gust doesn't break a stretch; a nudge or a
+  slow creep does, and the footage on both sides is kept.
+- A clip that never held still is measured whole and flagged "camera not
+  still". `--start`/`--end` set the stretch by hand.
+
+First good clip, 20261120_124045 (12:40, 2026-11-20): phone on the patio
+table, 296 s of still footage, 3.7 mph average, 7.3 mph peak. The phone
+crept ~13 px at 79-83 s. Still portrait, with the patio overhang in the
+top edge and the lower half lawn.
 
 **Recommended sequencing:** windsock/vegetation first (tractable, real
 signal, no atmospheric modeling needed) once the camera rig is

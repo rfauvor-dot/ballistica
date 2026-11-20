@@ -160,6 +160,38 @@ def test_still_span_takes_the_longest_still_stretch():
     assert wind_log.still_span(steps) == (27.0, 65.0)
 
 
+def test_a_lone_wobble_does_not_end_a_still_stretch():
+    """Rick's 12:40 clip: still on the table for ~5 minutes, with the odd 3-4 px
+    wobble in gusts. That used to cut the measured part to 2 minutes 19."""
+    steps = _steps([90, 40] + [0.2] * 50 + [4] + [0.5] * 40 + [3.5, 4] + [0.3] * 60 + [140])
+    assert wind_log.still_span(steps) == (3.0, 154.0)
+
+
+def test_a_real_move_still_ends_it():
+    steps = _steps([0.2] * 30 + [25] + [0.2] * 40)                     # nudged the phone: 25 px
+    assert wind_log.still_span(steps) == (32.0, 70.0)
+
+
+def test_a_slow_creep_splits_the_clip_and_both_halves_are_kept():
+    """Rick's 12:40 clip at 79-83 s: 3-4 px every second for four seconds
+    (3.01, 3.39, 4.11, 2.98 -- the phone settling, typical shift just over
+    3 px). Before and after are both good footage, so both are kept; a creep
+    right on the line costs at most its own few seconds."""
+    steps = _steps([90, 40] + [0.3] * 50 + [3.5, 3.8, 4.1, 3.6] + [0.4] * 60)
+    assert wind_log.still_spans(steps) == [(3.0, 51.0), (57.0, 115.0)]
+    assert wind_log.still_span(steps) == (57.0, 115.0)
+
+
+def test_windows_never_cross_the_gap_between_still_stretches():
+    clip = Clip("v.mp4", T0, 60.0, "file name")
+    rows = wind_log.window_stats(_steady(60), clip, window_s=10, spans=[(2.0, 17.0), (30.0, 45.0)])
+    assert [(r["window"], r["start_s"], r["end_s"], r["readings"]) for r in rows] == [
+        ("1", 2.0, 12.0, 10), ("2", 12.0, 17.0, 5), ("3", 30.0, 40.0, 10), ("4", 40.0, 45.0, 5),
+        ("all", 2.0, 45.0, 30)]
+    assert rows[-1]["mean_mph"] == pytest.approx((sum(range(2, 17)) + sum(range(30, 45))) / 30)
+    assert rows[-1]["note"] == ""
+
+
 def test_handheld_or_blurry_never_counts_as_still():
     assert wind_log.still_span(_steps([15, 28, 40, 2.0, 22] * 20)) is None   # one lucky keyframe isn't a stretch
     assert wind_log.still_span(_steps([0.5] * 60, response=0.05)) is None   # tiny shift but no real match

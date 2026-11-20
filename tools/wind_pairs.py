@@ -124,18 +124,18 @@ def run(logs: list[str], videos: list[str], window_s: float, headings: list[str]
     for v in videos:
         duration, embedded = probe_fn(v)
         clip = wind_log.clip_timing(v, duration, embedded, local_tz)
-        span, note, how = None, "", "whole clip"
+        spans, note, how = [(0.0, duration)], "", "whole clip"
         if start_s is not None or end_s is not None:
-            span = (max(0.0, start_s or 0.0), min(duration, end_s if end_s is not None else duration))
+            spans = [(max(0.0, start_s or 0.0), min(duration, end_s if end_s is not None else duration))]
             how = "set by hand"
         elif trim:
-            span = wind_log.still_span(motion_fn(v))
-            if span:
-                how = "camera still"
+            found = wind_log.still_spans(motion_fn(v))
+            if found:
+                spans, how = found, "camera still"
             else:
                 note = "camera not still"
                 how = f"WHOLE CLIP -- the camera never held still for {wind_log.STILL_MIN_S:.0f} s"
-        clip_rows = wind_log.window_stats(readings, clip, window_s, clock_offset_s, span, note)
+        clip_rows = wind_log.window_stats(readings, clip, window_s, clock_offset_s, note=note, spans=spans)
         for r in clip_rows:
             r["heading_deg"] = _heading_for(v, cam_h)
             r["meter_heading_deg"] = _heading_for(v, meter_h)
@@ -145,7 +145,8 @@ def run(logs: list[str], videos: list[str], window_s: float, headings: list[str]
                 if whole["readings"] else "NO READINGS during this clip")
         print(f"{os.path.basename(v)}: {clip.start:%H:%M:%S} +{duration:.0f} s "
               f"(timing from {clip.timing_from})")
-        print(f"  measured {whole['start_s']:.1f}-{whole['end_s']:.1f} s ({how}): {said}")
+        measured = ", ".join(f"{a:.1f}-{b:.1f}" for a, b in spans)
+        print(f"  measured {measured} s ({how}, {sum(b - a for a, b in spans):.0f} s): {said}")
         if clip.warning:
             print(f"  warning: {clip.warning}")
         gaps = [r for r in clip_rows[:-1] if "readings" in r["note"]]

@@ -180,31 +180,57 @@ def clip_timing(path: str, duration_s: float, embedded_utc: datetime | None,
 
 # ------------------------------------------------------------------ camera stillness
 # Shift between consecutive keyframes (~1 s apart), in pixels on a 1920-px
-# long side. A phone resting on a table moves ~1 px; handheld rarely < 6.
+# long side. A phone resting on a table moves 0-1 px, with the odd 3-4 px
+# wobble when a gust rocks it (Rick's 12:40 clip, 2026-11-20); handheld moves
+# 10-30 px typically and up to ~300. So a keyframe step is still when the
+# typical shift around it (median of 5 steps) is <= 3 px and it isn't itself
+# a jolt over 10 px -- a lone wobble doesn't end a still stretch, a real
+# move does.
 STILL_SHIFT_PX = 3.0
+STILL_JOLT_PX = 10.0
+STILL_MEDIAN_STEPS = 5
 STILL_MIN_RESPONSE = 0.3        # phase-correlation confidence; blurry walking frames are lower
 STILL_MIN_S = 20.0
 STILL_MARGIN_S = 1.0            # trimmed off both ends: setting the phone down, reaching to stop
 
 
-def still_span(steps, shift_px: float = STILL_SHIFT_PX, min_response: float = STILL_MIN_RESPONSE,
-               min_s: float = STILL_MIN_S, margin_s: float = STILL_MARGIN_S) -> tuple[float, float] | None:
+def still_spans(steps, shift_px: float = STILL_SHIFT_PX, min_response: float = STILL_MIN_RESPONSE,
+                min_s: float = STILL_MIN_S, margin_s: float = STILL_MARGIN_S,
+                jolt_px: float = STILL_JOLT_PX, median_steps: int = STILL_MEDIAN_STEPS,
+                ) -> list[tuple[float, float]]:
     """steps: [(t_prev, t, shift_px, response)] between consecutive keyframes.
-    The longest stretch where the camera held still, in clip seconds, or None
-    if it never held still for min_s."""
-    best, run_start = None, None
-    for t_prev, t, shift, response in steps:
-        if shift <= shift_px and response >= min_response:
+    Every stretch where the camera held still for min_s or more (after
+    margin_s off each end), in clip seconds, in order. A phone that creeps
+    or is nudged mid-clip gives two stretches; the move between is skipped."""
+    steps = list(steps)
+    shifts = [s[2] for s in steps]
+    half = median_steps // 2
+
+    def still(i: int) -> bool:
+        _, _, shift, response = steps[i]
+        if shift > jolt_px or response < min_response:
+            return False
+        return statistics.median(shifts[max(0, i - half):i + half + 1]) <= shift_px
+
+    runs, run_start, run_end = [], None, None
+    for i, (t_prev, t, _, _) in enumerate(steps):
+        if still(i):
             if run_start is None:
                 run_start = t_prev
-            if best is None or t - run_start > best[1] - best[0]:
-                best = (run_start, t)
-        else:
+            run_end = t
+        elif run_start is not None:
+            runs.append((run_start, run_end))
             run_start = None
-    if best is None:
-        return None
-    lo, hi = best[0] + margin_s, best[1] - margin_s
-    return (lo, hi) if hi - lo >= min_s else None
+    if run_start is not None:
+        runs.append((run_start, run_end))
+    trimmed = [(lo + margin_s, hi - margin_s) for lo, hi in runs]
+    return [(lo, hi) for lo, hi in trimmed if hi - lo >= min_s]
+
+
+def still_span(steps, **kw) -> tuple[float, float] | None:
+    """The longest still stretch, or None."""
+    spans = still_spans(steps, **kw)
+    return max(spans, key=lambda sp: sp[1] - sp[0]) if spans else None
 
 
 # ------------------------------------------------------------------ pairing
@@ -216,9 +242,10 @@ def _typical_interval_s(readings: list[Reading]) -> float:
 
 def window_stats(readings: list[Reading], clip: Clip, window_s: float = 10.0,
                  clock_offset_s: float = 0.0, span: tuple[float, float] | None = None,
-                 note: str = "") -> list[dict]:
-    """One row per window_s slice of the clip (or of span, in clip seconds --
-    the still part), plus a whole-span row "all". note goes on every row.
+                 note: str = "", spans: list[tuple[float, float]] | None = None) -> list[dict]:
+    """One row per window_s slice of the clip -- or of each of spans (clip
+    seconds: the still stretches), slices never crossing a gap between them --
+    plus a row "all" over everything measured. note goes on every row.
 
     clock_offset_s: how far the camera's clock is AHEAD of the meter phone's
     (measured by filming the app screen at the start of a clip); 0 when the
@@ -227,11 +254,12 @@ def window_stats(readings: list[Reading], clip: Clip, window_s: float = 10.0,
     interval = _typical_interval_s(readings)
     shifted = [((r.at - clip.start).total_seconds() + clock_offset_s, r) for r in readings]
 
-    def stats(lo: float, hi: float, label: str) -> dict:
-        inside = [r for t, r in shifted if lo <= t < hi]
+    def stats(lo: float, hi: float, label: str, parts=None) -> dict:
+        parts = parts or [(lo, hi)]
+        inside = [r for t, r in shifted if any(a <= t < b for a, b in parts)]
         mph = [r.mph for r in inside]
         temps = [r.temp_f for r in inside if r.temp_f is not None]
-        expected = (hi - lo) / interval
+        expected = sum(b - a for a, b in parts) / interval
         notes = [note] if note else []
         if not inside:
             notes.append("no readings")
@@ -250,11 +278,13 @@ def window_stats(readings: list[Reading], clip: Clip, window_s: float = 10.0,
             "note": "; ".join(notes),
         }
 
-    first, last = span if span else (0.0, clip.duration_s)
+    if spans is None:
+        spans = [span] if span else [(0.0, clip.duration_s)]
     rows = []
-    n = max(1, math.ceil((last - first) / window_s - 1e-9))
-    for k in range(n):
-        lo, hi = first + k * window_s, min(first + (k + 1) * window_s, last)
-        rows.append(stats(lo, hi, str(k + 1)))
-    rows.append(stats(first, last, "all"))
+    for first, last in spans:
+        n = max(1, math.ceil((last - first) / window_s - 1e-9))
+        for k in range(n):
+            lo, hi = first + k * window_s, min(first + (k + 1) * window_s, last)
+            rows.append(stats(lo, hi, str(len(rows) + 1)))
+    rows.append(stats(spans[0][0], spans[-1][1], "all", spans))
     return rows
