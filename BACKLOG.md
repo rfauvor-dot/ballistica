@@ -578,6 +578,13 @@ into the meter (270), so the wind blew toward the camera. Results are in
 `data/wind/2026-11-20-backyard-1240.csv`. Still portrait, with the patio overhang in the
 top edge and the lower half lawn.
 
+Second clip, 20261120_143855 (14:38): a crosswind. Camera south (180),
+wind from the west (270), blowing right to left across the frame. 293 s
+still (77-370 s; the phone was set down at ~34 s and repositioned at
+~61-71 s), 3.2 mph average, 7.1 mph peak, with a near-calm lull at
+14:44:01-14:44:21. In view: a pine, a red-leaf tree, a mostly bare tree.
+Still portrait. Results in `data/wind/2026-11-20-backyard-1438.csv`.
+
 **Recommended sequencing:** windsock/vegetation first (tractable, real
 signal, no atmospheric modeling needed) once the camera rig is
 operational; start Kestrel-paired data collection in parallel from day
