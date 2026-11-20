@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import os
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -132,14 +134,83 @@ def test_tool_writes_the_csv(tmp_path, capsys):
     out = tmp_path / "pairs.csv"
     end = datetime(2026, 11, 18, 20, 16, 15, tzinfo=MST).astimezone(timezone.utc)
     rows = wind_pairs.run([FIXTURE], [video], 10.0, ["270"], 0.0, str(out),
-                          probe_fn=lambda p: (30.0, end), local_tz=MST)
+                          probe_fn=lambda p: (30.0, end), local_tz=MST, trim=False,
+                          meter_headings=["20261118_201545.mp4=300"])
     with open(out, newline="", encoding="utf-8") as fh:
         saved = list(csv.DictReader(fh))
     assert len(saved) == len(rows) == 4
-    assert saved[0]["heading_deg"] == "270.0" and saved[0]["max_mph"] == "5.8"   # the puff at :52-:53
+    assert saved[0]["heading_deg"] == "270.0" and saved[0]["meter_heading_deg"] == "300.0"
+    assert saved[0]["max_mph"] == "5.8"                                          # the puff at :52-:53
     assert saved[-1]["window"] == "all"
     said = capsys.readouterr().out
     assert "65 readings" in said and "20261118_201545.mp4: 20:15:45 +30 s" in said and "warning" not in said
+
+
+def _steps(shifts, response=0.85):
+    return [(float(i), float(i + 1), sh, response) for i, sh in enumerate(shifts)]
+
+
+def test_still_span_skips_the_walk_back_and_the_reach_to_stop():
+    walk, still, bump = [80, 40, 120, 30, 90], [0.1] * 60, [150]
+    assert wind_log.still_span(_steps(walk + still + bump)) == (6.0, 64.0)
+
+
+def test_still_span_takes_the_longest_still_stretch():
+    steps = _steps([0.1] * 25 + [60] + [0.2] * 40 + [70] + [0.1] * 22)
+    assert wind_log.still_span(steps) == (27.0, 65.0)
+
+
+def test_handheld_or_blurry_never_counts_as_still():
+    assert wind_log.still_span(_steps([15, 28, 40, 2.0, 22] * 20)) is None   # one lucky keyframe isn't a stretch
+    assert wind_log.still_span(_steps([0.5] * 60, response=0.05)) is None   # tiny shift but no real match
+    assert wind_log.still_span(_steps([0.1] * 15)) is None                   # still, but under 20 s
+
+
+def test_windows_follow_the_still_span():
+    clip = Clip("v.mp4", T0, 60.0, "file name")
+    rows = wind_log.window_stats(_steady(60), clip, window_s=10, span=(6.0, 31.0))
+    assert [(r["window"], r["start_s"], r["end_s"], r["readings"]) for r in rows] == [
+        ("1", 6.0, 16.0, 10), ("2", 16.0, 26.0, 10), ("3", 26.0, 31.0, 5), ("all", 6.0, 31.0, 25)]
+    assert rows[0]["local_time"] == "2026-11-18 14:00:06"
+    flagged = wind_log.window_stats(_steady(60), clip, window_s=30, note="camera not still")
+    assert all(r["note"] == "camera not still" for r in flagged)
+
+
+def test_tool_measures_only_the_still_part_and_flags_a_moving_camera(tmp_path, capsys):
+    pytest.importorskip("xlrd")
+    end = datetime(2026, 11, 18, 20, 16, 25, tzinfo=MST).astimezone(timezone.utc)
+    still = _steps([90, 50] + [0.1] * 30 + [120])          # keyframes 0..33 s
+    rows = wind_pairs.run([FIXTURE], ["20261118_201545.mp4"], 10.0, [], 0.0, str(tmp_path / "a.csv"),
+                          probe_fn=lambda p: (40.0, end), local_tz=MST, motion_fn=lambda p: still)
+    assert (rows[-1]["start_s"], rows[-1]["end_s"], rows[-1]["note"]) == (3.0, 31.0, "")
+    moving = _steps([30, 12, 50] * 13)
+    rows = wind_pairs.run([FIXTURE], ["20261118_201545.mp4"], 10.0, [], 0.0, str(tmp_path / "b.csv"),
+                          probe_fn=lambda p: (40.0, end), local_tz=MST, motion_fn=lambda p: moving)
+    assert rows[-1]["start_s"] == 0.0 and all(r["note"].startswith("camera not still") for r in rows)
+    assert "never held still" in capsys.readouterr().out
+    rows = wind_pairs.run([FIXTURE], ["20261118_201545.mp4"], 10.0, [], 0.0, str(tmp_path / "c.csv"),
+                          probe_fn=lambda p: (40.0, end), local_tz=MST, start_s=12, end_s=32,
+                          motion_fn=lambda p: pytest.fail("set by hand: no motion analysis"))
+    assert (rows[-1]["start_s"], rows[-1]["end_s"]) == (12.0, 32.0)
+
+
+@pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="needs ffmpeg")
+def test_motion_from_a_real_video_walk_still_bump(tmp_path):
+    """Moving crop for 5 s (walking back), a still 33 s with flicker noise
+    (leaves, sensor noise), then a 2 s bump (reaching to stop)."""
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+    rng = np.random.default_rng(7)
+    scene = cv2.GaussianBlur(rng.integers(0, 255, (540, 1000, 3), dtype=np.uint8), (0, 0), 3)
+    cv2.imwrite(str(tmp_path / "scene.png"), scene)
+    video = tmp_path / "20261120_100000.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "30", "-i", str(tmp_path / "scene.png"),
+                    "-t", "40", "-vf",
+                    "crop=w=800:h=450:x='if(lt(t,5),t*30+8*sin(t*9),150)+if(gt(t,38),(t-38)*60,0)'"
+                    ":y='if(lt(t,5),20+10*sin(t*7),20)',noise=alls=12:allf=t,format=yuv420p",
+                    "-c:v", "libx264", "-g", "30", "-preset", "veryfast", str(video)], check=True)
+    span = wind_log.still_span(wind_pairs.motion_steps(str(video)))
+    assert span is not None and 5.0 <= span[0] <= 8.0 and 35.0 <= span[1] <= 38.0, span
 
 
 def test_per_clip_headings():

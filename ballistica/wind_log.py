@@ -21,6 +21,12 @@ minus the duration, is the cross-check.
 The meter's fan spins down slowly: a 5.8 mph puff took ~8 s to read zero
 again. Rises are prompt, falls lag -- prefer window averages and peaks over
 reading single falling values.
+
+The camera has to stand still for leaf movement to be measurable (a
+handheld clip shifted 10-280 px between keyframes; leaves in a 3 mph breeze
+move a few). Rick starts each clip on the meter's screen as a clock check,
+walks back and sets the phone down, so only the longest still stretch of a
+clip is used -- still_span() finds it from keyframe-to-keyframe shifts.
 """
 from __future__ import annotations
 
@@ -172,6 +178,35 @@ def clip_timing(path: str, duration_s: float, embedded_utc: datetime | None,
     raise ValueError(f"{os.path.basename(path)}: no start time in the file name or the video")
 
 
+# ------------------------------------------------------------------ camera stillness
+# Shift between consecutive keyframes (~1 s apart), in pixels on a 1920-px
+# long side. A phone resting on a table moves ~1 px; handheld rarely < 6.
+STILL_SHIFT_PX = 3.0
+STILL_MIN_RESPONSE = 0.3        # phase-correlation confidence; blurry walking frames are lower
+STILL_MIN_S = 20.0
+STILL_MARGIN_S = 1.0            # trimmed off both ends: setting the phone down, reaching to stop
+
+
+def still_span(steps, shift_px: float = STILL_SHIFT_PX, min_response: float = STILL_MIN_RESPONSE,
+               min_s: float = STILL_MIN_S, margin_s: float = STILL_MARGIN_S) -> tuple[float, float] | None:
+    """steps: [(t_prev, t, shift_px, response)] between consecutive keyframes.
+    The longest stretch where the camera held still, in clip seconds, or None
+    if it never held still for min_s."""
+    best, run_start = None, None
+    for t_prev, t, shift, response in steps:
+        if shift <= shift_px and response >= min_response:
+            if run_start is None:
+                run_start = t_prev
+            if best is None or t - run_start > best[1] - best[0]:
+                best = (run_start, t)
+        else:
+            run_start = None
+    if best is None:
+        return None
+    lo, hi = best[0] + margin_s, best[1] - margin_s
+    return (lo, hi) if hi - lo >= min_s else None
+
+
 # ------------------------------------------------------------------ pairing
 def _typical_interval_s(readings: list[Reading]) -> float:
     gaps = [(b.at - a.at).total_seconds() for a, b in zip(readings, readings[1:])]
@@ -180,8 +215,10 @@ def _typical_interval_s(readings: list[Reading]) -> float:
 
 
 def window_stats(readings: list[Reading], clip: Clip, window_s: float = 10.0,
-                 clock_offset_s: float = 0.0) -> list[dict]:
-    """One row per window_s slice of the clip, plus a whole-clip row.
+                 clock_offset_s: float = 0.0, span: tuple[float, float] | None = None,
+                 note: str = "") -> list[dict]:
+    """One row per window_s slice of the clip (or of span, in clip seconds --
+    the still part), plus a whole-span row "all". note goes on every row.
 
     clock_offset_s: how far the camera's clock is AHEAD of the meter phone's
     (measured by filming the app screen at the start of a clip); 0 when the
@@ -195,11 +232,11 @@ def window_stats(readings: list[Reading], clip: Clip, window_s: float = 10.0,
         mph = [r.mph for r in inside]
         temps = [r.temp_f for r in inside if r.temp_f is not None]
         expected = (hi - lo) / interval
-        note = ""
+        notes = [note] if note else []
         if not inside:
-            note = "no readings"
+            notes.append("no readings")
         elif len(inside) < 0.5 * expected:
-            note = f"gap: {len(inside)} of ~{expected:.0f} readings"
+            notes.append(f"gap: {len(inside)} of ~{expected:.0f} readings")
         return {
             "video": os.path.basename(clip.path), "window": label,
             "start_s": round(lo, 1), "end_s": round(hi, 1),
@@ -210,13 +247,14 @@ def window_stats(readings: list[Reading], clip: Clip, window_s: float = 10.0,
             "max_mph": max(mph) if mph else None,
             "sd_mph": round(statistics.pstdev(mph), 2) if len(mph) > 1 else None,
             "temp_f": round(statistics.fmean(temps), 1) if temps else None,
-            "note": note,
+            "note": "; ".join(notes),
         }
 
+    first, last = span if span else (0.0, clip.duration_s)
     rows = []
-    n = max(1, math.ceil(clip.duration_s / window_s - 1e-9))
+    n = max(1, math.ceil((last - first) / window_s - 1e-9))
     for k in range(n):
-        lo, hi = k * window_s, min((k + 1) * window_s, clip.duration_s)
+        lo, hi = first + k * window_s, min(first + (k + 1) * window_s, last)
         rows.append(stats(lo, hi, str(k + 1)))
-    rows.append(stats(0.0, clip.duration_s, "all"))
+    rows.append(stats(first, last, "all"))
     return rows

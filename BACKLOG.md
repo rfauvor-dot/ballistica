@@ -548,9 +548,23 @@ promptly but ending late. `tools/wind_pairs.py` (logic in
 `ballistica/wind_log.py`) lines logs up with clips and writes per-window
 mean/min/max/sd mph to CSV. Samsung clips: the file name is the local start
 time; the embedded creation_time is the END, in UTC (checked on Rick's
-clips). Record each clip's camera heading (`--heading`). If a different
-device films, film the app screen at the start of each clip to measure
-`--clock-offset`.
+clips). Record each clip's camera heading (`--heading`) and the meter's
+(`--meter-heading`). If a different device films, film the app screen at
+the start of each clip to measure `--clock-offset`.
+
+Backyard test clips, 2026-11-20: both were handheld, and the picture
+shifted 10-280 px between keyframes, which swamps leaf movement. Rick's
+protocol now:
+- the meter on its own tripod in the open, turned until the reading peaks,
+  and outside 10+ minutes first (temperature took ~9 minutes to settle);
+- 2-3 s on the meter's screen as a clock check;
+- the phone set down on a table in landscape, 1x, focus and exposure
+  locked, untouched for 3 minutes.
+
+The tool now measures only the longest stretch where the camera held still:
+keyframe shifts of 3 px or less for at least 20 s, with 1 s trimmed off
+each end. A clip that never held still is measured whole and flagged
+"camera not still". `--start`/`--end` set the stretch by hand.
 
 **Recommended sequencing:** windsock/vegetation first (tractable, real
 signal, no atmospheric modeling needed) once the camera rig is
