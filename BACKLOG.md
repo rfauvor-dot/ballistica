@@ -1169,4 +1169,13 @@ Rick's answers (2026-11-25):
 - Example names this implies: "223 Wylde 20-inch Faxon flame fluted",
   "338 Win Mag Ruger Model 77".
 
+**The point (Rick, 2026-11-25):** with ~20 rifles he needs to know at the
+range which one he's actually shooting. Caliber/chamber + barrel length +
+maker ("223 Wylde 16-inch Aero Precision") is enough, since few of his
+rifles share a barrel length. So keep it simple: barrel style is optional
+at most. Other users may name differently, and someone with one rifle
+doesn't need this, so it's an offered default, never enforced. (Speech
+to text heard "Aero Precision" as "arrow precision" -- the maker list
+should help voice match brand names like that.)
+
 Status: not started; Rick wants to discuss first. Lenses: Build, Marketing.
