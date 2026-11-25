@@ -1156,4 +1156,17 @@ builds this name; voice rename already offers it. Open questions: which
 makers go on the list, whether the maker is the rifle or barrel maker,
 and whether existing rifles get a one-tap rename to the scheme.
 
+Rick's answers (2026-11-25):
+- **Maker is whichever matters for that gun**: the barrel maker on an AR
+  (Faxon -- his favorite), the rifle maker and model on a bolt gun (a .338
+  Win Mag that's a Ruger Model 77). So one "maker / model" slot, not two
+  fixed fields, and it should take a model as well as a brand.
+- **Barrel style is worth naming**: flame fluted vs plain fluted Faxon
+  barrels. Likely an optional barrel-profile pick (flame fluted, fluted,
+  heavy, pencil...).
+- **Chamber matters within a caliber**: 5.56 NATO vs .223 Wylde, so the
+  caliber list needs the chamber variants, not just ".223".
+- Example names this implies: "223 Wylde 20-inch Faxon flame fluted",
+  "338 Win Mag Ruger Model 77".
+
 Status: not started; Rick wants to discuss first. Lenses: Build, Marketing.
