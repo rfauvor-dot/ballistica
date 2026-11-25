@@ -1137,3 +1137,23 @@ against detected holes.
 Marketing (a shot-by-shot replay of a group is a strong demo), Chief of
 Staff (decide whether this is app functionality or a coaching/review tool
 first).
+
+---
+
+## Easier rifle naming: build the name from picks (Rick, 2026-11-25)
+
+Renaming by voice works now (live 2026-11-25), but Rick found it faster to
+type the name in the edit form and save. His rule of thumb for names:
+**caliber, then barrel length, then maybe the maker** (Winchester,
+Remington, Ruger...), e.g. "308 20-inch Ruger". He'd like that on a list
+to pick from rather than said or typed out.
+
+Starting idea, to talk through with Rick before building: in the rifle
+form, a caliber pick list, a barrel-length field and a maker pick list
+that fill in the name (still editable), plus a "Use suggested name"
+button on existing rifles. `scheme_name()` in `rifle_names.py` already
+builds this name; voice rename already offers it. Open questions: which
+makers go on the list, whether the maker is the rifle or barrel maker,
+and whether existing rifles get a one-tap rename to the scheme.
+
+Status: not started; Rick wants to discuss first. Lenses: Build, Marketing.
