@@ -64,10 +64,10 @@ def _spoken_numbers(text: str) -> str:
     out: list[str] = []
     i = 0
     while i < len(words):
-        w = words[i].strip(",.?!")
+        w = words[i].strip(",.?!").lower()
         if w in _NUMBER_WORDS and w != "one" and _NUMBER_WORDS[w] >= 2:
             value = _NUMBER_WORDS[w]
-            nxt = words[i + 1].strip(",.?!") if i + 1 < len(words) else ""
+            nxt = words[i + 1].strip(",.?!").lower() if i + 1 < len(words) else ""
             if value in (20, 30) and nxt in _NUMBER_WORDS and 1 <= _NUMBER_WORDS[nxt] <= 9:
                 value += _NUMBER_WORDS[nxt]
                 i += 1

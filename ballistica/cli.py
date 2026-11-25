@@ -462,6 +462,27 @@ _RENAME_NAMED_RE = re.compile(
     r"\b(?:rename|re-name|change the name of)\s+(.+?)[\s.!?]*$", re.IGNORECASE,
 )
 _RENAME_TO_RE = re.compile(r"\s+(?:to|as)\s+", re.IGNORECASE)
+# Other ways of saying it, rewritten to "rename ..." before the two patterns
+# above are tried (2026-11-24, Rick's first live try: "change my rifle name"
+# and the like went to the model, which has no rename and said it couldn't).
+_RENAME_REWRITES = (
+    # "change my rifle name to X", "update the rifle's name"
+    (re.compile(r"\b(?:change|update|edit|fix|set)\s+(?:my\s+|the\s+)?(?:rifle|gun)(?:'s|s)?\s+name\b",
+                re.IGNORECASE), "rename this rifle"),
+    # "change the name on my Tikka", "change name of the Tikka"
+    (re.compile(r"\b(?:change|update|edit|fix)\s+(?:the\s+)?name\s+(?:of|on|for)\s+", re.IGNORECASE),
+     "rename "),
+    # "change my 6mm ARC's name to X"
+    (re.compile(r"\b(?:change|update|edit|fix)\s+(?:my\s+|the\s+)?(.+?)'s\s+name\b", re.IGNORECASE),
+     r"rename \1"),
+)
+_MILLIMETER_RE = re.compile(r"(\d)\s*millimet(?:er|re)s?\b", re.IGNORECASE)
+
+
+def _spoken_name(text: str) -> str:
+    """A new rifle name as said: 'call it ARC eighteen inch Bergara' ->
+    'ARC 18 inch Bergara'."""
+    return clean_spoken_name(_MILLIMETER_RE.sub(r"\1mm", _spoken_numbers(text or "")))
 # Asking for a name ("what should I call it?", "suggest a name").
 _NAME_HELP_RE = re.compile(
     r"\b(?:suggest(?:ion)?s?|recommend\w*|any ideas|what should i (?:call|name)|"
@@ -1165,15 +1186,18 @@ class BallisticaCLI:
             if not targets and self.store.rifles:
                 return "All your rifles are already named by caliber and barrel length."
             return self._start_rename(targets)
-        m = _RENAME_ONE_RE.search(t)
+        rt = t
+        for pattern, repl in _RENAME_REWRITES:
+            rt = pattern.sub(repl, rt, count=1)
+        m = _RENAME_ONE_RE.search(rt)
         if m:
             self._last_tool_name = "rename_rifle"
             try:
                 active = self.store.get_active_rifle().name
             except ValueError:
                 return "No rifle selected -- say 'switch rifle' first."
-            return self._start_rename([active], custom=clean_spoken_name(m.group(1) or ""))
-        m = _RENAME_NAMED_RE.search(t)
+            return self._start_rename([active], custom=_spoken_name(m.group(1) or ""))
+        m = _RENAME_NAMED_RE.search(rt)
         if m:
             reply = self._request_named_rename(m.group(1))
             if reply is not None:
@@ -1559,6 +1583,9 @@ class BallisticaCLI:
                 part = str(args.get("part") or "solution")
             elif name == "delete_rifle":
                 delete_query = str(args.get("query") or "")
+            elif name == "rename_rifle":
+                rename_args = (str(args.get("rifle") or ""), str(args.get("new_name") or ""),
+                               bool(args.get("wants_suggestion")))
             elif name not in ("set_conditions", "get_status", "converse", "update_rifle_field",
                                "update_load_field", "start_load_setup", "start_rifle_setup",
                                "start_calibration", "log_session_observation"):
@@ -1597,6 +1624,8 @@ class BallisticaCLI:
             return self._update_load_fields(args)
         if name == "delete_rifle":
             return self._request_delete_rifle_by_query(delete_query)
+        if name == "rename_rifle":
+            return self._rename_from_parts(*rename_args)
         if name == "log_session_observation":
             # Only meaningful in Session Mode (the tool is only offered
             # then) -- ignored otherwise rather than logging into a
@@ -3142,6 +3171,8 @@ class BallisticaCLI:
         if help_m:
             rest = re.sub(r"[\s,;:-]*(?:\band\b|\bthen\b)?[\s,;:-]*$", "", rest[:help_m.start()]).strip()
         rest = re.sub(r"^(?:my|the)\s+", "", rest, flags=re.IGNORECASE)
+        if re.fullmatch(r"(?:(?:a|one|one of (?:my|the)|any of (?:my|the))\s+)?rifles?", rest, re.IGNORECASE):
+            return self._rename_from_parts("", "", bool(help_m))   # "rename rifle", "rename a rifle"
         if not rest or re.match(r"^(?:this|the|my|current|the current)?\s*rifles?\b", rest, re.IGNORECASE):
             return None   # _RENAME_ONE_RE / _RENAME_ALL_RE territory
         # Each " to " / " as " is a possible split; the first whose left side
@@ -3151,31 +3182,71 @@ class BallisticaCLI:
         splits.append((rest, ""))
         ambiguous: list = []
         for old_q, new_q in splits:
-            old_q = re.sub(r"^(?:my|the)\s+", "", old_q.strip(), flags=re.IGNORECASE)
-            if re.fullmatch(r"(?:it|this(?: one)?|that(?: one)?)", old_q, re.IGNORECASE):
-                try:
-                    matches = [self.store.get_active_rifle()]
-                except ValueError:
-                    return "No rifle selected -- say which rifle to rename."
-            else:
-                matches = self.store.find_rifle_matches(old_q) or []
+            matches = self._rename_matches(old_q)
+            if isinstance(matches, str):
+                return matches
             if len(matches) == 1:
-                rifle = matches[0]
-                custom = clean_spoken_name(new_q) if new_q else ""
-                if help_m and not custom:
-                    self._start_rename([rifle.name])
-                    return self._rename_scheme_reply(self._rename)
-                return self._start_rename([rifle.name], custom=custom)
+                return self._rename_from_parts(matches[0].name, new_q, bool(help_m))
             if len(matches) > 1 and not ambiguous:
                 ambiguous = matches
         if ambiguous:
-            names = [r.name for r in ambiguous]
-            listed = ", the ".join(names[:-1]) + f" or the {names[-1]}"
-            return f"That could be the {listed}. Which one? Say rename and its full name."
+            return self._rename_which_one(ambiguous)
         if re.search(r"\b(?:loads?|ammo|bullets?)\b", rest, re.IGNORECASE) or not self.store.rifles:
             return None
-        old_q = re.sub(r"^(?:my|the)\s+", "", splits[0][0].strip(), flags=re.IGNORECASE)
-        return f"I don't have a rifle called '{old_q}'. Say rename and the rifle's name."
+        return f"I don't have a rifle called '{self._clean_rifle_query(splits[0][0])}'. Say rename and the rifle's name."
+
+    @staticmethod
+    def _clean_rifle_query(query: str) -> str:
+        """'my six millimeter ARC rifle' -> '6mm ARC rifle' (the words speech
+        to text writes out, as the saved names write them)."""
+        q = re.sub(r"^(?:my|the)\s+", "", (query or "").strip(), flags=re.IGNORECASE)
+        return _MILLIMETER_RE.sub(r"\1mm", _spoken_numbers(q)).strip(" .,!?")
+
+    def _rename_matches(self, query: str) -> list | str:
+        """The saved rifles a spoken rifle name could mean -- 'it' / 'this one'
+        is the active rifle -- or what to say when there's no active one."""
+        q = self._clean_rifle_query(query)
+        if not q or re.fullmatch(r"(?:it|this(?: one| rifle)?|that(?: one| rifle)?|(?:the )?current(?: rifle)?)",
+                                 q, re.IGNORECASE):
+            try:
+                return [self.store.get_active_rifle()]
+            except ValueError:
+                return "No rifle selected -- say which rifle to rename."
+        return self.store.find_rifle_matches(q) or []
+
+    @staticmethod
+    def _rename_which_one(rifles: list) -> str:
+        names = [r.name for r in rifles]
+        listed = ", the ".join(names[:-1]) + f" or the {names[-1]}"
+        return f"That could be the {listed}. Which one? Say rename and its full name."
+
+    def _rename_from_parts(self, rifle_q: str, new_name: str, wants_help: bool = False) -> str:
+        """Start renaming one rifle: read the new name back (nothing saved
+        until a yes), or, with no name, offer one. Also what the model's
+        rename_rifle tool comes through, for phrasings no pattern caught."""
+        if not rifle_q.strip() and len(self.store.rifles) > 1 and not self.store.active_rifle_name:
+            example = next(iter(self.store.rifles))
+            return f"Which rifle? Say rename and its name -- like 'rename the {example} to' and the new name."
+        if not self.store.rifles:
+            return "No rifles saved yet -- say 'new rifle' to set one up."
+        if rifle_q in self.store.rifles:
+            matches = [self.store.rifles[rifle_q]]
+        elif not rifle_q.strip() and len(self.store.rifles) == 1:
+            matches = list(self.store.rifles.values())
+        else:
+            matches = self._rename_matches(rifle_q)
+            if isinstance(matches, str):
+                return matches
+        if not matches:
+            return f"I don't have a rifle called '{self._clean_rifle_query(rifle_q)}'. Say rename and the rifle's name."
+        if len(matches) > 1:
+            return self._rename_which_one(matches)
+        rifle = matches[0]
+        custom = _spoken_name(new_name) if new_name else ""
+        if wants_help and not custom:
+            self._start_rename([rifle.name])
+            return self._rename_scheme_reply(self._rename)
+        return self._start_rename([rifle.name], custom=custom)
 
     def _scheme_note(self, rs: dict, custom: str) -> str:
         """When his own name doesn't say the caliber: the caliber-barrel-maker
@@ -3337,7 +3408,7 @@ class BallisticaCLI:
 
         if stage == "confirm":
             if rs.get("suggestion") and (_TAKE_SCHEME_RE.search(low)
-                                         or clean_spoken_name(text).lower() == rs["suggestion"].lower()):
+                                         or _spoken_name(text).lower() == rs["suggestion"].lower()):
                 return self._do_rename(rs, rs["suggestion"])   # read out already, then chosen
             if _NAME_OFFER_YES_RE.match(low) and not _NEGATED_CONFIRM_RE.search(low):
                 return self._do_rename(rs, rs["custom"])
@@ -3348,7 +3419,7 @@ class BallisticaCLI:
             if no_m and not no_m.group(3).strip():
                 rs["stage"] = "name"
                 return f"Okay, what should I call the {name}? Or say keep."
-            custom = clean_spoken_name(text)
+            custom = _spoken_name(text)
             if not custom:
                 return f"What should I call the {name}? Or say keep."
             rs["custom"] = custom
@@ -3364,7 +3435,7 @@ class BallisticaCLI:
         if no_m and not no_m.group(3).strip():
             rs["stage"] = "name"
             return f"Okay, what should I call the {name}? Or say keep."
-        custom = clean_spoken_name(text)
+        custom = _spoken_name(text)
         if not custom or (stage == "name" and _NAME_OFFER_YES_RE.match(low)):
             return f"What should I call the {name}? Or say keep."
         rs["custom"] = custom

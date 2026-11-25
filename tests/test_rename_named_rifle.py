@@ -260,3 +260,57 @@ def test_supabase_rename_patches_the_same_rows(monkeypatch):
     assert writes == [("PATCH", "rifles", "eq.rifle-1", writes[0][3])]
     assert writes[0][3]["name"] == "ARC 18 inch Bergara"
     assert store.active_rifle_name == "ARC 18 inch Bergara"
+
+
+# ------------------------- other ways of saying it (Rick's first live try)
+
+@pytest.mark.parametrize("said", [
+    "change my rifle name to ARC 18 inch Bergara",
+    "change the rifle name to ARC 18 inch Bergara",
+    "update my rifle's name to ARC 18 inch Bergara",
+    "change my 6mm ARC's name to ARC 18 inch Bergara",
+    "change the name on my 6mm ARC to ARC 18 inch Bergara",
+    "Rename my six millimeter ARC to ARC eighteen inch Bergara",
+    "rename my 6 mm ARC to ARC 18 inch Bergara.",
+])
+def test_other_phrasings_reach_the_read_back(tmp_path, said):
+    cli, store = _make(tmp_path, [_rifle("6mm ARC", "6mm ARC", 18), _rifle("Tikka", "6.5 Creedmoor", 24)],
+                       active="6mm ARC")
+    assert cli.handle(said) == "Rename the 6mm ARC to 'ARC 18 inch Bergara' -- right?"
+    assert cli.handle("yes") == "Renamed to 'ARC 18 inch Bergara'."
+    assert sorted(store.rifles) == ["ARC 18 inch Bergara", "Tikka"]
+
+
+@pytest.mark.parametrize("said", ["rename rifle", "I'd like to rename a rifle", "update my rifle name"])
+def test_no_rifle_said_means_the_current_one(tmp_path, said):
+    cli, store = _make(tmp_path, [_rifle("6mm ARC", "6mm ARC", 18), _rifle("Tikka", "6.5 Creedmoor", 24)],
+                       active="6mm ARC")
+    assert cli.handle(said).startswith("The 6mm ARC: how about '6mm ARC 18-inch'?")
+
+
+def test_the_model_tool_catches_the_rest_and_still_reads_back(tmp_path, monkeypatch):
+    cli, store = _make(tmp_path, [_rifle("6mm ARC", "6mm ARC", 18), _rifle("Tikka", "6.5 Creedmoor", 24)],
+                       active="Tikka")
+    monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None, **k: (
+        "rename_rifle", {"rifle": "six millimeter ARC", "new_name": "ARC eighteen inch Bergara"}))
+    assert cli.handle("call my 6mm ARC ARC 18 inch Bergara") == (
+        "Rename the 6mm ARC to 'ARC 18 inch Bergara' -- right?")
+    assert cli._last_tool_name == "rename_rifle"
+    assert "6mm ARC" in store.rifles                       # still nothing saved
+    assert cli.handle("yes") == "Renamed to 'ARC 18 inch Bergara'."
+
+
+def test_the_model_tool_asking_for_a_name(tmp_path, monkeypatch):
+    cli, store = _make(tmp_path, [_rifle("Bergara B14", "6mm ARC", 18)])
+    monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None, **k: (
+        "rename_rifle", {"rifle": "", "new_name": "", "wants_suggestion": True}))
+    assert "how about '6mm ARC 18-inch Bergara'?" in cli.handle("what would be a better name for this thing")
+
+
+def test_the_model_tool_with_an_unknown_rifle(tmp_path, monkeypatch):
+    cli, store = _make(tmp_path, [_rifle("Tikka", "6.5 Creedmoor", 24), _rifle("Ruger", ".308 Winchester", 20)])
+    monkeypatch.setattr(cli_module, "extract_intent", lambda text, history=None, **k: (
+        "rename_rifle", {"rifle": "Remington", "new_name": "Old Faithful"}))
+    assert cli.handle("my Remington should be Old Faithful") == (
+        "I don't have a rifle called 'Remington'. Say rename and the rifle's name.")
+    assert cli._rename is None

@@ -417,6 +417,28 @@ _TOOLS = [
         },
     },
     {
+        "name": "rename_rifle",
+        "description": "Rename a saved rifle/pistol -- give it a new name. Any phrasing: 'call my "
+                        "6mm ARC the Bergara instead', 'I want the Tikka to be called 6.5 Creedmoor "
+                        "24 inch', 'the name on my AR is wrong', 'what should I name this rifle?'. "
+                        "The app reads the new name back and only saves it after a yes, so never "
+                        "say it's done or that renaming isn't possible. Its loads, velocities and "
+                        "zero stay with it. (2026-11-24: with no rename tool, the model told the "
+                        "user live that it didn't have the capability.)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rifle": {"type": "string", "description": "Words identifying which rifle, verbatim "
+                                                             "(e.g. '6mm ARC'). Empty for 'this rifle' / "
+                                                             "the current one."},
+                "new_name": {"type": "string", "description": "The new name exactly as said, if one "
+                                                                "was said. Empty if none was."},
+                "wants_suggestion": {"type": "boolean", "description": "True if they asked for a "
+                                                                         "name idea or suggestion."},
+            },
+        },
+    },
+    {
         "name": "get_status",
         "description": "Report the active rifle, load, and current conditions -- only when NO "
                         "specific distance is mentioned anywhere in the utterance. If a distance "
