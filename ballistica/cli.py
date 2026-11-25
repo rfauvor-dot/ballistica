@@ -33,7 +33,8 @@ from .narrowing import (
 )
 from .profiles import Load, ProfileStore, Rifle
 from .rifle_names import (
-    clean_maker, clean_spoken_name, maker_from_name, name_base, needs_maker, suggest_name,
+    clean_maker, clean_spoken_name, maker_from_name, mentions_caliber, name_base, needs_maker,
+    scheme_name, suggest_name,
 )
 from .narrowing import _spoken_numbers, rifle_barrel
 from .shared_loads import family_label, is_estimate, share_into, share_load, spoken_estimate_note
@@ -453,6 +454,25 @@ _RENAME_ONE_RE = re.compile(
     r"\b(?:rename|re-name|change the name of)\s+(?:this|the|my|the current|current)\s+rifle\b"
     r"(?:\s+(?:to|as)\s+(.+))?",
     re.IGNORECASE,
+)
+# A rifle named outright (2026-11-24): "rename my 6mm ARC to ARC 18 inch
+# Bergara", "change the name of the Tikka". Checked after the two above, so
+# "rename this rifle" and "rename my rifles" keep their own meaning.
+_RENAME_NAMED_RE = re.compile(
+    r"\b(?:rename|re-name|change the name of)\s+(.+?)[\s.!?]*$", re.IGNORECASE,
+)
+_RENAME_TO_RE = re.compile(r"\s+(?:to|as)\s+", re.IGNORECASE)
+# Asking for a name ("what should I call it?", "suggest a name").
+_NAME_HELP_RE = re.compile(
+    r"\b(?:suggest(?:ion)?s?|recommend\w*|any ideas|what should i (?:call|name)|"
+    r"how should i (?:call|name)|naming (?:scheme|convention)|help me (?:name|pick)|"
+    r"what(?:'?s| is| would be) a good name|give me a name|got a name)\b",
+    re.IGNORECASE,
+)
+# Taking the caliber-barrel-maker name offered beside his own.
+_TAKE_SCHEME_RE = re.compile(
+    r"\b(?:yours|your (?:one|name|suggestion|idea|way)|the suggestion|(?:the )?second(?: one)?|"
+    r"the other(?: one)?|the caliber one|that scheme)\b"
 )
 _EQUIPMENT_CHECK_RE = re.compile(r"\bequipment\s*check\b|\bpre-?\s*flight\b|\bgear\s*check\b")
 # Getting out of it: a cancel word on its own, or "stop the (equipment) check".
@@ -1153,6 +1173,12 @@ class BallisticaCLI:
             except ValueError:
                 return "No rifle selected -- say 'switch rifle' first."
             return self._start_rename([active], custom=clean_spoken_name(m.group(1) or ""))
+        m = _RENAME_NAMED_RE.search(t)
+        if m:
+            reply = self._request_named_rename(m.group(1))
+            if reply is not None:
+                self._last_tool_name = "rename_rifle"
+                return reply
         if self._rename is not None:
             if self._requests_different_top_level_task(low):
                 self._rename = None
@@ -3102,9 +3128,85 @@ class BallisticaCLI:
         if custom:
             rs["custom"] = custom
             rs["stage"] = "confirm"
-            return f"Rename the {names[0]} to '{custom}' -- right?"
+            return f"Rename the {names[0]} to '{custom}' -- right?" + self._scheme_note(rs, custom)
         intro = "" if rs["single"] else f"Let's go through your {len(names)} rifles, one at a time. "
         return intro + self._rename_prompt(rs)
+
+    def _request_named_rename(self, rest: str) -> str | None:
+        """"rename my 6mm ARC to ARC 18 inch Bergara": which rifle, and the
+        new name if one was said. Nothing is saved here -- the name is read
+        back first. None when no saved rifle is meant (a load, say), so the
+        turn carries on through the rest of handle()."""
+        rest = rest.strip()
+        help_m = _NAME_HELP_RE.search(rest)
+        if help_m:
+            rest = re.sub(r"[\s,;:-]*(?:\band\b|\bthen\b)?[\s,;:-]*$", "", rest[:help_m.start()]).strip()
+        rest = re.sub(r"^(?:my|the)\s+", "", rest, flags=re.IGNORECASE)
+        if not rest or re.match(r"^(?:this|the|my|current|the current)?\s*rifles?\b", rest, re.IGNORECASE):
+            return None   # _RENAME_ONE_RE / _RENAME_ALL_RE territory
+        # Each " to " / " as " is a possible split; the first whose left side
+        # names exactly one rifle wins. With none, the whole thing may be
+        # just the rifle ("rename the Tikka").
+        splits = [(rest[:sm.start()], rest[sm.end():]) for sm in _RENAME_TO_RE.finditer(rest)]
+        splits.append((rest, ""))
+        ambiguous: list = []
+        for old_q, new_q in splits:
+            old_q = re.sub(r"^(?:my|the)\s+", "", old_q.strip(), flags=re.IGNORECASE)
+            if re.fullmatch(r"(?:it|this(?: one)?|that(?: one)?)", old_q, re.IGNORECASE):
+                try:
+                    matches = [self.store.get_active_rifle()]
+                except ValueError:
+                    return "No rifle selected -- say which rifle to rename."
+            else:
+                matches = self.store.find_rifle_matches(old_q) or []
+            if len(matches) == 1:
+                rifle = matches[0]
+                custom = clean_spoken_name(new_q) if new_q else ""
+                if help_m and not custom:
+                    self._start_rename([rifle.name])
+                    return self._rename_scheme_reply(self._rename)
+                return self._start_rename([rifle.name], custom=custom)
+            if len(matches) > 1 and not ambiguous:
+                ambiguous = matches
+        if ambiguous:
+            names = [r.name for r in ambiguous]
+            listed = ", the ".join(names[:-1]) + f" or the {names[-1]}"
+            return f"That could be the {listed}. Which one? Say rename and its full name."
+        if re.search(r"\b(?:loads?|ammo|bullets?)\b", rest, re.IGNORECASE) or not self.store.rifles:
+            return None
+        old_q = re.sub(r"^(?:my|the)\s+", "", splits[0][0].strip(), flags=re.IGNORECASE)
+        return f"I don't have a rifle called '{old_q}'. Say rename and the rifle's name."
+
+    def _scheme_note(self, rs: dict, custom: str) -> str:
+        """When his own name doesn't say the caliber: the caliber-barrel-maker
+        name, offered once beside it."""
+        if rs.get("suggestion") or mentions_caliber(custom):
+            return ""
+        rifle = self.store.rifles.get(rs["queue"][0])
+        if rifle is None:
+            return ""
+        scheme = scheme_name(rifle, list(self.store.rifles.values()), maker_from_name(rifle.name))
+        if not scheme or scheme.lower() == custom.lower():
+            return ""
+        rs["suggestion"] = scheme
+        return f" Or, by caliber, barrel and maker: '{scheme}'."
+
+    def _rename_scheme_reply(self, rs: dict) -> str:
+        """He asked for a name: caliber, barrel length and maker, built from
+        what the rifle has saved."""
+        name = rs["queue"][0]
+        rifle = self.store.rifles.get(name)
+        maker = rs.get("maker") or maker_from_name(name)
+        scheme = scheme_name(rifle, list(self.store.rifles.values()), maker) if rifle is not None else None
+        if not scheme:
+            rs["stage"] = "name"
+            return ("A good scheme is caliber, barrel length and maker, like '6mm ARC 18-inch Bergara'. "
+                    f"I don't have the {name}'s caliber saved -- what do you want to call it? Or say keep.")
+        rs["suggestion"] = scheme
+        rs["stage"] = "offer"
+        tip = "" if maker else " Add the maker if you like."
+        return (f"Caliber, barrel length and maker works well: how about '{scheme}'?{tip} "
+                "Say yes, a different name, or keep.")
 
     def _rename_targets(self) -> list[str]:
         """Rifles whose name isn't already in the caliber-and-barrel style
@@ -3206,6 +3308,9 @@ class BallisticaCLI:
         name = rs["queue"][0]
         keep = re.match(r"^(?:keep|skip|leave|next|pass|no change)\b|^no,? keep\b", low)
         stage = rs["stage"]
+        if (stage in ("offer", "name", "confirm") and _NAME_HELP_RE.search(low)
+                and not (stage == "confirm" and rs.get("suggestion") and _TAKE_SCHEME_RE.search(low))):
+            return self._rename_scheme_reply(rs)
 
         if stage in ("caliber", "barrel", "maker"):
             if _SKIP_RE.match(low):
@@ -3231,6 +3336,9 @@ class BallisticaCLI:
             return self._rename_prompt(rs)
 
         if stage == "confirm":
+            if rs.get("suggestion") and (_TAKE_SCHEME_RE.search(low)
+                                         or clean_spoken_name(text).lower() == rs["suggestion"].lower()):
+                return self._do_rename(rs, rs["suggestion"])   # read out already, then chosen
             if _NAME_OFFER_YES_RE.match(low) and not _NEGATED_CONFIRM_RE.search(low):
                 return self._do_rename(rs, rs["custom"])
             if keep:
@@ -3244,7 +3352,7 @@ class BallisticaCLI:
             if not custom:
                 return f"What should I call the {name}? Or say keep."
             rs["custom"] = custom
-            return f"'{custom}' -- right?"
+            return f"'{custom}' -- right?" + self._scheme_note(rs, custom)
 
         # "offer" or "name"
         if stage == "offer" and _NAME_OFFER_YES_RE.match(low) and not _NEGATED_CONFIRM_RE.search(low):
@@ -3261,7 +3369,7 @@ class BallisticaCLI:
             return f"What should I call the {name}? Or say keep."
         rs["custom"] = custom
         rs["stage"] = "confirm"
-        return f"'{custom}' -- right?"
+        return f"'{custom}' -- right?" + self._scheme_note(rs, custom)
 
     def _clear_pending_for_new_task(self) -> None:
         """Drop every half-finished conversation (setup, calibration, the

@@ -220,7 +220,9 @@ def test_rename_this_rifle_to_a_name(tmp_path, monkeypatch):
     cli, store = _make(tmp_path, [("Tikka", "6.5 Creedmoor", 24), ("Ruger", ".308 Winchester", 20)])
     _no_intent_llm(monkeypatch)
     store.active_rifle_name = "Ruger"
-    assert cli.handle("rename this rifle to Long Tom") == "Rename the Ruger to 'Long Tom' -- right?"
+    # 'Long Tom' doesn't say the caliber: the caliber-barrel-maker name is offered beside it.
+    assert cli.handle("rename this rifle to Long Tom") == (
+        "Rename the Ruger to 'Long Tom' -- right? Or, by caliber, barrel and maker: '308 20-inch Ruger'.")
     assert cli.handle("yes") == "Renamed to 'Long Tom'."
     assert "Long Tom" in store.rifles and "Ruger" not in store.rifles
 

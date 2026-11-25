@@ -139,3 +139,44 @@ def clean_maker(text: str) -> str:
         else:
             words.append(w)
     return " ".join(words)
+
+
+# Renaming one rifle by voice (2026-11-24): "rename my 6mm ARC to ARC 18 inch
+# Bergara". A name that doesn't say the caliber ("Long Tom", "my gun") is
+# read back with the caliber-barrel-maker name offered beside it, and that
+# same name is what "suggest a name" gives.
+_INCH_WORDS = {"inch", "inches", "in", '"'}
+
+
+def mentions_caliber(name: str) -> bool:
+    """Whether a name says the caliber: a caliber word ('Creedmoor', 'ARC')
+    or a caliber number ('6mm', '308', '6.5') -- not a barrel length."""
+    tokens = [t.strip(".,()'\"") for t in name.split()]
+    for i, tok in enumerate(tokens):
+        low = tok.lower()
+        if not low:
+            continue
+        if low in _CALIBER_WORDS - {"x", "short", "long", "super", "special", "auto", "carbine", "mm", "cm"}:
+            return True
+        nxt = tokens[i + 1].lower() if i + 1 < len(tokens) else ""
+        if re.search(r"(?:-?inch(?:es)?|-in|\")$", low) or nxt in _INCH_WORDS:
+            continue   # '18-inch', '18 inch': a barrel length
+        if re.match(r"^\.?\d{2,}|^\d+\.\d+|^\d+(?:mm|x\d)", low):
+            return True
+    return False
+
+
+def scheme_name(rifle: Rifle, rifles: list[Rifle], maker: str = "") -> str | None:
+    """Caliber, barrel length and maker: '6mm ARC 18-inch Bergara' -- the
+    maker always included when it's known, unlike suggest_name(). None
+    without a saved caliber. Never a name another rifle already has."""
+    base = name_base(rifle.caliber, rifle_barrel(rifle)) if rifle.caliber.strip() else None
+    if not base:
+        return None
+    name = f"{base} {maker}".strip()
+    taken = {r.name.lower() for r in rifles if r.name != rifle.name}
+    candidate, n = name, 2
+    while candidate.lower() in taken:
+        candidate = f"{name} {n}"
+        n += 1
+    return candidate
