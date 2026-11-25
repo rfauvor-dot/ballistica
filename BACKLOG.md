@@ -1178,4 +1178,13 @@ doesn't need this, so it's an offered default, never enforced. (Speech
 to text heard "Aero Precision" as "arrow precision" -- the maker list
 should help voice match brand names like that.)
 
+**Settled shape (Rick, 2026-11-25):** caliber, barrel length, then ONE
+free "what sets it apart" slot -- a maker (Aero Precision, Faxon, Daniel
+Defense), "fluted", or "left-handed" (he has left-handed receivers). The
+real pain is remembering the word order he used last time ("5.56 Faxon
+fluted 20-inch" or "20-inch Faxon fluted"?); a fixed order removes that.
+Voice lookup (`find_rifle_matches`) already matches by words, not order,
+and against the caliber/barrel fields too. Names like "Old Betsy" stay
+fine for anyone who wants them.
+
 Status: not started; Rick wants to discuss first. Lenses: Build, Marketing.
