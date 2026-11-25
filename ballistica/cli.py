@@ -2335,8 +2335,10 @@ class BallisticaCLI:
                 return "caliber"
             if d.get("caliber") and "barrel_length_in" not in skipped and d.get("barrel_length_in") in (None, ""):
                 return "barrel_length_in"
-            if (d.get("caliber") and "_maker" not in skipped and not d.get("_maker")
-                    and needs_maker(d["caliber"], self._draft_barrel(), list(self.store.rifles.values()))):
+            # Always offered now, not only on a clash (Rick, 2026-11-25): a
+            # third detail -- maker, "fluted", "left-handed" -- so with ~20
+            # rifles the name says which one it is. "Skip" leaves it off.
+            if d.get("caliber") and "_maker" not in skipped and not d.get("_maker"):
                 return "_maker"
         required = _LOAD_REQUIRED if self._setup.kind == "load" else _RIFLE_REQUIRED
         for field in required:
@@ -2372,7 +2374,7 @@ class BallisticaCLI:
         if self._setup.kind != "rifle" or "_name_offer" in self._setup.skipped or not d.get("caliber"):
             return None
         return suggest_name(str(d["caliber"]), self._draft_barrel(), list(self.store.rifles.values()),
-                            maker=d.get("_maker", ""))
+                            maker=d.get("_maker", ""), always_maker=True)
 
     def _setup_next_prompt(self) -> str:
         missing = self._next_field_to_ask()
@@ -2384,7 +2386,12 @@ class BallisticaCLI:
     def _prompt_for(self, field: str) -> str:
         if field == "_maker":
             base = name_base(str(self._setup.draft["caliber"]), self._draft_barrel())
-            return f"You already have a {base}. What's the maker or action -- like Ruger or AR?"
+            if needs_maker(str(self._setup.draft["caliber"]), self._draft_barrel(),
+                           list(self.store.rifles.values())):
+                return (f"You already have a {base}. What sets this one apart -- "
+                        f"a maker like Faxon or Ruger, fluted, left-handed?")
+            return ("Anything else to tell it apart -- a maker like Faxon or Ruger, "
+                    "fluted, left-handed? Or say skip.")
         if field == "name" and (suggestion := self._suggested_setup_name()):
             return f"How about '{suggestion}'? Say yes, or say the name you want."
         prompts = _LOAD_PROMPTS if self._setup.kind == "load" else _RIFLE_PROMPTS
@@ -2516,6 +2523,12 @@ class BallisticaCLI:
         # _next_field_to_ask): "yes" takes the offered name, a bare "no"
         # asks for his own, and anything else is his own name, read below.
         current_field = self._next_field_to_ask()
+        if current_field == "_maker" and re.match(r"^(?:(?:no|okay|ok|actually)[,.]?\s+)?(?:just\s+)?(?:call|name) (?:it|this)\b", low):
+            # His own name said at the third-detail question: take it as the name.
+            self._setup.skipped.add("_maker")
+            self._setup.draft["name"] = _spoken_name(text)
+            self._setup.failed_attempts = 0
+            return self._setup_next_prompt()
         if current_field == "_maker" and not _SKIP_RE.match(low):
             maker = clean_maker(text)
             if maker:

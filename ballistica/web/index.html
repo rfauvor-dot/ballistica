@@ -335,13 +335,33 @@
   <details id="rifleDetails">
     <summary>Rifle setup</summary>
     <div class="panel-body">
+      <!-- Caliber, barrel length, then one detail that sets it apart, and
+           the name builds itself from them (Rick, 2026-11-25: with ~20
+           rifles, a fixed order means never guessing what he called one). -->
+      <div class="row">
+        <div class="field w-lg"><label for="rCaliber">Caliber</label><input id="rCaliber" type="text" list="caliberList" placeholder="e.g. .223 Wylde"></div>
+        <div class="field w-sm"><label for="rBarrel">Barrel (in)</label><input id="rBarrel" type="number" step="0.1" title="Barrel length, inches"></div>
+        <div class="field w-lg"><label for="rDetail">Sets it apart</label><input id="rDetail" type="text" list="detailList" placeholder="e.g. Aero Precision, left-handed" title="Optional: a maker, fluted, left-handed -- whatever tells this rifle apart"></div>
+      </div>
+      <datalist id="caliberList">
+        <option value=".223 Wylde"><option value="5.56 NATO"><option value=".223 Remington"><option value=".300 Blackout">
+        <option value="6mm ARC"><option value="6.5 Grendel"><option value="7.62x39"><option value=".224 Valkyrie">
+        <option value="6mm Creedmoor"><option value="6.5 Creedmoor"><option value=".243 Winchester"><option value=".270 Winchester">
+        <option value=".308 Winchester"><option value=".30-06"><option value=".300 Win Mag"><option value=".338 Win Mag">
+        <option value=".338 Lapua Magnum"><option value="5.7x28"><option value="9mm"><option value=".22 LR">
+      </datalist>
+      <datalist id="detailList">
+        <option value="Aero Precision"><option value="Faxon"><option value="Faxon flame fluted"><option value="Daniel Defense">
+        <option value="BCM"><option value="CMMG"><option value="Palmetto State Armory"><option value="Sig Sauer">
+        <option value="Ruger"><option value="Remington"><option value="Winchester"><option value="Savage">
+        <option value="Tikka"><option value="Bergara"><option value="Fluted"><option value="Left-handed">
+      </datalist>
       <div class="field w-full">
         <label for="rName">Gun name</label>
-        <input id="rName" type="text" placeholder="e.g. AR-15 20in Faxon">
+        <input id="rName" type="text" placeholder="Fills in from caliber, barrel and detail">
+        <button type="button" id="rUseSuggested" style="display:none;margin-top:4px"></button>
       </div>
       <div class="row">
-        <div class="field w-md"><label for="rCaliber">Caliber</label><input id="rCaliber" type="text" placeholder="e.g. .223 Wylde"></div>
-        <div class="field w-sm"><label for="rBarrel">Barrel</label><input id="rBarrel" type="number" step="0.1" title="Barrel length, inches"></div>
         <div class="field w-md"><label for="rTwist">Twist rate</label><input id="rTwist" type="text" placeholder="e.g. 1:7"></div>
         <div class="field w-sm"><label for="rScope">Scope ht</label><input id="rScope" type="number" step="0.1" title="Scope height over bore, inches"></div>
         <div class="field w-md">
@@ -1191,7 +1211,70 @@ function renderRiflePicker() {
   });
 }
 
+// The suggested name: caliber, barrel length, then the detail -- the same
+// order the voice setup uses (rifle_names.py: short_caliber / name_base).
+// '.308 Winchester' -> '308', '5.56 NATO' -> '556', '.338 Lapua Magnum' ->
+// '338 Lapua', '.223 Wylde' -> '223 Wylde'.
+function shortCaliber(caliber) {
+  const words = (caliber || '').trim().replace(/\blapua\s+mag(?:num)?\b/i, 'Lapua').split(/\s+/).filter(Boolean);
+  const drop = new Set(['nato', 'winchester', 'win', 'remington', 'rem', 'lapua']);
+  while (words.length > 1 && drop.has(words[words.length - 1].toLowerCase().replace(/[.,]/g, ''))) words.pop();
+  if (!words.length) return '';
+  words[0] = words[0].replace(/^\.+/, '');
+  if (words.length === 1 && /^\d\.\d\d$/.test(words[0])) words[0] = words[0].replace('.', '');
+  return words.join(' ');
+}
+function suggestedRifleName() {
+  const cal = shortCaliber(document.getElementById('rCaliber').value);
+  if (!cal) return '';
+  const barrelRaw = document.getElementById('rBarrel').value;
+  const barrel = barrelRaw === '' ? NaN : parseFloat(barrelRaw);
+  const detail = document.getElementById('rDetail').value.trim();
+  const base = [cal, isFinite(barrel) && barrel > 0 ? `${+barrel.toFixed(2)}-inch` : '', detail].filter(Boolean).join(' ');
+  // Never another rifle's name: a number goes on as a last resort.
+  const own = creatingNewRifle ? null : (currentRifleDetail && currentRifleDetail.name.toLowerCase());
+  const taken = new Set(allRifles.map(r => r.name.toLowerCase()).filter(n => n !== own));
+  let name = base, n = 2;
+  while (taken.has(name.toLowerCase())) name = `${base} ${n++}`;
+  return name;
+}
+// A new rifle's name follows the three boxes until he types his own; an
+// existing rifle's name is never changed behind his back -- the suggestion
+// shows as a button instead.
+let rifleNameTyped = false;
+function updateSuggestedRifleName() {
+  const nameEl = document.getElementById('rName');
+  const btn = document.getElementById('rUseSuggested');
+  const s = suggestedRifleName();
+  if (creatingNewRifle && !rifleNameTyped) {
+    nameEl.value = s;
+    btn.style.display = 'none';
+    return;
+  }
+  if (s && s.toLowerCase() !== nameEl.value.trim().toLowerCase()) {
+    btn.textContent = `Use '${s}'`;
+    btn.dataset.name = s;
+    btn.style.display = '';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+['rCaliber', 'rBarrel', 'rDetail'].forEach(id =>
+  document.getElementById(id).addEventListener('input', updateSuggestedRifleName));
+document.getElementById('rName').addEventListener('input', () => {
+  rifleNameTyped = document.getElementById('rName').value.trim() !== '';
+  updateSuggestedRifleName();
+});
+document.getElementById('rUseSuggested').addEventListener('click', () => {
+  const btn = document.getElementById('rUseSuggested');
+  document.getElementById('rName').value = btn.dataset.name || '';
+  rifleNameTyped = true;
+  btn.style.display = 'none';
+});
+
 function fillRifleForm(r) {
+  rifleNameTyped = true;
+  document.getElementById('rDetail').value = '';
   document.getElementById('rName').value = r.name;
   document.getElementById('rCaliber').value = r.caliber;
   document.getElementById('rBarrel').value = r.barrel_length_in ?? '';
@@ -1211,6 +1294,7 @@ function fillRifleForm(r) {
   document.getElementById('rSuppressorType').value = r.suppressor_type || '';
   toggleSuppressorType();
   document.getElementById('deleteRifleBtn').style.display = '';
+  updateSuggestedRifleName();
 }
 function toggleSuppressorType() {
   document.getElementById('rSuppressorTypeField').style.display =
@@ -1219,6 +1303,9 @@ function toggleSuppressorType() {
 document.getElementById('rSuppressor').addEventListener('change', toggleSuppressorType);
 function openRifleFormBlank() {
   creatingNewRifle = true;
+  rifleNameTyped = false;
+  document.getElementById('rDetail').value = '';
+  document.getElementById('rUseSuggested').style.display = 'none';
   document.getElementById('rName').value = '';
   document.getElementById('rCaliber').value = '';
   document.getElementById('rBarrel').value = '';
@@ -1267,7 +1354,7 @@ function openLoadFormBlank() {
 
 document.getElementById('newRifleBtn').addEventListener('click', () => {
   openRifleFormBlank();
-  document.getElementById('rName').focus();
+  document.getElementById('rCaliber').focus();
 });
 document.getElementById('editRifleBtn').addEventListener('click', () => {
   if (currentRifleDetail) fillRifleForm(currentRifleDetail);

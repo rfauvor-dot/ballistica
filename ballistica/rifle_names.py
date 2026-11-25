@@ -86,15 +86,17 @@ def needs_maker(caliber: str, barrel: float | None, rifles: list[Rifle], exclude
 
 
 def suggest_name(caliber: str, barrel: float | None, rifles: list[Rifle], maker: str = "",
-                 exclude: str | None = None) -> str | None:
+                 exclude: str | None = None, always_maker: bool = False) -> str | None:
     """'338 24-inch', or '338 24-inch Ruger' when another rifle has the same
-    caliber and length. Never a name another rifle already has (a number is
-    added as a last resort). None without a caliber."""
+    caliber and length (or always, with always_maker -- the new-rifle setup,
+    where he was asked for that third detail). Never a name another rifle
+    already has (a number is added as a last resort). None without a caliber."""
     base = name_base(caliber, barrel)
     if not base:
         return None
     others = [r for r in rifles if r.name != exclude]
-    name = f"{base} {maker}".strip() if maker and any(_same_kind(r, base) for r in others) else base
+    with_maker = maker and (always_maker or any(_same_kind(r, base) for r in others))
+    name = f"{base} {maker}".strip() if with_maker else base
     taken = {r.name.lower() for r in others}
     candidate, n = name, 2
     while candidate.lower() in taken:

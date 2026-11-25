@@ -87,9 +87,30 @@ def test_new_rifle_is_offered_a_caliber_and_barrel_name(tmp_path, monkeypatch):
     _extract(monkeypatch, {"caliber": {"caliber": ".338 Lapua Magnum"}, "barrel_length_in": {"barrel_length_in": 24}})
     assert "What caliber?" in cli.handle("new rifle")
     assert "Barrel length" in cli.handle("338 lapua")
-    assert "How about '338 24-inch'?" in cli.handle("24 inch")
+    assert "tell it apart" in cli.handle("24 inch")     # always offered (Rick, 2026-11-25)
+    assert "How about '338 24-inch'?" in cli.handle("skip")
     assert "scope height" in cli.handle("yes").lower()
     assert cli._setup.draft["name"] == "338 24-inch"
+
+
+def test_the_third_detail_goes_on_the_name_even_without_a_clash(tmp_path, monkeypatch):
+    cli, _ = _make(tmp_path, [("Tikka", "6.5 Creedmoor", 24)])
+    _extract(monkeypatch, {"caliber": {"caliber": ".223 Wylde"}, "barrel_length_in": {"barrel_length_in": 16}})
+    cli.handle("new rifle")
+    cli.handle("223 wylde")
+    assert "Faxon or Ruger, fluted, left-handed" in cli.handle("16")
+    assert "How about '223 Wylde 16-inch Aero Precision'?" in cli.handle("Aero Precision")
+    cli.handle("yes")
+    assert cli._setup.draft["name"] == "223 Wylde 16-inch Aero Precision"
+
+
+def test_no_at_the_third_detail_leaves_it_off(tmp_path, monkeypatch):
+    cli, _ = _make(tmp_path, [])
+    _extract(monkeypatch, {"caliber": {"caliber": ".338 Win Mag"}, "barrel_length_in": {"barrel_length_in": 24}})
+    cli.handle("new rifle")
+    cli.handle("338 win mag")
+    cli.handle("24")
+    assert "How about '338 Win Mag 24-inch'?" in cli.handle("no")
 
 
 def test_he_can_say_his_own_name_instead(tmp_path, monkeypatch):
@@ -98,7 +119,7 @@ def test_he_can_say_his_own_name_instead(tmp_path, monkeypatch):
                            "name": {"name": "Big Bertha"}})
     cli.handle("new rifle")
     cli.handle("338 lapua")
-    cli.handle("24")
+    cli.handle("24")      # the third-detail question: his own name works here too
     assert "scope height" in cli.handle("call it Big Bertha").lower()
     assert cli._setup.draft["name"] == "Big Bertha"
 
@@ -108,7 +129,8 @@ def test_a_plain_no_asks_for_his_name(tmp_path, monkeypatch):
     _extract(monkeypatch, {"caliber": {"caliber": "6.5 Creedmoor"}, "barrel_length_in": {"barrel_length_in": 22}})
     cli.handle("new rifle")
     cli.handle("six five creedmoor")
-    assert "How about '6.5 Creedmoor 22-inch'?" in cli.handle("22")
+    cli.handle("22")
+    assert "How about '6.5 Creedmoor 22-inch'?" in cli.handle("skip")
     assert cli.handle("no") == "Okay, what do you want to call it?"
     assert cli._next_field_to_ask() == "name"
     assert "How about" not in cli._prompt_for("name")
@@ -120,7 +142,7 @@ def test_same_caliber_and_length_asks_for_the_maker(tmp_path, monkeypatch):
     cli.handle("new rifle")
     cli.handle("five five six")
     reply = cli.handle("fourteen and a half")
-    assert "You already have a 556 14.5-inch" in reply and "maker or action" in reply
+    assert "You already have a 556 14.5-inch" in reply and "sets this one apart" in reply
     assert "How about '556 14.5-inch AR'?" in cli.handle("it's an AR")
     cli.handle("yes")
     assert cli._setup.draft["name"] == "556 14.5-inch AR"
