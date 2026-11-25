@@ -1187,4 +1187,16 @@ Voice lookup (`find_rifle_matches`) already matches by words, not order,
 and against the caliber/barrel fields too. Names like "Old Betsy" stay
 fine for anyone who wants them.
 
+**What already exists (checked 2026-11-25):** the VOICE new-rifle setup
+already asks caliber, then barrel length, asks for a maker only when that
+caliber + barrel is already taken, then offers the built name ("How about
+'223 Wylde 16-inch'?"). The voice rifle pick already goes caliber, then
+barrel length, and says "I don't have a rifle saved in that caliber" /
+"None of them has that barrel length" when there's no match. The gap is
+the typed add/edit rifle form in the app: it's a free name box, which is
+how names like '5.7X28 / 16" / CMMG' end up in different orders. So the
+build is: give the form the same caliber -> barrel -> optional third
+detail -> name filled in, and maybe always offer the third detail (not
+only on a clash).
+
 Status: not started; Rick wants to discuss first. Lenses: Build, Marketing.
