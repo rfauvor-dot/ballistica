@@ -20,6 +20,7 @@ Interactive docs at http://127.0.0.1:8000/docs once it's running.
 from __future__ import annotations
 
 import dataclasses
+from urllib.parse import unquote
 import hashlib
 import json
 import logging
@@ -159,6 +160,34 @@ limiter = Limiter(key_func=_rate_limit_key, default_limits=["100/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+
+# A '/' in a rifle or load name (2026-11-24, live: '5.7X28 / 16" / CMMG').
+# The web app sends it encoded as %2F, but the path is decoded before
+# routing, so /v2/rifles/{rifle_name} never matched, the request 404'd, and
+# the app showed no rifles at all. This rebuilds the path for /v2/rifles/
+# requests from the raw one with each encoded '/' as a stand-in character
+# that routing leaves alone; _path_name() turns it back into '/'.
+_SLASH_STAND_IN = "∕"   # DIVISION SLASH
+
+
+class _EncodedSlashInNames:
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            raw = scope.get("raw_path") or b""
+            if raw.startswith(b"/v2/rifles/") and b"%2f" in raw.lower():
+                segments = raw.decode("latin-1").split("/")
+                scope = dict(scope)
+                scope["path"] = "/".join(
+                    unquote(seg.replace("%2F", "%E2%88%95").replace("%2f", "%E2%88%95")) for seg in segments
+                )
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_EncodedSlashInNames)
 
 
 
@@ -1337,8 +1366,15 @@ def v2_create_rifle(payload: RifleIn, user_store: SupabaseProfileStore = Depends
     return _rifle_to_detail(rifle)
 
 
+def _path_name(name: str) -> str:
+    """A rifle or load name from the URL, with any '/' in it given back
+    (see _EncodedSlashInNames)."""
+    return name.replace(_SLASH_STAND_IN, "/")
+
+
 @app.get("/v2/rifles/{rifle_name}", response_model=RifleDetail)
 def v2_get_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    rifle_name = _path_name(rifle_name)
     try:
         rifle = user_store.find_rifle(rifle_name)
     except KeyError as exc:
@@ -1348,6 +1384,7 @@ def v2_get_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(_ge
 
 @app.delete("/v2/rifles/{rifle_name}")
 def v2_delete_rifle(rifle_name: str, user_store: SupabaseProfileStore = Depends(_get_user_store)):
+    rifle_name = _path_name(rifle_name)
     try:
         rifle = user_store.delete_rifle(rifle_name)
     except KeyError as exc:
@@ -1536,6 +1573,7 @@ def v2_session_end(request: Request, user_store: SupabaseProfileStore = Depends(
 def v2_update_rifle(
     rifle_name: str, payload: RifleUpdate, user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
+    rifle_name = _path_name(rifle_name)
     # Checked here, not just inside update_rifle_fields, so a genuine
     # name collision reports 409 (matches v2_create_rifle's own
     # duplicate-name response) rather than folding into the same 404
@@ -1556,6 +1594,7 @@ def v2_update_rifle(
 def v2_add_load(
     rifle_name: str, payload: LoadIn, user_store: SupabaseProfileStore = Depends(_get_user_store),
 ):
+    rifle_name = _path_name(rifle_name)
     try:
         rifle = user_store.find_rifle(rifle_name)
     except KeyError as exc:
@@ -1591,6 +1630,8 @@ def v2_update_load(
     (v2_add_load), which is for creating a genuinely new load -- the
     web app tracks which one applies the same way it now tracks rifles
     (an explicit "creating new" flag, not a name comparison)."""
+    rifle_name = _path_name(rifle_name)
+    load_name = _path_name(load_name)
     try:
         rifle = user_store.find_rifle(rifle_name)
     except KeyError as exc:
@@ -1620,6 +1661,8 @@ def v2_delete_load(rifle_name: str, load_name: str, user_store: SupabaseProfileS
     was deleting the whole rifle and recreating it from scratch (real,
     documented gap, COMMAND_GUIDE.md's own "Known limitations"
     section, closed 2026-08-30)."""
+    rifle_name = _path_name(rifle_name)
+    load_name = _path_name(load_name)
     try:
         load = user_store.delete_load(rifle_name, load_name)
     except KeyError as exc:

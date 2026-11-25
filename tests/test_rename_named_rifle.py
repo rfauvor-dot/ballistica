@@ -314,3 +314,72 @@ def test_the_model_tool_with_an_unknown_rifle(tmp_path, monkeypatch):
     assert cli.handle("my Remington should be Old Faithful") == (
         "I don't have a rifle called 'Remington'. Say rename and the rifle's name.")
     assert cli._rename is None
+
+
+# ------------------------------- Rick's live log, 2026-11-24 evening
+
+def test_can_you_repeat_that_is_never_taken_as_a_name(tmp_path):
+    cli, store = _make(tmp_path, [_rifle("5.7X28 11 inch", "5.7x28", 11)], active="5.7X28 11 inch")
+    first = cli.handle("Rename it 5.7x28 11.5 inch barrel.")
+    assert first == "Rename the 5.7X28 11 inch to '5.7x28 11.5 inch barrel' -- right?"
+    assert cli.handle("Can you repeat that?") == first
+    assert cli.handle("Yes.") == "Renamed to '5.7x28 11.5 inch barrel'."
+    assert list(store.rifles) == ["5.7x28 11.5 inch barrel"]
+
+
+@pytest.mark.parametrize("said", ["say that again", "what?", "come again", "could you repeat that please"])
+def test_repeat_requests_at_the_offer(tmp_path, said):
+    cli, store = _make(tmp_path, [_rifle("Tikka", "6.5 Creedmoor", 24)], active="Tikka")
+    offer = cli.handle("rename this rifle")
+    assert cli.handle(said) == offer
+    assert list(store.rifles) == ["Tikka"]
+
+
+def test_a_question_is_not_a_name(tmp_path):
+    cli, store = _make(tmp_path, [_rifle("Tikka", "6.5 Creedmoor", 24)], active="Tikka")
+    cli.handle("rename this rifle")
+    cli.handle("no")
+    assert cli.handle("Why is it doing that?") == "Sorry -- what should I call the Tikka? Or say keep."
+    assert cli._rename["custom"] == ""
+
+
+@pytest.mark.parametrize("said, reply_starts", [
+    ("Ballistica. Change the name 5.7x28", "Rename"),
+    ("change the name", "The 5.7X28 11 inch: how about"),
+])
+def test_change_the_name_without_of(tmp_path, said, reply_starts):
+    cli, store = _make(tmp_path, [_rifle("5.7X28 11 inch", "5.7x28", 11)], active="5.7X28 11 inch")
+    reply = cli.handle(said)
+    assert reply.startswith(reply_starts) or "5.7X28 11 inch" in reply
+
+
+def test_a_rifle_name_with_slashes_works_through_the_api(tmp_path, monkeypatch):
+    """Live 2026-11-24: a rifle named '5.7X28 / 16" / CMMG' 404'd, and the web
+    app then showed no rifles at all."""
+    from urllib.parse import quote
+    import ballistica.api as api
+    from fastapi.testclient import TestClient
+
+    store = ProfileStore(tmp_path / "p.json")
+    name = '5.7X28 / 16" / CMMG'
+    store.add_rifle(_rifle(name, "5.7x28", 16))
+    store.add_rifle(_rifle("100% Faxon", ".223 Wylde", 20), make_active=False)
+    store.access_token = "token"
+    monkeypatch.setattr(api, "contribute_load", lambda *a, **k: None)   # no network
+    api.app.dependency_overrides[api._get_user_store] = lambda: store
+    try:
+        client = TestClient(api.app)
+        twice = lambda n: quote(n, safe="")   # as the web app's encodeURIComponent does
+        r = client.get("/v2/rifles/" + twice(name))
+        assert r.status_code == 200 and r.json()["name"] == name
+        assert client.get("/v2/rifles/" + twice("100% Faxon")).json()["name"] == "100% Faxon"
+        assert client.get("/v2/rifles/" + twice("Nope / Not Here")).json()["detail"].startswith("No rifle")
+        r = client.put("/v2/rifles/" + twice(name) + "/loads/" + twice("108 ELD"),
+                       json={**{k: v for k, v in dataclasses.asdict(store.rifles[name].loads["108 ELD"]).items()
+                                if k in ("name", "bullet_weight_gr", "bc", "drag_model",
+                                         "muzzle_velocity_fps", "zero_distance_yd")},
+                             "muzzle_velocity_fps": 2000})
+        assert r.status_code == 200, r.text
+        assert store.rifles[name].loads["108 ELD"].muzzle_velocity_fps == 2000
+    finally:
+        api.app.dependency_overrides.pop(api._get_user_store, None)

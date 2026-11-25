@@ -1088,7 +1088,19 @@ async function loadRifles(selectName) {
     const name = stillExists(selectName) ? selectName
       : stillExists(currentRifleDetail && currentRifleDetail.name) ? currentRifleDetail.name
       : allRifles[0].name;
-    await loadRifleDetail(name);
+    try {
+      await loadRifleDetail(name);
+    } catch (e) {
+      // One rifle that won't load must not hide the rest (2026-11-24: a
+      // rifle whose name had a '/' in it left the picker saying "No rifles
+      // saved yet" over 15 saved rifles).
+      if (isNetworkError(e)) throw e;
+      currentRifleDetail = null;
+      renderRiflePicker();
+      flash(calcError, `Couldn't open the ${name}: ${e.message}. Pick another rifle.`);
+      setStatus('');
+      return;
+    }
     // Opportunistic full-detail cache refresh for offline fallback --
     // fire-and-forget, never blocks the UI and never surfaces its own
     // errors (the online path just finished succeeding regardless).

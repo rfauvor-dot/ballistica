@@ -469,14 +469,29 @@ _RENAME_REWRITES = (
     # "change my rifle name to X", "update the rifle's name"
     (re.compile(r"\b(?:change|update|edit|fix|set)\s+(?:my\s+|the\s+)?(?:rifle|gun)(?:'s|s)?\s+name\b",
                 re.IGNORECASE), "rename this rifle"),
-    # "change the name on my Tikka", "change name of the Tikka"
-    (re.compile(r"\b(?:change|update|edit|fix)\s+(?:the\s+)?name\s+(?:of|on|for)\s+", re.IGNORECASE),
+    # "change name" / "change the name" with nothing after: the current rifle
+    (re.compile(r"\b(?:change|update|edit|fix)\s+(?:the\s+|my\s+)?name[\s.!?]*$", re.IGNORECASE),
+     "rename this rifle"),
+    # "change the name on my Tikka", "change name of the Tikka", and live
+    # 2026-11-24: "change the name 5.7x28"
+    (re.compile(r"\b(?:change|update|edit|fix)\s+(?:the\s+)?name\s+(?:(?:of|on|for)\s+)?", re.IGNORECASE),
      "rename "),
     # "change my 6mm ARC's name to X"
     (re.compile(r"\b(?:change|update|edit|fix)\s+(?:my\s+|the\s+)?(.+?)'s\s+name\b", re.IGNORECASE),
      r"rename \1"),
 )
 _MILLIMETER_RE = re.compile(r"(\d)\s*millimet(?:er|re)s?\b", re.IGNORECASE)
+# Asking to hear the question again, mid-rename.
+_RENAME_REPEAT_RE = re.compile(
+    r"^(?:(?:can|could|would|will) you\s+)?(?:please\s+)?(?:repeat(?: that| it| yourself)?|"
+    r"say (?:that|it) again|come again|pardon(?: me)?|sorry|what was that|what did you say|huh|what)"
+    r"(?:\s+please)?[\s?.!]*$"
+)
+# A question isn't a name.
+_RENAME_QUESTION_RE = re.compile(
+    r"^(?:.*\?\s*$|(?:what|why|how|who|where|when|can|could|would|will|do|does|did|is|are)\b)",
+    re.IGNORECASE,
+)
 
 
 def _spoken_name(text: str) -> str:
@@ -3175,6 +3190,12 @@ class BallisticaCLI:
             return self._rename_from_parts("", "", bool(help_m))   # "rename rifle", "rename a rifle"
         if not rest or re.match(r"^(?:this|the|my|current|the current)?\s*rifles?\b", rest, re.IGNORECASE):
             return None   # _RENAME_ONE_RE / _RENAME_ALL_RE territory
+        # "rename it 5.7x28 11.5 inch barrel" -- no "to", but "it" can't be
+        # part of a rifle's name, so the rest is the new one (live, 2026-11-24:
+        # it was matched against the saved names instead).
+        it_m = re.match(r"^(?:it|this one)\s+(?!(?:to|as)\s)(.+)$", rest, re.IGNORECASE)
+        if it_m:
+            return self._rename_from_parts("", it_m.group(1), bool(help_m))
         # Each " to " / " as " is a possible split; the first whose left side
         # names exactly one rifle wins. With none, the whole thing may be
         # just the rifle ("rename the Tikka").
@@ -3368,6 +3389,17 @@ class BallisticaCLI:
         self._rename_next(rs)
         return self._rename_prompt(rs, lead=f"Renamed to '{new_name}'. ")
 
+    def _rename_question(self, rs: dict) -> str:
+        """The question the rename is waiting on, asked again."""
+        name, stage = rs["queue"][0], rs["stage"]
+        if stage == "confirm":
+            return f"Rename the {name} to '{rs['custom']}' -- right?"
+        if stage == "offer":
+            return f"The {name}: how about '{rs['suggestion']}'? Say yes, a different name, or keep."
+        if stage == "name":
+            return f"What should I call the {name}? Or say keep."
+        return self._rename_prompt(rs)
+
     def _handle_rename_turn(self, text: str) -> str:
         rs = self._rename
         rs["at"] = time.time()
@@ -3382,6 +3414,12 @@ class BallisticaCLI:
         if (stage in ("offer", "name", "confirm") and _NAME_HELP_RE.search(low)
                 and not (stage == "confirm" and rs.get("suggestion") and _TAKE_SCHEME_RE.search(low))):
             return self._rename_scheme_reply(rs)
+        # "Can you repeat that?" is never a name (2026-11-24, live: it was read
+        # back as one, and the "Yes" that followed renamed the rifle to it).
+        if _RENAME_REPEAT_RE.match(low):
+            return self._rename_question(rs)
+        if stage in ("offer", "name", "confirm") and _RENAME_QUESTION_RE.match(text.strip()):
+            return f"Sorry -- what should I call the {name}? Or say keep."
 
         if stage in ("caliber", "barrel", "maker"):
             if _SKIP_RE.match(low):
