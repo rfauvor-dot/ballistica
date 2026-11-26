@@ -163,6 +163,25 @@ connected -- account creation and login aren't something to do on
 someone else's behalf) is worth doing properly once this proves out,
 rather than running on a tunnel indefinitely.
 
+## Deploying: test copy first (Rick, 2026-11-26)
+
+Two Render services build from this repo:
+
+- **ballistica-staging** (free plan) builds the `staging` branch. Every
+  change goes here first and Rick tries it on his phone. The free plan
+  sleeps when idle, so the first load can take about a minute.
+- **ballistica** (the live app, ballistica.onrender.com) builds `main`.
+  Nothing reaches `main` until Rick has tried it on staging and said yes.
+
+Both use the same Supabase project and API keys, so the test copy shows
+Rick's real rifles -- and anything saved there changes the real data.
+Database changes (`db/*.sql`) are run by hand and affect both at once.
+
+Routine: work on a branch, run `python -m pytest -q` and
+`node scripts/check_engine_parity.js`, push the branch to `staging`
+(`git push origin <branch>:staging`, forced only if staging holds an
+abandoned change), Rick tries it, then fast-forward `main`.
+
 ## What's not here
 
 - Live voice correction loop (section 5's hands-free "call out the
