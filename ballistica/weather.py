@@ -15,6 +15,7 @@ correction. Left for manual entry, same as today.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,18 @@ _USER_AGENT = "Ballistica/1.0 (https://ballistica.onrender.com)"
 # pulling in a station so far away its conditions are meaningless for
 # the shooter's actual position.
 _SEARCH_RADIUS_DEG = 0.75
+
+log = logging.getLogger(__name__)
+
+
+def _bbox(lat: float, lon: float) -> str:
+    """The search box, at 4 decimals (about 10 m -- far finer than a 50-mile
+    box needs). Since about 2026-11-25 the API answers 400 "Must specify
+    station IDs or bounding box" to a box written at a phone's full GPS
+    precision (43.6205708 - 0.75 -> 42.8705708, 7 decimals), so every
+    lookup from a phone failed and the app said no station was found."""
+    d = _SEARCH_RADIUS_DEG
+    return ",".join(f"{v:.4f}" for v in (lat - d, lon - d, lat + d, lon + d))
 
 
 @dataclass
@@ -70,18 +83,22 @@ def fetch_nearest_station_conditions(lat: float, lon: float) -> NearestStationCo
     search radius (sparse rural area, or the upstream API is down --
     both treated as "couldn't auto-fill," not an error the caller
     should propagate as a 500)."""
-    bbox = (
-        f"{lat - _SEARCH_RADIUS_DEG},{lon - _SEARCH_RADIUS_DEG},"
-        f"{lat + _SEARCH_RADIUS_DEG},{lon + _SEARCH_RADIUS_DEG}"
-    )
     try:
         resp = httpx.get(
-            _METAR_URL, params={"bbox": bbox, "format": "json"},
+            _METAR_URL, params={"bbox": _bbox(lat, lon), "format": "json"},
             headers={"User-Agent": _USER_AGENT}, timeout=15,
         )
         resp.raise_for_status()
         stations = resp.json()
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError, ValueError) as exc:
+        # Logged, not raised: the app still just says "enter conditions
+        # manually", but the server log now shows why (this failure was
+        # invisible for a day -- only a bare 404 showed).
+        detail = exc.response.text[:200] if isinstance(exc, httpx.HTTPStatusError) else ""
+        log.warning("METAR lookup failed: %r %s", exc, detail)
+        return None
+    if not isinstance(stations, list):
+        log.warning("METAR lookup: unexpected reply %.200r", stations)
         return None
 
     # Only stations reporting the fields this needs -- an automated
